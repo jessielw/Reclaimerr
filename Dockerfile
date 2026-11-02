@@ -11,7 +11,7 @@ COPY frontend ./
 RUN VITE_APP_CHANNEL=${VITE_APP_CHANNEL} npm run build
 
 ## backend base image
-FROM python:3.13-slim AS backend-base
+FROM python:3.15-slim AS backend-base
 ENV PYTHONDONTWRITEBYTECODE=1 \
 	PYTHONUNBUFFERED=1 \
 	PIP_NO_CACHE_DIR=1 \

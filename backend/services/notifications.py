@@ -915,18 +915,17 @@ async def send_notification(
     message: str,
     body_format: apprise.NotifyFormat = _DEFAULT_BODY_FORMAT,
     notify_type: apprise.NotifyType = apprise.NotifyType.INFO,
-    log_label: str | None = None,
+    *,
+    log_label: str,
 ) -> bool:
     """Send a single notification to a specific URL with automatic retry logic.
 
-    `log_label` names the destination in the log instead of the URL. A system
-    email URL carries the SMTP password in its userinfo, so it must never be
-    logged verbatim; callers pass a label and everything else falls back to the
-    URL, which is what the user typed in themselves.
+    `log_label` must name the destination without its delivery URL, which can
+    contain SMTP passwords or notification service tokens.
     """
     ap = apprise.Apprise(asset=_APPRISE_ASSET)
     ap.add(url)
-    label = log_label or url
+    label = log_label or "notification destination"
     if body_format == apprise.NotifyFormat.MARKDOWN and _is_telegram_url(url):
         message = _telegram_bullets(message)
 
@@ -978,7 +977,7 @@ def _resolve_destination(
     if not url:
         LOG.warning(f"Skipping notification destination {setting.id}: no URL set")
         return None
-    return url, setting.name or url
+    return url, setting.name or f"notification {setting.id}"
 
 
 async def notify_user(
@@ -1309,7 +1308,7 @@ async def test_notification_url(
     log_label: str | None = None,
 ) -> tuple[bool, str | None]:
     """Test a notification by sending a test payload to the provided URL."""
-    label = log_label or url
+    label = log_label or "notification test"
     try:
         return await send_notification(
             url=url,
@@ -1325,7 +1324,7 @@ async def test_notification_url(
             ),
             body_format=_DEFAULT_BODY_FORMAT,
             notify_type=apprise.NotifyType.SUCCESS,
-            log_label=log_label,
+            log_label=label,
         ), None
     except RetryError:
         LOG.error(f"Failed to send notification after multiple attempts to {label}")

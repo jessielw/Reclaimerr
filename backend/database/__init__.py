@@ -10,6 +10,8 @@ from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
 from backend.core.settings import settings
 
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000
+
 
 class Base(MappedAsDataclass, DeclarativeBase):
     """Base class for all SQLAlchemy models."""
@@ -21,7 +23,7 @@ engine = create_async_engine(
     f"sqlite+aiosqlite:///{settings.db_path}",
     echo=False,
     future=True,
-    connect_args={"timeout": 30.0},
+    connect_args={"timeout": DEFAULT_SQLITE_BUSY_TIMEOUT_MS / 1000},
 )
 
 
@@ -43,12 +45,30 @@ _migrating = False
 def set_sqlite_pragma(dbapi_conn: Any, _connection_record: Any) -> None:
     """Set SQLite PRAGMA settings on each connection."""
     cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
     cursor.execute("PRAGMA journal_mode=WAL")
     if not _migrating:
         cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
+
+
+@event.listens_for(engine.sync_engine, "checkout")
+def reset_sqlite_busy_timeout(
+    dbapi_conn: Any, _connection_record: Any, _connection_proxy: Any
+) -> None:
+    """Never lend a connection with another transaction's short busy timeout.
+
+    Authentication uses 250ms for best-effort writes. Session.commit()/rollback()
+    release the connection, so restoring through that Session afterwards can
+    modify a different pooled connection. Reset on every checkout instead; this
+    also covers exceptions and cancellation without depending on caller cleanup.
+    """
+    cursor = dbapi_conn.cursor()
+    try:
+        cursor.execute(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
 
 
 async_db = async_sessionmaker[AsyncSession](

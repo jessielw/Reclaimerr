@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.core.diagnostic_trace import current_job_id
 from backend.core.service_runtime import handle_service_toggle
 from backend.core.task_process import run_task_job
 from backend.database.models import BackgroundJob
@@ -20,6 +21,14 @@ from backend.services.lifecycle_webhooks import run_webhook_delivery_job
 
 
 async def run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
+    token = current_job_id.set(job.id)
+    try:
+        return await _run_background_job(job)
+    finally:
+        current_job_id.reset(token)
+
+
+async def _run_background_job(job: BackgroundJob) -> dict[str, Any] | None:
     if job.job_type is BackgroundJobType.SERVICE_TOGGLE:
         service_payload = ServiceToggleJobPayload.model_validate(job.payload)
         service_update = ServiceConfigUpdate(

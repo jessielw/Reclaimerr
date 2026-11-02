@@ -24,6 +24,7 @@ from backend.core.codecs import (
     normalize_video_codec_family,
 )
 from backend.core.logger import LOG
+from backend.core.operation_diagnostics import observe_step
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.language import normalize_language, normalize_languages
@@ -283,6 +284,12 @@ class PlexService:
         self._history_records_cache.clear()
         self._history_records_cache_expires_at.clear()
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="plex",
+        reference="rating_key",
+    )
     async def delete_item(self, rating_key: str) -> None:
         """Delete an item (movie or series) from Plex.
 
@@ -305,6 +312,12 @@ class PlexService:
                 )
             ) from e
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="plex",
+        reference="media_item_id",
+    )
     async def delete_movie_version(self, rating_key: str, media_item_id: str) -> None:
         """Deletes one media version from a Plex metadata item."""
         await guard_native_removal(self, Service.PLEX, rating_key, media_item_id)

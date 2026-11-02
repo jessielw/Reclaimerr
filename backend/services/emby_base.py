@@ -24,6 +24,7 @@ from backend.core.codecs import (
     normalize_video_codec_family,
 )
 from backend.core.logger import LOG
+from backend.core.operation_diagnostics import observe_step
 from backend.core.utils.filesystem import normalize_fpath
 from backend.core.utils.language import normalize_language, normalize_languages
 from backend.core.utils.misc import as_float, as_int, normalize_name_list
@@ -211,6 +212,12 @@ class EmbyServiceBase:
             )
         return HealthResult.healthy()
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="emby_or_jellyfin",
+        reference="item_id",
+    )
     async def delete_item(self, item_id: str) -> None:
         """Deletes an item (movie or series) from Emby/Jellyfin.
 
@@ -231,6 +238,12 @@ class EmbyServiceBase:
                 )
             ) from e
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="emby_or_jellyfin",
+        reference="item_id",
+    )
     async def delete_movie_version(self, item_id: str, _media_source_id: str) -> None:
         """Deletes one movie version for Emby/Jellyfin.
 

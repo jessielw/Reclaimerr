@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, cast
+from uuid import uuid4
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
@@ -20,7 +21,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
+from backend.core.diagnostic_trace import (
+    ScanRecorder,
+    current_operation_id,
+    current_scan,
+)
 from backend.core.logger import LOG
+from backend.core.operation_diagnostics import (
+    OperationRecorder,
+    candidate_scope,
+    current_candidates,
+    current_group,
+    current_operation_recorder,
+    operation_step,
+    record_outcome,
+    select_candidate,
+)
 from backend.core.playback_history_fields import HISTORY_RULE_FIELDS
 from backend.core.protection_scope import detach_movie_version_references
 from backend.core.rule_actions import (
@@ -184,6 +200,12 @@ from backend.services.requester_warnings import warn_requesters_before_deletion
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
 from backend.services.selected_playback_history import load_selected_history_snapshot
 from backend.services.sonarr import SonarrClient
+from backend.services.support_history import (
+    persist_operation_details,
+    persist_scan,
+    record_operations,
+    target_fields,
+)
 from backend.services.watch_identity import (
     AliasIndex,
     aliases_by_name,
@@ -5804,6 +5826,24 @@ async def _postpone_candidate_spike(
 
 
 async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
+    recorder = ScanRecorder()
+    token = current_scan.set(recorder)
+    LOG.info("Support scan started")
+    try:
+        result = await _scan_with_db_impl(db)
+        recorder.context["status"] = "completed"
+        await persist_scan(db, recorder)
+        LOG.info("Support scan completed")
+        return result
+    except Exception:
+        recorder.context["status"] = "failed"
+        await persist_scan(db, recorder)
+        raise
+    finally:
+        current_scan.reset(token)
+
+
+async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
     Returns (created_count, updated_count, removed_count) or None if no rules found."""
@@ -5820,6 +5860,9 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
             if normalize_rule_outcome(rule) != RULE_OUTCOME_MATCH
         ]
 
+        recorder = current_scan.get()
+        if recorder:
+            recorder.context["enabled_rule_ids"] = [rule.id for rule in rules][:1000]
         if not rules:
             LOG.info(
                 "No enabled cleanup rules found, clearing candidates and "
@@ -5986,6 +6029,22 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         else:
             await clear_playback_rule_data_notice(db)
 
+        if recorder:
+            recorder.context.update(
+                {
+                    "skipped_rule_ids": sorted(
+                        set(recorder.context["enabled_rule_ids"])
+                        - {rule.id for rule in rules}
+                    ),
+                    "favorites_refresh_available": favorites_ready,
+                    "seerr_refresh_available": seerr_ready,
+                    "playback_blocking": playback_rule_result.blocking,
+                    "playback_unavailable_targets": playback_rule_result.unavailable_count,
+                    "sonarr_unavailable_series": len(
+                        sonarr_rule_result.unavailable_series_ids
+                    ),
+                }
+            )
         protection_rules = [
             rule
             for rule in rules
@@ -8209,6 +8268,7 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
 
 async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
     """Persist delete failure details for a candidate."""
+    record_outcome(candidate_id, "failed", error=error)
     async with async_db() as db:
         result = await db.execute(
             select(ReclaimCandidate).where(ReclaimCandidate.id == candidate_id)
@@ -8232,6 +8292,7 @@ async def _add_candidate_delete_failure(candidate_id: int, error: str) -> None:
     the start of each attempt, so an existing one belongs to this attempt and
     the attempt is not counted twice.
     """
+    record_outcome(candidate_id, "failed", error=error)
     async with async_db() as db:
         candidate = await db.get(ReclaimCandidate, candidate_id)
         if candidate is None:
@@ -8991,6 +9052,14 @@ async def _dispatch_reclaim_event(
     episode_number: int | None = None,
     local_path: str | None = None,
 ) -> None:
+    record_outcome(
+        candidate_id,
+        "succeeded",
+        stage="completed",
+        path=local_path or path,
+        destination=destination_path,
+        action="move" if action == "moved" else "delete",
+    )
     try:
         await dispatch_candidate_file_event(
             CandidateFileEvent(
@@ -9019,6 +9088,7 @@ async def _dispatch_reclaim_event(
         LOG.warning(f"Post-action webhook dispatch failed: {e}")
 
 
+@candidate_scope
 async def _delete_movie_version_candidates(
     version_candidates: list[ReclaimCandidate],
     approved_by: str = "system",
@@ -9041,6 +9111,7 @@ async def _delete_movie_version_candidates(
 
     if not media_server_fallback_enabled:
         for candidate in version_candidates:
+            select_candidate(candidate.id)
             async with async_db() as db:
                 result = await db.execute(
                     select(MovieVersion)
@@ -9068,6 +9139,7 @@ async def _delete_movie_version_candidates(
     main_service = service_manager.main_media_server
     if not main_service:
         for candidate in version_candidates:
+            select_candidate(candidate.id)
             await _mark_candidate_delete_failure(
                 candidate.id, "No main media server configured"
             )
@@ -9089,6 +9161,7 @@ async def _delete_movie_version_candidates(
 
     deleted_count = 0
     for candidate in version_candidates:
+        select_candidate(candidate.id)
         if candidate.movie_version_id is None:
             continue
         cand_arr_action = _get_arr_action(
@@ -11208,7 +11281,12 @@ async def _delete_series_candidates(
                                     await playback_checkpoint(
                                         path=str(local_path), directory=True
                                     )
-                                    shutil.rmtree(str(local_path))
+                                    with operation_step(
+                                        "filesystem_cleanup",
+                                        path=local_path,
+                                        subject="directory",
+                                    ):
+                                        shutil.rmtree(str(local_path))
                                     locally_removed = not local_path.exists()
                                     playback_step_completed(
                                         "Removed folder " + str(local_path)
@@ -11398,6 +11476,7 @@ async def _delete_series_candidates(
     return deleted_count
 
 
+@candidate_scope
 async def _delete_season_candidates(
     restrict_to_ids: frozenset[int] | None = None,
     approved_by: str = "system",
@@ -11505,6 +11584,7 @@ async def _delete_season_candidates(
         series_map: dict[int, Series] = {s.id: s for s in series_result.scalars().all()}
 
     for candidate in candidates:
+        select_candidate(candidate.id)
         if not candidate.season_id or not candidate.series_id:
             continue
         season = seasons.get(candidate.season_id)
@@ -11662,7 +11742,12 @@ async def _delete_season_candidates(
                         await playback_checkpoint(
                             path=str(season_folder), directory=True
                         )
-                        shutil.rmtree(str(season_folder))
+                        with operation_step(
+                            "filesystem_cleanup",
+                            path=season_folder,
+                            subject="directory",
+                        ):
+                            shutil.rmtree(str(season_folder))
                         playback_step_completed("Removed folder " + str(season_folder))
                         LOG.info(
                             f"Removed '{series_obj.title}' S{season_number:02d} "
@@ -12017,6 +12102,7 @@ async def _delete_season_candidates(
     return deleted_count
 
 
+@candidate_scope
 async def _delete_episode_candidates(
     restrict_to_ids: frozenset[int] | None = None,
     approved_by: str = "system",
@@ -12131,6 +12217,7 @@ async def _delete_episode_candidates(
         series_map: dict[int, Series] = {s.id: s for s in series_result.scalars().all()}
 
     for candidate in candidates:
+        select_candidate(candidate.id)
         if (
             not candidate.episode_id
             or not candidate.season_id
@@ -12570,6 +12657,7 @@ async def _delete_episode_candidates(
     return deleted_count
 
 
+@candidate_scope
 async def _delete_movies_via_media_server(
     candidates: Sequence[ReclaimCandidate],
     already_deleted: list[dict[str, Any]],
@@ -12599,6 +12687,7 @@ async def _delete_movies_via_media_server(
     if not main_service:
         LOG.warning("No main media server available for movie deletion fallback")
         for candidate in remaining_candidates:
+            select_candidate(candidate.id)
             await _add_candidate_delete_failure(
                 candidate.id,
                 "Media server fallback unavailable: no main media server is set",
@@ -12620,6 +12709,7 @@ async def _delete_movies_via_media_server(
     deleted_count = 0
 
     for candidate in remaining_candidates:
+        select_candidate(candidate.id)
         if candidate.movie_id is None:
             continue
         movie = movies.get(candidate.movie_id)
@@ -12744,6 +12834,7 @@ async def _delete_movies_via_media_server(
     return deleted_count
 
 
+@candidate_scope
 async def _delete_series_via_media_server(
     candidates: Sequence[ReclaimCandidate],
     already_deleted: list[dict[str, Any]],
@@ -12775,6 +12866,7 @@ async def _delete_series_via_media_server(
     if not main_service:
         LOG.warning("No main media server available for series deletion fallback")
         for candidate in remaining_candidates:
+            select_candidate(candidate.id)
             await _add_candidate_delete_failure(
                 candidate.id,
                 "Media server fallback unavailable: no main media server is set",
@@ -12794,6 +12886,7 @@ async def _delete_series_via_media_server(
         series = {s.id: s for s in result.scalars().all()}
 
     for candidate in remaining_candidates:
+        select_candidate(candidate.id)
         if candidate.series_id is None:
             continue
         series_obj = series.get(candidate.series_id)
@@ -13391,6 +13484,7 @@ async def _move_candidates_prepared(
         await _reconcile_leaving_soon_after_candidate_actions()
 
 
+@candidate_scope(action="move")
 async def _move_specific_candidates_impl(
     candidate_ids: list[int], approved_by: str = "system"
 ) -> tuple[int, int]:
@@ -13519,6 +13613,7 @@ async def _move_specific_candidates_impl(
     movie_arr_actions: dict[int, ArrDeleteAction] = {}
     series_arr_actions: dict[int, ArrDeleteAction] = {}
     for candidate in candidates:
+        select_candidate(candidate.id)
         action = _get_arr_action(
             candidate,
             rules_by_id,
@@ -13543,6 +13638,7 @@ async def _move_specific_candidates_impl(
     #### movie candidates ####
     movie_candidates = [c for c in candidates if c.media_type == MediaType.MOVIE]
     for candidate in movie_candidates:
+        select_candidate(candidate.id)
         exclusion_attributes: dict[str, str] = {}
         try:
             version = (
@@ -13554,11 +13650,13 @@ async def _move_specific_candidates_impl(
                 LOG.warning(
                     f"move_specific_candidates: candidate {candidate.id} has no movie version"
                 )
+                record_outcome(candidate.id, "failed", stage="validation")
                 failed += 1
                 continue
 
             movie = version.movie
             if movie is None:
+                record_outcome(candidate.id, "failed", stage="validation")
                 failed += 1
                 continue
 
@@ -13573,6 +13671,7 @@ async def _move_specific_candidates_impl(
                     f"move_specific_candidates: destination not configured for "
                     f"{candidate.media_type} (candidate {candidate.id})"
                 )
+                record_outcome(candidate.id, "failed", stage="validation")
                 failed += 1
                 continue
             destination_root = Path(dest_str)
@@ -13585,6 +13684,7 @@ async def _move_specific_candidates_impl(
                     f"move_specific_candidates: cannot resolve path for '{version.path}' "
                     f"(candidate {candidate.id})"
                 )
+                record_outcome(candidate.id, "failed", stage="validation")
                 failed += 1
                 continue
 
@@ -13804,6 +13904,7 @@ async def _move_specific_candidates_impl(
                 f"move_specific_candidates: failed for candidate {candidate.id}: {e}",
                 exc_info=True,
             )
+            record_outcome(candidate.id, "failed", error=e)
             failed += 1
 
     await _best_effort_radarr_rescan(
@@ -13824,6 +13925,7 @@ async def _move_specific_candidates_impl(
     return moved + series_moved, failed + series_failed
 
 
+@candidate_scope(action="move")
 async def _move_series_candidates(
     candidates: Sequence[ReclaimCandidate],
     *,
@@ -13887,6 +13989,7 @@ async def _move_series_candidates(
                 )
 
         for candidate in series_candidates:
+            select_candidate(candidate.id)
             monitoring_attributes: dict[str, str] = {}
             new_season_move: (
                 tuple[SonarrClient, SeriesArrRef, list[SeriesArrRef]] | None
@@ -13912,6 +14015,7 @@ async def _move_series_candidates(
                     LOG.warning(
                         f"move_specific_candidates: no series for candidate {candidate.id}"
                     )
+                    record_outcome(candidate.id, "failed", stage="validation")
                     failed += 1
                     continue
 
@@ -13920,6 +14024,7 @@ async def _move_series_candidates(
                         f"move_specific_candidates: series destination not configured "
                         f"(candidate {candidate.id})"
                     )
+                    record_outcome(candidate.id, "failed", stage="validation")
                     failed += 1
                     continue
                 destination_root = Path(destination_series_str)
@@ -13931,6 +14036,7 @@ async def _move_series_candidates(
                         f"move_specific_candidates: no path on service ref for "
                         f"'{series_obj.title}' (candidate {candidate.id})"
                     )
+                    record_outcome(candidate.id, "failed", stage="validation")
                     failed += 1
                     continue
 
@@ -13944,6 +14050,7 @@ async def _move_series_candidates(
                         f"move_specific_candidates: cannot resolve path for "
                         f"'{series_obj.title}' (candidate {candidate.id})"
                     )
+                    record_outcome(candidate.id, "failed", stage="validation")
                     failed += 1
                     continue
 
@@ -13969,6 +14076,7 @@ async def _move_series_candidates(
                             f"move_specific_candidates: episode path missing "
                             f"(candidate {candidate.id})"
                         )
+                        record_outcome(candidate.id, "failed", stage="validation")
                         failed += 1
                         continue
                     local_episode_path = resolve_path(
@@ -13981,6 +14089,7 @@ async def _move_series_candidates(
                             f"move_specific_candidates: cannot resolve episode path "
                             f"for '{series_obj.title}' (candidate {candidate.id})"
                         )
+                        record_outcome(candidate.id, "failed", stage="validation")
                         failed += 1
                         continue
                     await playback_checkpoint(
@@ -14003,6 +14112,7 @@ async def _move_series_candidates(
                             f"move_specific_candidates: season record missing "
                             f"(candidate {candidate.id})"
                         )
+                        record_outcome(candidate.id, "failed", stage="validation")
                         failed += 1
                         continue
                     resolved_season_path = (
@@ -14023,6 +14133,7 @@ async def _move_series_candidates(
                             f"S{season.season_number:02d} inside '{local_series_path}' "
                             f"(candidate {candidate.id})"
                         )
+                        record_outcome(candidate.id, "failed", stage="validation")
                         failed += 1
                         continue
 
@@ -14507,6 +14618,7 @@ async def _move_series_candidates(
                     f"{candidate.id}: {e}",
                     exc_info=True,
                 )
+                record_outcome(candidate.id, "failed", error=e)
                 failed += 1
 
     await _best_effort_sonarr_refresh(
@@ -14518,6 +14630,70 @@ async def _move_series_candidates(
 
 
 async def _run_playback_guarded_candidates(
+    candidate_ids: list[int],
+    *,
+    approved_by: str,
+    moving: bool,
+    playback_guard: PlaybackGuard | None = None,
+) -> CandidateOperationResult:
+    correlation = str(uuid4())
+    token = current_operation_id.set(correlation)
+    recorder = OperationRecorder(action="move" if moving else "delete")
+    recorder_token = current_operation_recorder.set(recorder)
+    candidate_token = current_candidates.set(())
+    group_token = current_group.set(())
+    snapshots = []
+    try:
+        try:
+            async with async_db() as db:
+                rows = (
+                    await db.scalars(
+                        select(ReclaimCandidate)
+                        .where(ReclaimCandidate.id.in_(candidate_ids[:1000]))
+                        .limit(1000)
+                    )
+                ).all()
+                snapshots = [fields for row in rows if (fields := target_fields(row))]
+        except Exception:
+            LOG.warning("Support operation targets could not be captured")
+        operation = "move" if moving else "delete"
+        await record_operations(snapshots, correlation, operation + "_started")
+        LOG.info("Support file operation started")
+        try:
+            result = await _run_playback_guarded_candidates_impl(
+                candidate_ids,
+                approved_by=approved_by,
+                moving=moving,
+                playback_guard=playback_guard,
+            )
+        except Exception as exc:
+            await record_operations(snapshots, correlation, operation + "_failed", exc)
+            raise
+        # The operation returns aggregate counts, so do not claim per-item success.
+        event = operation + (
+            "_batch_partial"
+            if result.failed or result.deferrals
+            else "_batch_completed"
+        )
+        await record_operations(snapshots, correlation, event)
+        for candidate_id in result.deferrals:
+            record_outcome(candidate_id, "deferred", stage="playback_guard")
+        LOG.info("Support file operation finished")
+        return result
+    finally:
+        try:
+            for snapshot in snapshots:
+                if snapshot["candidate_id"] not in recorder.outcomes:
+                    record_outcome(snapshot["candidate_id"], "unknown")
+            await persist_operation_details(snapshots, correlation, recorder)
+        finally:
+            current_group.reset(group_token)
+            current_candidates.reset(candidate_token)
+            current_operation_recorder.reset(recorder_token)
+            current_operation_id.reset(token)
+
+
+async def _run_playback_guarded_candidates_impl(
     candidate_ids: list[int],
     *,
     approved_by: str,
@@ -14633,6 +14809,8 @@ async def _run_playback_guarded_candidates(
         token = current_playback_operation.set(
             None if file_free else PlaybackOperation(guard, target)
         )
+        support_group_token = current_group.set(tuple(allowed[:1000]))
+        support_candidate_token = current_candidates.set(tuple(allowed[:1000]))
         try:
             succeeded, failed = await run(allowed, approved_by=approved_by)
             result.succeeded += succeeded
@@ -14652,6 +14830,8 @@ async def _run_playback_guarded_candidates(
             result.succeeded += len(set(allowed) - remaining)
             result.deferrals.update({cid: exc.detail.as_dict() for cid in remaining})
         finally:
+            current_candidates.reset(support_candidate_token)
+            current_group.reset(support_group_token)
             current_playback_operation.reset(token)
     if result.deferrals:
         async with async_db() as db:

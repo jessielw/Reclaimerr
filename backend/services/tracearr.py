@@ -5,9 +5,10 @@ import re
 from collections.abc import Mapping
 from time import monotonic
 from typing import Any
+from urllib.parse import quote
 
 import niquests
-from niquests.exceptions import ReadTimeout
+from niquests.exceptions import HTTPError, ReadTimeout
 from tenacity import (
     retry,
     retry_if_exception,
@@ -116,6 +117,14 @@ class TracearrClient:
 
     async def get_openapi_document(self) -> dict[str, object]:
         return await self._make_request("docs")
+
+    async def get_media(self, ref: str) -> Mapping[str, object] | None:
+        try:
+            return await self._make_request(f"media/{quote(ref, safe='')}")
+        except HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            raise
 
     async def get_libraries(self) -> list[Mapping[str, object]]:
         payload = await self._make_request("libraries")

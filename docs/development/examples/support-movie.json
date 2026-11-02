@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "report_kind": "media",
+  "report_id": "25a6a47a-62f7-4fe3-8e72-5c75daae662b",
+  "generated_at": "2026-11-01T22:29:53.553224Z",
+  "app": {
+    "version": "0.6.5",
+    "python": "3.11.13",
+    "platform": "Windows",
+    "deployment": "source_or_package"
+  },
+  "target": {
+    "scope": "movie_version",
+    "id": 1
+  },
+  "summary": [
+    "Movie Version: Example Movie",
+    "Stored data only; no providers contacted or rules rerun.",
+    "Review titles and playback information before sharing.",
+    "Freshness is flagged stale after 24 hours; observation timestamps are included.",
+    "1 enabled services; 0 selected history sources have a recorded failure.",
+    "Native playback: available. Imported playback: not configured; missing history does not mean zero plays.",
+    "Included recorded decisions: 0 candidates, 0 protections, 0 deletion requests."
+  ],
+  "sections": {
+    "database": null,
+    "services": [
+      {
+        "id": 1,
+        "alias": "server-1",
+        "service": "plex",
+        "enabled": true,
+        "is_main": true,
+        "last_synced_at": null,
+        "selected_provider": null,
+        "selection_preference": "automatic",
+        "provider_config_id": null,
+        "remote_server": null,
+        "selection_state": "not_configured",
+        "native_refresh": {
+          "state": "available",
+          "available": true,
+          "last_attempt_at": "2026-11-01T22:29:53.480491Z",
+          "last_success_at": "2026-11-01T22:29:53.480491Z",
+          "last_event_at": null,
+          "imported_events": null,
+          "format_version": 2,
+          "aggregate_format_version": null,
+          "error": null
+        },
+        "history_refresh": {
+          "state": "not_configured",
+          "available": null,
+          "last_attempt_at": null,
+          "last_success_at": null,
+          "last_event_at": null,
+          "imported_events": null,
+          "format_version": null,
+          "aggregate_format_version": null,
+          "error": null
+        }
+      }
+    ],
+    "libraries": null,
+    "configuration": {
+      "path_mappings": [
+        {
+          "source": "path-1",
+          "destination": "path-2",
+          "service": null,
+          "server_id": 1
+        }
+      ],
+      "move_destination_movies": null,
+      "move_destination_series": null,
+      "active_playback_protection_enabled": true,
+      "playback_unavailable_protection_enabled": true,
+      "media_server_fallback_enabled": true,
+      "auto_delete_movie_delay_days": 14,
+      "auto_delete_series_delay_days": 7,
+      "playback_movie_min_seconds": 15,
+      "playback_episode_min_seconds": 7
+    },
+    "schedules": null,
+    "recent_runs": null,
+    "active_jobs": null,
+    "identity": {
+      "id": 1,
+      "scope": "movie_version",
+      "title": "Example Movie",
+      "parent_title": null,
+      "tmdb_id": 123456,
+      "tvdb_id": null,
+      "imdb_id": null,
+      "movie_id": 1,
+      "series_id": null,
+      "season_id": null,
+      "season_number": null,
+      "episode_number": null,
+      "removed_at": null,
+      "size": 2147483648,
+      "video_width": 1920,
+      "video_height": 1080,
+      "path": "path-3",
+      "view_count": null,
+      "last_viewed_at": null,
+      "updated_at": "2026-11-01T22:29:53Z"
+    },
+    "children": [],
+    "storage": [
+      {
+        "id": 1,
+        "kind": "movie_version",
+        "service": "plex",
+        "server_id": 1,
+        "item": "item-1",
+        "library": "library-1",
+        "library_source_id": "library-reference-1",
+        "path": "path-3",
+        "mapped_paths": [
+          "path-3",
+          "path-4"
+        ],
+        "size": 2147483648,
+        "updated_at": "2026-11-01T22:29:53Z",
+        "reachability": "not_collected"
+      }
+    ],
+    "playback": {
+      "native_state": "available",
+      "imported_state": "not_configured",
+      "note": "Stored aggregates are not recomputed for the selected provider. Missing rows and unmatched history are unknown, not zero. Event samples are evidence, not a complete rule evaluation. Event links identify the movie, not the file version played.",
+      "aggregates": [
+        {
+          "kind": "native",
+          "target": {
+            "scope": "movie_version",
+            "id": 1
+          },
+          "server_id": 1,
+          "state": "available",
+          "play_count": 3,
+          "unique_user_count": 1,
+          "last_activity_at": null,
+          "refreshed_at": "2026-11-01T22:29:53Z",
+          "total_duration_seconds": null,
+          "note": "Stored native snapshot."
+        }
+      ],
+      "events": [],
+      "stored_event_count": 0,
+      "unmatched_event_count": null,
+      "coverage_note": "Counts describe persisted foreign-key matches, not a new identity reconciliation."
+    },
+    "decisions": {
+      "basis": "Recorded state only. Candidate creation/update times are not a rule execution trace; exact scan time and missing prerequisites were not persisted. Parent and child scopes are explicit.",
+      "candidates": [],
+      "rules": [],
+      "protections": [],
+      "deletion_requests": [],
+      "protection_requests": []
+    }
+  },
+  "collection": {
+    "started_at": "2026-11-01T22:29:53.553224Z",
+    "completed_at": "2026-11-01T22:29:53.556238Z",
+    "partial": false,
+    "budget_seconds": 5.0,
+    "max_bytes": 524288,
+    "observations": [
+      {
+        "section": "services",
+        "observed_at": "2026-11-01T22:29:53.553224Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "configuration",
+        "observed_at": "2026-11-01T22:29:53.554728Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "identity",
+        "observed_at": "2026-11-01T22:29:53.554728Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "children",
+        "observed_at": "2026-11-01T22:29:53.554728Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "storage",
+        "observed_at": "2026-11-01T22:29:53.554728Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "playback",
+        "observed_at": "2026-11-01T22:29:53.556238Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "decisions",
+        "observed_at": "2026-11-01T22:29:53.556238Z",
+        "state": "available",
+        "reason": null
+      }
+    ],
+    "truncated": [],
+    "omitted": [],
+    "children_offset": 0,
+    "children_total": null
+  },
+  "sharing": {
+    "file_paths_included": false,
+    "masked_categories": [
+      "accounts",
+      "servers",
+      "libraries",
+      "addresses",
+      "free_text",
+      "rule_text_literals",
+      "file_paths"
+    ],
+    "notice": "Includes media titles, canonical IDs and playback information. Review before sharing. Nothing is uploaded automatically."
+  }
+}

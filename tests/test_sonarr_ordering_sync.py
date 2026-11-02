@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+from contextlib import closing
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,10 +26,11 @@ from backend.tasks import sync
 
 @pytest.mark.parametrize("sonarr_order", ["dvd", "aired", None])
 def test_sync_clears_stale_numbered_data_when_order_is_incompatible(
-    monkeypatch, sonarr_order
+    monkeypatch, sonarr_order, tmp_path
 ):
     async def run():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        db_path = tmp_path / "ordering.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -93,6 +96,18 @@ def test_sync_clears_stale_numbered_data_when_order_is_incompatible(
                 )
             ],
         )
+        probes = []
+
+        async def sonarr_episode_order(*_args, **_kwargs):
+            with closing(sqlite3.connect(db_path, timeout=0.1)) as other:
+                try:
+                    other.execute("UPDATE service_configs SET name = name")
+                    other.commit()
+                    probes.append(None)
+                except sqlite3.OperationalError as exc:
+                    probes.append(str(exc))
+            return sonarr_order
+
         sonarr = SimpleNamespace(
             get_all_series=AsyncMock(
                 return_value=[
@@ -102,7 +117,7 @@ def test_sync_clears_stale_numbered_data_when_order_is_incompatible(
                 ]
             ),
             get_tags=AsyncMock(return_value=[SimpleNamespace(id=7, label="keep")]),
-            get_series_episode_order=AsyncMock(return_value=sonarr_order),
+            get_series_episode_order=AsyncMock(side_effect=sonarr_episode_order),
             get_episode_sync_data=AsyncMock(
                 return_value=SonarrEpisodeSyncData(
                     file_dates={(1, 1): new_date}, episode_numbers_by_season={1: {1}}
@@ -126,6 +141,9 @@ def test_sync_clears_stale_numbered_data_when_order_is_incompatible(
         monkeypatch.setattr(sync, "_update_series_tmdb_metadata", AsyncMock())
         try:
             assert await sync.sync_series(allow_soft_delete=False) == {123}
+            assert probes == [None], (
+                "Sonarr HTTP ran while the database writer was held"
+            )
             async with factory() as db:
                 stored_series = await db.get(Series, series.id)
                 stored_season = await db.scalar(select(Season))

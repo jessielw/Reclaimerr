@@ -8,6 +8,11 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any, Final, TypeAlias, cast
 
+from backend.core.diagnostic_trace import (
+    bounded_value,
+    capture_evaluation,
+    current_scan,
+)
 from backend.core.playback_history_fields import (
     HISTORY_FIELD_LABELS,
     HISTORY_RULE_FIELDS,
@@ -2081,7 +2086,25 @@ def evaluate_advanced_rule(
     )
     matched: dict[str, Any] = {}
     reasons: list[dict[str, Any]] = []
-    if not _evaluate_node(root, context, matched, reasons):
+    if current_scan.get() is not None:
+        context["_support_conditions"] = {}
+        context["_support_definition"] = definition
+    outcome = _evaluate_node(root, context, matched, reasons)
+    capture_evaluation(
+        rule,
+        target_scope,
+        {
+            "movie": movie,
+            "movie_version": version,
+            "series": series,
+            "season": season,
+            "episode": episode,
+        },
+        context,
+        outcome,
+        RULE_VALUE_UNAVAILABLE,
+    )
+    if not outcome:
         return False, {}, []
     return True, matched, reasons
 
@@ -2114,7 +2137,120 @@ def evaluate_advanced_rule_state(
         episode,
         _rule_uses_disk_fields(definition),
     )
-    return _evaluate_node_state(root, context)
+    if current_scan.get() is not None:
+        context["_support_conditions"] = {}
+        context["_support_definition"] = definition
+    outcome = _evaluate_node_state(root, context)
+    capture_evaluation(
+        rule,
+        target_scope,
+        {
+            "movie": movie,
+            "movie_version": version,
+            "series": series,
+            "season": season,
+            "episode": episode,
+        },
+        context,
+        outcome,
+        RULE_VALUE_UNAVAILABLE,
+    )
+    return outcome
+
+
+def explain_advanced_rule(
+    rule: ReclaimRule,
+    *,
+    target_scope: str,
+    movie: Movie | None = None,
+    version: MovieVersion | None = None,
+    series: Series | None = None,
+    season: Season | None = None,
+    episode: Episode | None = None,
+) -> dict[str, Any]:
+    """Explain every condition using the same context and operators as a scan.
+
+    Unlike the normal boolean evaluator, explanations visit all enabled branches.
+    Unknown external values remain distinct from ordinary failed comparisons.
+    """
+    definition = normalize_rule_definition(rule)
+    validate_rule_definition(definition, target_scope=target_scope)
+    assert definition is not None
+    context = _build_context(
+        target_scope,
+        movie,
+        version,
+        series,
+        season,
+        episode,
+        _rule_uses_disk_fields(definition),
+    )
+    context["_support_conditions"] = {}
+
+    def walk(node: dict[str, Any], disabled: bool = False) -> dict[str, Any]:
+        disabled = disabled or _node_is_disabled(node)
+        result: dict[str, Any] = {"type": node["type"], "state": "disabled"}
+        if node["type"] == "group":
+            children = [walk(child, disabled) for child in node.get("children", [])]
+            op = str(node.get("op", "and")).lower()
+            result.update(op=op, children=children)
+            if not disabled:
+                states = [
+                    child["state"] for child in children if child["state"] != "disabled"
+                ]
+                if not states:
+                    result["state"] = "pass"
+                elif op == "and":
+                    result["state"] = (
+                        "fail"
+                        if "fail" in states
+                        else "unknown"
+                        if "unknown" in states
+                        else "pass"
+                    )
+                else:
+                    result["state"] = (
+                        "pass"
+                        if "pass" in states
+                        else "unknown"
+                        if "unknown" in states
+                        else "fail"
+                    )
+            return result
+        actual: Any = None
+        if not disabled:
+            state = _evaluate_node_state(node, context)
+            actual = context["_support_conditions"][id(node)][1]
+            result["state"] = (
+                "unknown" if state is None else "pass" if state else "fail"
+            )
+        field = str(node.get("field", ""))
+        operator = str(node.get("operator", ""))
+        # Failed per-user comparisons have no single matching total. Show every
+        # selected user's total so failures have useful actual values too.
+        if not disabled and field in USER_SCOPED_PLAYBACK_FIELDS:
+            totals = context.get(field)
+            expected = node.get("value")
+            if isinstance(totals, dict) and isinstance(expected, dict):
+                actual = {
+                    username: max(
+                        totals.get(alias, 0)
+                        for alias in {username, *_expand_playback_username(username)}
+                    )
+                    for name in expected.get("usernames", [])
+                    if (username := str(name).strip().casefold())
+                }
+        result.update(
+            field=field,
+            label=FIELD_LABELS.get(field, field),
+            operator=operator,
+            operator_label=OPERATOR_LABELS.get(operator, operator),
+            expected=bounded_value(node.get("value")),
+            actual=None if actual is RULE_VALUE_UNAVAILABLE else bounded_value(actual),
+        )
+        return result
+
+    return walk(definition["root"])
 
 
 def _evaluate_user_scoped_condition(
@@ -2199,18 +2335,25 @@ def _evaluate_node_state(
     actual = context.get(field)
     operator = str(node.get("operator", ""))
     if field in USER_SCOPED_PLAYBACK_FIELDS:
-        state, _value = _evaluate_user_scoped_condition(
+        state, value = _evaluate_user_scoped_condition(
             actual, node.get("value"), operator, field=field
         )
+        if "_support_conditions" in context:
+            context["_support_conditions"][id(node)] = (state, value)
         return state
     if actual is RULE_VALUE_UNAVAILABLE:
+        if "_support_conditions" in context:
+            context["_support_conditions"][id(node)] = (None, actual)
         return None
-    return _matches_operator(
+    state = _matches_operator(
         actual,
         operator,
         node.get("value"),
         field=field,
     )
+    if "_support_conditions" in context:
+        context["_support_conditions"][id(node)] = (state, actual)
+    return state
 
 
 def _rule_uses_disk_fields(definition: RuleDefinition | None) -> bool:
@@ -3477,10 +3620,19 @@ def _evaluate_condition(
             actual, expected, operator, field=field
         )
         expected = expected.get("amount") if isinstance(expected, dict) else None
+        if "_support_conditions" in context:
+            context["_support_conditions"][id(condition)] = (state, actual)
         if not state:
             return False
-    elif not _matches_operator(actual, operator, expected, field=field):
-        return False
+    else:
+        state = _matches_operator(actual, operator, expected, field=field)
+        if "_support_conditions" in context:
+            context["_support_conditions"][id(condition)] = (
+                None if actual is RULE_VALUE_UNAVAILABLE else state,
+                actual,
+            )
+        if not state:
+            return False
     matched[field] = actual.isoformat() if isinstance(actual, datetime) else actual
     reason = _build_reason_condition(field, operator, expected, actual, context)
     if field in HISTORY_RULE_FIELDS:

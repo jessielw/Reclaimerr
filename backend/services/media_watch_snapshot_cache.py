@@ -9,7 +9,7 @@ from time import monotonic
 from typing import Any
 
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
@@ -39,6 +39,29 @@ from backend.services.media_identity import (
 )
 from backend.services.plex import PlexService
 from backend.user_types import MEDIA_SERVERS
+
+
+def _snapshot_insert_values(
+    rows: Sequence[
+        MediaWatchUser
+        | MediaWatchUserEpisode
+        | NativePlaybackUser
+        | NativePlaybackAggregate
+    ],
+) -> list[dict[str, Any]]:
+    """Materialize snapshot values without requesting unused generated ids.
+
+    Snapshot builders fill every input field. Primary keys and server-generated
+    timestamps belong to the new rows, so leave those to SQLite.
+    """
+    if not rows:
+        return []
+    keys = [
+        column.key
+        for column in rows[0].__table__.columns
+        if not column.primary_key and column.server_default is None
+    ]
+    return [{key: getattr(row, key) for key in keys} for row in rows]
 
 
 @dataclass(slots=True)
@@ -1432,6 +1455,17 @@ class MediaWatchSnapshotCache:
                                 await self._load_native_playback_targets(session),
                                 [*other_native_rows, *native_rows],
                             )
+                        # Prepare bulk inserts before acquiring the writer. The
+                        # generated row ids are unused; ORM add_all() otherwise
+                        # performs a separate INSERT ... RETURNING for each row.
+                        watch_values = _snapshot_insert_values(
+                            watch_rows_to_write or []
+                        )
+                        episode_values = _snapshot_insert_values(
+                            episode_rows_to_write or []
+                        )
+                        native_values = _snapshot_insert_values(native_rows)
+                        aggregate_values = _snapshot_insert_values(aggregate_rows)
                         # End the read transaction so the write below starts clean.
                         await session.commit()
 
@@ -1445,7 +1479,12 @@ class MediaWatchSnapshotCache:
                                     == config.id,
                                 )
                             )
-                            session.add_all(watch_rows_to_write)
+                            if watch_values:
+                                await session.execute(
+                                    insert(MediaWatchUser),
+                                    watch_values,
+                                    execution_options={"render_nulls": True},
+                                )
                         if episode_rows_to_write is not None:
                             await session.execute(
                                 sql_delete(MediaWatchUserEpisode).where(
@@ -1455,7 +1494,12 @@ class MediaWatchSnapshotCache:
                                     == config.id,
                                 )
                             )
-                            session.add_all(episode_rows_to_write)
+                            if episode_values:
+                                await session.execute(
+                                    insert(MediaWatchUserEpisode),
+                                    episode_values,
+                                    execution_options={"render_nulls": True},
+                                )
                         if is_native:
                             await session.execute(
                                 sql_delete(NativePlaybackUser).where(
@@ -1465,9 +1509,19 @@ class MediaWatchSnapshotCache:
                                     == config.id,
                                 )
                             )
-                            session.add_all(native_rows)
+                            if native_values:
+                                await session.execute(
+                                    insert(NativePlaybackUser),
+                                    native_values,
+                                    execution_options={"render_nulls": True},
+                                )
                             await session.execute(sql_delete(NativePlaybackAggregate))
-                            session.add_all(aggregate_rows)
+                            if aggregate_values:
+                                await session.execute(
+                                    insert(NativePlaybackAggregate),
+                                    aggregate_values,
+                                    execution_options={"render_nulls": True},
+                                )
                             self._set_native_playback_sync_state(
                                 config,
                                 available=True,

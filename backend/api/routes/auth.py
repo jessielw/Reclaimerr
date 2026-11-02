@@ -26,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auth import (
     COOKIE_NAME,
-    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     SESSION_TOUCH_BUSY_TIMEOUT_MS,
     SESSION_TTL_SECONDS,
     build_session_expires_at,
@@ -1192,6 +1191,7 @@ async def logout(
             payload = decode_token(token)
             session_id = get_session_id_from_payload(payload)
             if session_id is not None:
+                # Reset by the pool on checkout, including after commit/rollback.
                 await db.execute(
                     text(f"PRAGMA busy_timeout={SESSION_TOUCH_BUSY_TIMEOUT_MS}")
                 )
@@ -1212,13 +1212,6 @@ async def logout(
         except Exception:
             await db.rollback()
             LOG.debug("Failed to revoke session during logout", exc_info=True)
-        finally:
-            try:
-                await db.execute(
-                    text(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
-                )
-            except Exception:
-                LOG.debug("Failed to restore SQLite busy timeout", exc_info=True)
 
     response.delete_cookie(
         key=COOKIE_NAME,

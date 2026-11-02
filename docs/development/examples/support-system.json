@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "report_kind": "system",
+  "report_id": "b373857c-ba3b-4cc9-a19d-adbb7331f45f",
+  "generated_at": "2026-11-01T22:29:53.550219Z",
+  "app": {
+    "version": "0.6.5",
+    "python": "3.11.13",
+    "platform": "Windows",
+    "deployment": "source_or_package"
+  },
+  "target": null,
+  "summary": [
+    "Stored data only; no providers contacted or rules rerun.",
+    "Review titles and playback information before sharing.",
+    "Freshness is flagged stale after 24 hours; observation timestamps are included.",
+    "1 enabled services; 0 selected history sources have a recorded failure.",
+    "0 queued or running jobs included."
+  ],
+  "sections": {
+    "database": {
+      "sqlite_version": "3.50.4",
+      "migration_revisions": [
+        "example_revision"
+      ],
+      "journal_mode": "delete",
+      "query_only": 1,
+      "busy_timeout": 100,
+      "foreign_keys": 0,
+      "synchronous": 2,
+      "database_bytes": 978944,
+      "wal_bytes": null,
+      "connection_scope": "Dedicated read-only diagnostics connection; PRAGMAs do not describe application pool connections."
+    },
+    "services": [
+      {
+        "id": 1,
+        "alias": "server-1",
+        "service": "plex",
+        "enabled": true,
+        "is_main": true,
+        "last_synced_at": null,
+        "selected_provider": null,
+        "selection_preference": "automatic",
+        "provider_config_id": null,
+        "remote_server": null,
+        "selection_state": "not_configured",
+        "native_refresh": {
+          "state": "available",
+          "available": true,
+          "last_attempt_at": "2026-11-01T22:29:53.480491Z",
+          "last_success_at": "2026-11-01T22:29:53.480491Z",
+          "last_event_at": null,
+          "imported_events": null,
+          "format_version": 2,
+          "aggregate_format_version": null,
+          "error": null
+        },
+        "history_refresh": {
+          "state": "not_configured",
+          "available": null,
+          "last_attempt_at": null,
+          "last_success_at": null,
+          "last_event_at": null,
+          "imported_events": null,
+          "format_version": null,
+          "aggregate_format_version": null,
+          "error": null
+        }
+      }
+    ],
+    "libraries": [
+      {
+        "id": 1,
+        "alias": "library-1",
+        "source_id": "library-reference-1",
+        "server_id": 1,
+        "selected": true,
+        "media_type": "movie"
+      }
+    ],
+    "configuration": {
+      "path_mappings": [
+        {
+          "source": "path-1",
+          "destination": "path-2",
+          "service": null,
+          "server_id": 1
+        }
+      ],
+      "move_destination_movies": null,
+      "move_destination_series": null,
+      "active_playback_protection_enabled": true,
+      "playback_unavailable_protection_enabled": true,
+      "media_server_fallback_enabled": true,
+      "auto_delete_movie_delay_days": 14,
+      "auto_delete_series_delay_days": 7,
+      "playback_movie_min_seconds": 15,
+      "playback_episode_min_seconds": 7
+    },
+    "schedules": [],
+    "recent_runs": [],
+    "active_jobs": [],
+    "identity": null,
+    "children": null,
+    "storage": null,
+    "playback": {
+      "native_state": "unknown",
+      "imported_state": "unknown",
+      "note": "Stored aggregates are not recomputed for the selected provider. Missing rows and unmatched history are unknown, not zero. Event samples are evidence, not a complete rule evaluation.",
+      "aggregates": [],
+      "events": [],
+      "stored_event_count": 0,
+      "unmatched_event_count": 0,
+      "coverage_note": "Counts describe persisted foreign-key matches, not a new identity reconciliation."
+    },
+    "decisions": null
+  },
+  "collection": {
+    "started_at": "2026-11-01T22:29:53.550219Z",
+    "completed_at": "2026-11-01T22:29:53.553224Z",
+    "partial": false,
+    "budget_seconds": 5.0,
+    "max_bytes": 524288,
+    "observations": [
+      {
+        "section": "services",
+        "observed_at": "2026-11-01T22:29:53.551224Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "configuration",
+        "observed_at": "2026-11-01T22:29:53.552223Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "database",
+        "observed_at": "2026-11-01T22:29:53.552223Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "libraries",
+        "observed_at": "2026-11-01T22:29:53.553224Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "schedules",
+        "observed_at": "2026-11-01T22:29:53.553224Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "active_jobs",
+        "observed_at": "2026-11-01T22:29:53.553224Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "recent_runs",
+        "observed_at": "2026-11-01T22:29:53.553224Z",
+        "state": "available",
+        "reason": null
+      },
+      {
+        "section": "playback",
+        "observed_at": "2026-11-01T22:29:53.553224Z",
+        "state": "available",
+        "reason": null
+      }
+    ],
+    "truncated": [],
+    "omitted": [],
+    "children_offset": 0,
+    "children_total": null
+  },
+  "sharing": {
+    "file_paths_included": false,
+    "masked_categories": [
+      "accounts",
+      "servers",
+      "libraries",
+      "addresses",
+      "free_text",
+      "rule_text_literals",
+      "file_paths"
+    ],
+    "notice": "Includes media titles, canonical IDs and playback information. Review before sharing. Nothing is uploaded automatically."
+  }
+}

@@ -1972,6 +1972,18 @@ async def sync_movies(
                     existing_movie = existing_movies[tmdb_id]
                     matched_row_ids.add(existing_movie.id)
 
+                    # Finish the preceding batch before waiting on TMDb. No
+                    # SQLite write lock should span a provider network request.
+                    if _needs_metadata_refresh(existing_movie, MediaType.MOVIE):
+                        await session.commit()
+                        batch_count += 1
+                        LOG.debug(
+                            f"Refreshing TMDB metadata for {movie.name} ({tmdb_id})"
+                        )
+                        await _update_movie_tmdb_metadata(
+                            existing_movie, tmdb_id, tmdb_service
+                        )
+
                     # update added_at if available
                     if earliest_added:
                         existing_movie.added_at = earliest_added
@@ -1993,15 +2005,6 @@ async def sync_movies(
                             f"Restored soft-deleted movie: {movie.name} ({tmdb_id})"
                         )
 
-                    # refresh TMDB metadata if needed
-                    if _needs_metadata_refresh(existing_movie, MediaType.MOVIE):
-                        LOG.debug(
-                            f"Refreshing TMDB metadata for {movie.name} ({tmdb_id})"
-                        )
-                        await _update_movie_tmdb_metadata(
-                            existing_movie, tmdb_id, tmdb_service
-                        )
-
                     # upsert per-file versions
                     await _upsert_movie_versions(
                         session, existing_movie, movie.versions
@@ -2020,6 +2023,12 @@ async def sync_movies(
                             f"Movie '{movie.name}' not found by tmdb_id ({tmdb_id}) but matched "
                             f"existing record by imdb_id ({imdb_id}) - updating instead of inserting"
                         )
+                        if _needs_metadata_refresh(existing_movie, MediaType.MOVIE):
+                            await session.commit()
+                            batch_count += 1
+                            await _update_movie_tmdb_metadata(
+                                existing_movie, tmdb_id, tmdb_service
+                            )
                         if earliest_added:
                             existing_movie.added_at = earliest_added
                         if _apply_media_server_watch(
@@ -2036,10 +2045,6 @@ async def sync_movies(
                             existing_movie.removed_at = None
                             LOG.info(
                                 f"Restored soft-deleted movie: {movie.name} ({tmdb_id})"
-                            )
-                        if _needs_metadata_refresh(existing_movie, MediaType.MOVIE):
-                            await _update_movie_tmdb_metadata(
-                                existing_movie, tmdb_id, tmdb_service
                             )
                         await _upsert_movie_versions(
                             session, existing_movie, movie.versions
@@ -2061,6 +2066,8 @@ async def sync_movies(
                         if earliest_added:
                             new_movie.added_at = earliest_added
 
+                        await session.commit()
+                        batch_count += 1
                         await _update_movie_tmdb_metadata(
                             new_movie, tmdb_id, tmdb_service
                         )
@@ -2514,6 +2521,17 @@ async def sync_series(
                             f"be stored; this one will not appear in Reclaimerr."
                         )
                     matched_row_ids.add(existing_series_obj.id)
+                    # The previous series may already have flushed seasons and
+                    # episodes. Release its write lock before the TMDb request.
+                    if _needs_metadata_refresh(existing_series_obj, MediaType.SERIES):
+                        await session.commit()
+                        batch_count += 1
+                        LOG.debug(
+                            f"Refreshing TMDB metadata for {series.name} ({tmdb_id})"
+                        )
+                        await _update_series_tmdb_metadata(
+                            existing_series_obj, tmdb_id, tmdb_service
+                        )
                     # always update watch data, size, and file info from media server
                     existing_series_obj.size = series.size
                     media_rollup = _rollup_series_media_from_seasons(series.season_data)
@@ -2566,15 +2584,6 @@ async def sync_series(
                             f"Restored soft-deleted series: {series.name} ({tmdb_id})"
                         )
 
-                    # refresh TMDB metadata if needed
-                    if _needs_metadata_refresh(existing_series_obj, MediaType.SERIES):
-                        LOG.debug(
-                            f"Refreshing TMDB metadata for {series.name} ({tmdb_id})"
-                        )
-                        await _update_series_tmdb_metadata(
-                            existing_series_obj, tmdb_id, tmdb_service
-                        )
-
                     # sync season data
                     await _sync_seasons(
                         session,
@@ -2613,6 +2622,8 @@ async def sync_series(
                         new_series.added_at = series.added_at
 
                     # fetch TMDB metadata
+                    await session.commit()
+                    batch_count += 1
                     await _update_series_tmdb_metadata(
                         new_series, tmdb_id, tmdb_service
                     )
@@ -2723,14 +2734,7 @@ async def sync_series(
                     (config_id, all_series, tag_list, first_imports)
                 )
 
-            # refresh per instance Sonarr refs for active series
-            await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
             if sonarr_clients:
-                # purge legacy rows written before multi-arr support (service_config_id=0)
-                await session.execute(
-                    sql_delete(SeriesArrRef).where(SeriesArrRef.service_config_id == 0)
-                )
-
                 series_rows = (
                     await session.execute(
                         select(Series.id, Series.tmdb_id, Series.tvdb_id).where(
@@ -2770,13 +2774,9 @@ async def sync_series(
                 date_fetch_failed_series_ids: set[int] = set()
                 ordering = EpisodeOrderingSnapshot()
                 series_first_imports: dict[int, datetime] = {}
+                arr_refs: list[SeriesArrRef] = []
                 for config_id, all_series, tag_list, first_imports in sonarr_snapshots:
                     client = sonarr_clients[config_id]
-                    await session.execute(
-                        sql_delete(SeriesArrRef).where(
-                            SeriesArrRef.service_config_id == config_id
-                        )
-                    )
                     id_to_label: dict[int, str] = {t.id: t.label for t in tag_list}
                     matched_series = [
                         (arr_series, series_id)
@@ -2862,7 +2862,7 @@ async def sync_series(
                             if arr_series.path
                             else None
                         )
-                        session.add(
+                        arr_refs.append(
                             SeriesArrRef(
                                 series_id=series_id,
                                 service_config_id=config_id,
@@ -2877,6 +2877,17 @@ async def sync_series(
                             if label:
                                 series_tags.setdefault(series_id, set()).add(label)
 
+                # All Sonarr and media-server HTTP is finished. Replace refs and
+                # numbered data together without holding the writer while
+                # fetching episode ordering/inventory for subsequent servers.
+                await session.commit()
+                await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
+                await session.execute(
+                    sql_delete(SeriesArrRef).where(
+                        SeriesArrRef.service_config_id.in_([0, *sonarr_clients])
+                    )
+                )
+                session.add_all(arr_refs)
                 # write resolved tags and earliest import dates back to Series rows
                 for series_id in series_id_by_tmdb.values():
                     result_row = await session.get(Series, series_id)
@@ -2959,6 +2970,7 @@ async def sync_series(
                 await session.commit()
 
             else:
+                await _purge_orphaned_arr_refs(session, SeriesArrRef, Service.SONARR)
                 await session.execute(
                     sql_update(Season).values(sonarr_episode_numbers=None)
                 )

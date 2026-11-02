@@ -73,6 +73,7 @@ nav:
       - Community Rules: community-rules/index.md
       - Scripting Arr Changes: usage/scripting-arr-changes.md
       - Tasks: usage/tasks.md
+      - Support Diagnostics: usage/support-diagnostics.md
       - Dashboard Widgets: usage/dashboard-widgets.md
   - Deployment:
       - Docker: deployment/docker.md

@@ -198,6 +198,48 @@ class CompletionValueTests(unittest.TestCase):
             history_values([], completion_supported=False),
         )
 
+    def test_unmatched_history_preserves_only_provable_fields(self):
+        when = datetime(2025, 1, 2)
+        known = self.event(when, True)
+        for offset, completion, date_known in (
+            (-1, True, True),
+            (-1, None, True),
+            (0, None, True),
+            (1, True, False),
+            (1, None, False),
+            (1, False, True),
+        ):
+            with self.subTest(offset=offset, completion=completion):
+                uncertain = self.event(when + timedelta(days=offset), completion)
+                values = history_values(
+                    [known], completion_supported=True, uncertain_events=[uncertain]
+                )
+                self.assertTrue(values["playback_history.has_completed_watch"])
+                self.assertTrue(values["playback_history.has_activity"])
+                self.assertNotIn("playback_history.play_count", values)
+                self.assertNotIn("playback_history.total_duration_minutes", values)
+                self.assertNotIn("playback_history.unique_user_count", values)
+                self.assertEqual(
+                    "playback_history.last_completed_at" in values, date_known
+                )
+                self.assertEqual(
+                    "playback_history.days_since_last_completed" in values, date_known
+                )
+                self.assertEqual(
+                    "playback_history.last_activity_at" in values, offset <= 0
+                )
+
+    def test_unresolved_partial_play_can_prove_no_completion_but_not_no_activity(self):
+        values = history_values(
+            [],
+            completion_supported=True,
+            uncertain_events=[self.event(datetime(2025, 1, 1), False)],
+        )
+        self.assertFalse(values["playback_history.has_completed_watch"])
+        self.assertIsNone(values["playback_history.last_completed_at"])
+        self.assertNotIn("playback_history.has_activity", values)
+        self.assertNotIn("playback_history.play_count", values)
+
 
 class SelectedHistorySnapshotTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -526,9 +568,184 @@ class SelectedHistorySnapshotTests(unittest.IsolatedAsyncioTestCase):
             )
             await db.commit()
             snapshot = await load_selected_history_snapshot(db, self.refresh())
-            self.assertNotIn(
-                ("movie_version", self.version.id), snapshot.values_by_target
+            values = snapshot.values_by_target[("movie_version", self.version.id)]
+            self.assertNotIn("playback_history.play_count", values)
+            self.assertTrue(values["playback_history.has_completed_watch"])
+            self.assertNotIn("playback_history.days_since_last_completed", values)
+
+    async def test_unresolved_episode_does_not_hide_movie_history_for_either_provider(
+        self,
+    ):
+        async with self.sessions() as db:
+            for provider in (self.tautulli, self.tracearr):
+                with self.subTest(provider=provider.service_type):
+                    server = await db.get(ServiceConfig, self.plex.id)
+                    server.extra_settings = {
+                        "playback_history_provider": provider.service_type.value
+                    }
+                    prefix = "remote:" if provider is self.tracearr else ""
+                    known = self.event(provider, prefix + "known", datetime(2025, 1, 1))
+                    unknown = self.event(
+                        provider,
+                        prefix + "unknown",
+                        datetime(2026, 1, 1),
+                        item="removed-episode",
+                    )
+                    unknown.provider_media_type = "episode"
+                    db.add_all([known, unknown])
+                    await db.commit()
+                    refresh = PlaybackRefreshResult(
+                        [
+                            PlaybackProviderStatus(
+                                config_id=provider.id,
+                                provider=provider.service_type,
+                                observed_service=Service.PLEX,
+                                observed_config_id=self.plex.id,
+                                available=True,
+                            )
+                        ]
+                    )
+                    snapshot = await load_selected_history_snapshot(db, refresh)
+                    values = snapshot.values_by_target[
+                        ("movie_version", self.version.id)
+                    ]
+                    self.assertEqual(values["playback_history.play_count"], 1)
+                    self.assertTrue(values["playback_history.has_completed_watch"])
+                    self.assertEqual(
+                        values["playback_history.last_completed_at"], known.played_at
+                    )
+
+    async def test_unresolved_movie_does_not_hide_episode_rollups(self):
+        async with self.sessions() as db:
+            series = Series(title="Show", tmdb_id=300)
+            db.add(series)
+            await db.flush()
+            season = Season(series_id=series.id, season_number=1)
+            db.add(season)
+            await db.flush()
+            episode = Episode(
+                season_id=season.id, episode_number=1, plex_rating_key="ep-1"
             )
+            db.add(episode)
+            known = self.event(
+                self.tautulli, "known-episode", datetime(2025, 1, 1), item="ep-1"
+            )
+            known.provider_media_type = "episode"
+            db.add_all(
+                [
+                    known,
+                    self.event(
+                        self.tautulli,
+                        "unknown-movie",
+                        datetime(2026, 1, 1),
+                        item="removed",
+                    ),
+                ]
+            )
+            await db.commit()
+            snapshot = await load_selected_history_snapshot(db, self.refresh())
+            for scope, target in (
+                ("episode", episode),
+                ("season", season),
+                ("series", series),
+            ):
+                self.assertEqual(
+                    snapshot.values_by_target[(scope, target.id)][
+                        "playback_history.play_count"
+                    ],
+                    1,
+                )
+
+    async def test_reused_item_key_uses_retained_identity_on_the_same_server(self):
+        async with self.sessions() as db:
+            old_movie = Movie(title="Original movie", tmdb_id=999)
+            db.add(old_movie)
+            await db.flush()
+            old_version = MovieVersion(
+                movie_id=old_movie.id,
+                service=Service.PLEX,
+                service_item_id="new-key-for-original",
+                service_media_id="original-file",
+                library_id="lib",
+                library_name="Movies",
+            )
+            db.add(old_version)
+            old_play = self.event(
+                self.tautulli, "before-key-reuse", datetime(2025, 1, 1)
+            )
+            old_play.tmdb_id = 999
+            db.add(old_play)
+            await db.commit()
+            snapshot = await load_selected_history_snapshot(db, self.refresh())
+            self.assertEqual(
+                snapshot.values_by_target[("movie_version", self.version.id)][
+                    "playback_history.play_count"
+                ],
+                0,
+            )
+            self.assertEqual(
+                snapshot.values_by_target[("movie_version", old_version.id)][
+                    "playback_history.play_count"
+                ],
+                1,
+            )
+
+    async def test_unresolved_history_never_makes_an_unwatched_rule_match(self):
+        async with self.sessions() as db:
+            db.add(
+                self.event(
+                    self.tautulli, "unknown", datetime(2025, 1, 1), item="missing"
+                )
+            )
+            await db.commit()
+            snapshot = await load_selected_history_snapshot(db, self.refresh())
+            PlaybackHistoryResolver(snapshot.values_by_target).activate()
+            try:
+                for field, operator, value in (
+                    ("playback_history.play_count", "equals", 0),
+                    ("playback_history.has_completed_watch", "is_false", None),
+                    ("playback_history.last_completed_at", "not_exists", None),
+                ):
+                    rule = ReclaimRule(
+                        name="No unsafe deletion",
+                        media_type=MediaType.MOVIE,
+                        target_scope="movie_version",
+                        definition={
+                            "version": 1,
+                            "root": {
+                                "type": "condition",
+                                "field": field,
+                                "operator": operator,
+                                "value": value,
+                            },
+                        },
+                    )
+                    self.assertIsNone(
+                        evaluate_advanced_rule_state(
+                            rule,
+                            target_scope="movie_version",
+                            movie=self.movie,
+                            version=self.version,
+                        )
+                    )
+            finally:
+                PlaybackHistoryResolver({}).activate()
+
+    async def test_conflicted_identity_remains_unknown_even_with_a_matching_item_key(
+        self,
+    ):
+        async with self.sessions() as db:
+            event = self.event(self.tautulli, "conflict", datetime(2026, 1, 1))
+            event.tmdb_id = self.movie.tmdb_id
+            event.identity_evidence = {"conflict": True}
+            db.add(event)
+            await db.commit()
+            snapshot = await load_selected_history_snapshot(db, self.refresh())
+            values = snapshot.values_by_target.get(
+                ("movie_version", self.version.id), {}
+            )
+            self.assertNotIn("playback_history.play_count", values)
+            self.assertNotIn("playback_history.has_completed_watch", values)
 
     async def test_settings_roundtrip_preserves_preferences_and_invalidates_stale_state(
         self,
@@ -807,6 +1024,29 @@ class SelectedHistorySnapshotTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(
                 ("movie_version", other_version.id), partial.values_by_target
             )
+            # Unknown plays on the linked Plex must not hide the main Plex's totals.
+            db.add(
+                self.event(
+                    self.tracearr,
+                    "linked:missing",
+                    datetime(2026, 1, 1),
+                    server_id=linked.id,
+                    item="removed",
+                )
+            )
+            await db.commit()
+            snapshot = await load_selected_history_snapshot(db, refresh)
+            self.assertEqual(
+                snapshot.values_by_target[("movie_version", self.version.id)][
+                    "playback_history.play_count"
+                ],
+                1,
+            )
+            linked_values = snapshot.values_by_target[
+                ("movie_version", other_version.id)
+            ]
+            self.assertTrue(linked_values["playback_history.has_completed_watch"])
+            self.assertNotIn("playback_history.play_count", linked_values)
 
     async def test_mixed_rule_keeps_history_unavailability_and_its_error(self) -> None:
         from backend.tasks import cleanup

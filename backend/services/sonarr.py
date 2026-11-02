@@ -15,6 +15,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from backend.core.operation_diagnostics import observe_step
 from backend.core.utils.misc import as_int
 from backend.core.utils.request import format_http_failure, should_retry_on_status
 from backend.enums import Service
@@ -501,6 +502,12 @@ class SonarrClient:
             build_sonarr_series_from_dict(updated_series) for updated_series in data
         ]
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="sonarr",
+        reference="series_id",
+    )
     async def delete_series(
         self,
         series_id: int,
@@ -532,6 +539,12 @@ class SonarrClient:
                 f"Failed to delete series {series_id} (status: {status_code})"
             )
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="sonarr",
+        reference="series_ids",
+    )
     async def delete_series_bulk(
         self,
         series_ids: list[int],
@@ -557,6 +570,12 @@ class SonarrClient:
                 f"Failed to delete series {series_ids} (status: {status_code})"
             )
 
+    @observe_step(
+        "provider_unmonitor",
+        subject="provider_request",
+        provider="sonarr",
+        reference="series_ids",
+    )
     async def unmonitor_series(self, series_ids: list[int]) -> None:
         """Set multiple series to unmonitored so Sonarr won't queue re-downloads."""
         if not series_ids:
@@ -872,6 +891,12 @@ class SonarrClient:
             )
         return True
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="sonarr",
+        reference="season_number",
+    )
     async def delete_season_files(
         self,
         series_id: int,
@@ -1026,6 +1051,12 @@ class SonarrClient:
             )
         return [dict(entry) for entry in data if isinstance(entry, Mapping)]
 
+    @observe_step(
+        "provider_delete",
+        subject="provider_request",
+        provider="sonarr",
+        reference="episode_file_id",
+    )
     async def delete_episode_file(self, episode_file_id: int) -> None:
         """Delete a single episode file by its episode file ID.
 
@@ -1046,6 +1077,12 @@ class SonarrClient:
                 f"Failed to delete episode file {episode_file_id} (status: {status_code})"
             )
 
+    @observe_step(
+        "provider_unmonitor",
+        subject="provider_request",
+        provider="sonarr",
+        reference="episode_id",
+    )
     async def unmonitor_episode(self, episode_id: int) -> None:
         """Set a single episode to unmonitored in Sonarr.
 

@@ -1,5 +1,7 @@
 # Troubleshooting
 
+For a shareable snapshot, use an item's **Debug info** action or **Settings > About > Support diagnostics**. [Support diagnostics](../usage/support-diagnostics.md) explains masking, path opt-in, partial reports and what the stored evidence can establish. Reports require administrator access and are not uploaded automatically.
+
 ## Rules Not Working As Expected
 
 - Be sure you have all your services configured.
