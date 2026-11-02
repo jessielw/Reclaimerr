@@ -32,7 +32,9 @@ def _support_message(message: object) -> str:
     if job is not None:
         tags.append(f"job={job}")
     prefix = "[support " + " ".join(tags) + "] " if tags else ""
-    return prefix + str(message).strip()
+    # Keep untrusted names and error text from creating forged log entries.
+    # Escape only the message; logging still renders genuine tracebacks normally.
+    return (prefix + str(message).strip()).replace("\r", r"\r").replace("\n", r"\n")
 
 
 # Level names as they appear in an already formatted line. Used to keep a line
