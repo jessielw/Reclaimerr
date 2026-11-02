@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Toggling **Include file paths** updates the diagnostics preview without flashing or remounting the dialog.
 - Failed file-copy verification now preserves the useful size-mismatch error instead of trying to read the destination after removing the incomplete copy. The source file remains intact.
+- Substantially improved database locking.
 
 ## [0.6.5] - 2026-10-28
 
