@@ -71,3 +71,7 @@ updates:
       interval: weekly
     commit-message:
       prefix: chore
+    ignore:
+      # Review newer Python versions alongside pyproject.toml and uv.lock support.
+      - dependency-name: python
+        versions: [">=3.14"]
