@@ -72,7 +72,7 @@ PLAYBACK_EVENT_FORMAT_VERSION = 2
 # 2: events resolve against the server they were observed on rather than every
 # server of that type, so retained history has to be re-resolved and rebuilt.
 PLAYBACK_AGGREGATE_FORMAT_VERSION = 2
-TRACEARR_PLAYBACK_FORMAT_VERSION = 2
+TRACEARR_PLAYBACK_FORMAT_VERSION = 3
 NATIVE_PLAYBACK_STATE_KEY = "native_playback_sync"
 NATIVE_PLAYBACK_FORMAT_VERSION = 2
 NATIVE_PLAYBACK_FIELDS = frozenset(
@@ -326,6 +326,10 @@ class _NormalizedEvent:
     source_user_id: str | None
     source_username: str | None
     completed: bool | None = None
+    tmdb_id: int | None = None
+    season_number: int | None = None
+    episode_number: int | None = None
+    identity_evidence: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,6 +980,38 @@ def _tracearr_row_completed(row: Mapping[str, object]) -> bool | None:
     return None
 
 
+def _positive_id(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _identity_conflicted(event: PlaybackHistoryEvent | _NormalizedEvent) -> bool:
+    return bool((event.identity_evidence or {}).get("conflict"))
+
+
+def _history_identity_blocked(event: PlaybackHistoryEvent | _NormalizedEvent) -> bool:
+    evidence = event.identity_evidence or {}
+    return bool(evidence.get("conflict") or evidence.get("unverified"))
+
+
+def _has_stable_history_identity(
+    event: PlaybackHistoryEvent | _NormalizedEvent,
+) -> bool:
+    return (
+        not _history_identity_blocked(event)
+        and event.tmdb_id is not None
+        and (
+            event.provider_media_type == "movie"
+            or (event.season_number is not None and event.episode_number is not None)
+        )
+    )
+
+
 def _normalize_tracearr_events(
     rows: Iterable[Mapping[str, object]],
     usernames_by_identity: Mapping[str, str] | None,
@@ -1046,9 +1082,103 @@ def _normalize_tracearr_events(
                 source_user_id=user_id,
                 source_username=username,
                 completed=_tracearr_row_completed(row),
+                tmdb_id=_positive_id(row.get("tmdb_id"))
+                if media_type == "movie"
+                else None,
+                season_number=_parse_int(row.get("season_number"))
+                if media_type == "episode"
+                else None,
+                episode_number=_parse_int(row.get("episode_number"))
+                if media_type == "episode"
+                else None,
+                identity_evidence={
+                    "provenance": "tracearr_session",
+                    "unverified": media_type == "episode"
+                    and any(row.get(key) for key in ("tmdb_id", "imdb_id", "tvdb_id")),
+                    "session": {
+                        key: row[key]
+                        for key in (
+                            "tmdb_id",
+                            "imdb_id",
+                            "tvdb_id",
+                            "media_id",
+                            "show_media_id",
+                            "season_number",
+                            "episode_number",
+                        )
+                        if isinstance(row.get(key), (str, int))
+                        and not isinstance(row.get(key), bool)
+                    },
+                },
             )
         )
     return events
+
+
+async def _recover_tracearr_episode_identities(
+    events: list[_NormalizedEvent], client: TracearrClient
+) -> None:
+    """Trust a parent link only after independently identifying its episode.
+
+    Imported sessions may carry stale media/show links after rating-key reuse.
+    A session external ID must corroborate the canonical episode, with no
+    conflicting external IDs. Missing catalog records remain unresolved.
+    Transport failures abort the replay so the successful version is not advanced.
+    """
+    cache: dict[str, Mapping[str, object] | None] = {}
+
+    async def media(ref: str) -> Mapping[str, object] | None:
+        if ref not in cache:
+            cache[ref] = await client.get_media(ref)
+        return cache[ref]
+
+    for event in events:
+        if event.provider_media_type != "episode":
+            continue
+        evidence = dict(event.identity_evidence or {})
+        session = cast(dict[str, object], evidence.get("session", {}))
+        ref = str(session.get("media_id") or "")
+        ids = {
+            key: session[key]
+            for key in ("tmdb_id", "imdb_id", "tvdb_id")
+            if session.get(key)
+        }
+        if not ref or not ids:
+            continue
+        episode = await media(ref)
+        if episode is None:
+            continue
+        comparable = [key for key in ids if episode.get(key) is not None]
+        if episode.get("media_type") != "episode" or any(
+            str(ids[key]) != str(episode[key]) for key in comparable
+        ):
+            event.identity_evidence = {**evidence, "conflict": True}
+            continue
+        if not comparable:
+            continue
+        parent_ref = str(episode.get("show_media_id") or "")
+        if not parent_ref:
+            continue
+        if session.get("show_media_id") and str(session["show_media_id"]) != parent_ref:
+            event.identity_evidence = {**evidence, "conflict": True}
+            continue
+        show = await media(parent_ref)
+        if show is None:
+            continue
+        if show.get("media_type") != "show":
+            event.identity_evidence = {**evidence, "conflict": True}
+            continue
+        event.tmdb_id = _positive_id(show.get("tmdb_id"))
+        event.identity_evidence = {
+            **evidence,
+            "unverified": event.tmdb_id is None
+            or event.season_number is None
+            or event.episode_number is None,
+            "provenance": "tracearr_episode_parent",
+            "verified_episode_id": episode.get("id"),
+            "verified_show_id": show.get("id"),
+            "show_tmdb_id": event.tmdb_id,
+        }
 
 
 async def _identity_maps(
@@ -1259,6 +1389,12 @@ async def _upsert_events(
     movie_map, episode_map = await _identity_maps(
         session, observed_service, observed_config_id
     )
+    movies_by_tmdb = {identity[1]: identity for identity in movie_map.values()}
+    episodes_by_identity = {
+        identity[3:]: identity
+        for identities in episode_map.values()
+        for identity in identities
+    }
     existing_by_key: dict[str, PlaybackHistoryEvent] = {}
     keys = [event.source_event_key for event in events]
     for offset in range(0, len(keys), 500):
@@ -1275,15 +1411,87 @@ async def _upsert_events(
 
     new_values: list[dict[str, object]] = []
     for event in events:
+        existing = existing_by_key.get(event.source_event_key)
+        evidence = dict(event.identity_evidence or {})
+        if existing is not None:
+            # Never replace retained stable identity with today's reused item key.
+            if existing.tmdb_id is not None and (
+                existing.provider_media_type == "movie"
+                or (
+                    existing.season_number is not None
+                    and existing.episode_number is not None
+                )
+            ):
+                if _has_stable_history_identity(event) and (
+                    existing.tmdb_id,
+                    existing.season_number,
+                    existing.episode_number,
+                ) != (event.tmdb_id, event.season_number, event.episode_number):
+                    evidence = {
+                        **evidence,
+                        "conflict": True,
+                        "retained_tmdb_id": existing.tmdb_id,
+                        "retained_season_number": existing.season_number,
+                        "retained_episode_number": existing.episode_number,
+                    }
+                event.tmdb_id = existing.tmdb_id
+                event.season_number = existing.season_number
+                event.episode_number = existing.episode_number
+            if _identity_conflicted(existing):
+                evidence = {**evidence, "conflict": True}
+            if existing.provider_media_type != event.provider_media_type:
+                evidence = {
+                    **evidence,
+                    "conflict": True,
+                    "retained_media_type": existing.provider_media_type,
+                }
+        event.identity_evidence = evidence or None
         movie_id = series_id = season_id = episode_id = tmdb_id = None
         season_number = episode_number = None
-        if event.provider_media_type == "movie":
-            movie_identity = movie_map.get(event.source_item_id)
+        if _history_identity_blocked(event):
+            tmdb_id = event.tmdb_id
+            season_number, episode_number = event.season_number, event.episode_number
+        elif event.provider_media_type == "movie":
+            movie_identity = (
+                movies_by_tmdb.get(event.tmdb_id)
+                if event.tmdb_id is not None
+                else movie_map.get(event.source_item_id)
+            )
             if movie_identity:
                 movie_id, tmdb_id = movie_identity
+            else:
+                tmdb_id = event.tmdb_id
         else:
-            episode_identity = episode_map.get(event.source_item_id)
-            if episode_identity:
+            stable = (
+                episodes_by_identity.get(
+                    (event.tmdb_id, event.season_number, event.episode_number)
+                )
+                if event.tmdb_id is not None
+                and event.season_number is not None
+                and event.episode_number is not None
+                else None
+            )
+            direct = episode_map.get(event.source_item_id, [])
+            episode_identity = (
+                stable
+                if event.tmdb_id is not None
+                else next(
+                    (
+                        identity
+                        for identity in direct
+                        if (
+                            event.season_number is None
+                            or event.season_number == identity[4]
+                        )
+                        and (
+                            event.episode_number is None
+                            or event.episode_number == identity[5]
+                        )
+                    ),
+                    None,
+                )
+            )
+            if episode_identity is not None:
                 (
                     episode_id,
                     season_id,
@@ -1291,9 +1499,19 @@ async def _upsert_events(
                     tmdb_id,
                     season_number,
                     episode_number,
-                ) = episode_identity[0]
+                ) = episode_identity
+            else:
+                tmdb_id = event.tmdb_id
+                season_number, episode_number = (
+                    event.season_number,
+                    event.episode_number,
+                )
+                if direct and event.tmdb_id is None:
+                    evidence = {**evidence, "conflict": True}
 
-        existing = existing_by_key.get(event.source_event_key)
+        if tmdb_id is not None and event.tmdb_id is None:
+            evidence = {**evidence, "resolution": "server_item"}
+
         if existing is None:
             new_values.append(
                 {
@@ -1312,6 +1530,7 @@ async def _upsert_events(
                     "tmdb_id": tmdb_id,
                     "season_number": season_number,
                     "episode_number": episode_number,
+                    "identity_evidence": evidence or None,
                     "movie_id": movie_id,
                     "series_id": series_id,
                     "season_id": season_id,
@@ -1328,6 +1547,7 @@ async def _upsert_events(
         existing.duration_seconds = event.duration_seconds
         existing.completed = event.completed
         existing.source_user_id = event.source_user_id
+        existing.identity_evidence = evidence or existing.identity_evidence
         if event.source_username:
             existing.source_username = event.source_username
         if tmdb_id is not None:
@@ -1338,6 +1558,10 @@ async def _upsert_events(
             existing.series_id = series_id
             existing.season_id = season_id
             existing.episode_id = episode_id
+        else:
+            existing.movie_id = existing.series_id = existing.season_id = (
+                existing.episode_id
+            ) = None
     return await _insert_new_events(session, new_values)
 
 
@@ -1695,7 +1919,11 @@ def _set_tracearr_binding_state(
         "last_error": error,
         "imported_events": imported_events,
         "unfinished_event_keys": sorted(set(unfinished_event_keys)),
-        "format_version": TRACEARR_PLAYBACK_FORMAT_VERSION,
+        "format_version": (
+            TRACEARR_PLAYBACK_FORMAT_VERSION
+            if available
+            else previous.get("format_version", 0)
+        ),
         "observed_service": binding.observed_service.value,
         "service_config_id": binding.service_config_id,
     }
@@ -1796,6 +2024,9 @@ async def _refresh_tracearr_binding(
             client, binding.tracearr_server_id
         )
         state = _tracearr_binding_state(config, binding)
+        replay = (
+            _parse_int(state.get("format_version")) or 0
+        ) < TRACEARR_PLAYBACK_FORMAT_VERSION
         unfinished_raw = state.get("unfinished_event_keys")
         unresolved_unfinished = {
             str(value)
@@ -1847,7 +2078,9 @@ async def _refresh_tracearr_binding(
                 if row.get("stopped_at") is None:
                     current_unfinished.add(event_key)
 
-            if not next_cursor or (reached_known_history and not unresolved_unfinished):
+            if not next_cursor or (
+                not replay and reached_known_history and not unresolved_unfinished
+            ):
                 if not next_cursor and unresolved_unfinished:
                     LOG.warning(
                         "Tracearr no longer returned "
@@ -1869,6 +2102,7 @@ async def _refresh_tracearr_binding(
             episode_min_seconds=episode_min_seconds,
             skipped=skipped,
         )
+        await _recover_tracearr_episode_identities(events, client)
         if skipped:
             # Short plays are routine; anything else means Tracearr sent rows
             # Reclaimerr cannot attribute to media, which is worth surfacing.
@@ -2116,6 +2350,16 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
     resolved = 0
     async with async_db() as session:
         ownership = await load_media_identity_ownership(session)
+        # Blocked rows need provider evidence, not another current-key lookup.
+        # Exclude them before LIMIT so they cannot starve recoverable rows.
+        recoverable = and_(
+            func.coalesce(
+                PlaybackHistoryEvent.identity_evidence["conflict"].as_boolean(), False
+            ).is_(False),
+            func.coalesce(
+                PlaybackHistoryEvent.identity_evidence["unverified"].as_boolean(), False
+            ).is_(False),
+        )
         # Grouped by observed server, not just service type - two servers of the
         # same type hand out the same item ids, so each needs its own map.
         sources = (
@@ -2124,7 +2368,7 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
                     PlaybackHistoryEvent.observed_service,
                     PlaybackHistoryEvent.observed_service_config_id,
                 )
-                .where(PlaybackHistoryEvent.tmdb_id.is_(None))
+                .where(PlaybackHistoryEvent.tmdb_id.is_(None), recoverable)
                 .distinct()
             )
         ).all()
@@ -2142,6 +2386,7 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
                         select(PlaybackHistoryEvent)
                         .where(
                             PlaybackHistoryEvent.tmdb_id.is_(None),
+                            recoverable,
                             PlaybackHistoryEvent.observed_service == service,
                             PlaybackHistoryEvent.observed_service_config_id.is_(None)
                             if observed_config_id is None
@@ -2155,6 +2400,8 @@ async def resolve_unmapped_event_identities(*, batch_size: int = 5000) -> int:
                 .all()
             )
             for event in events:
+                if _history_identity_blocked(event):
+                    continue
                 if event.provider_media_type == "movie":
                     identity = movie_map.get(event.source_item_id)
                     if identity is None:
@@ -2571,6 +2818,17 @@ async def rebuild_playback_history_aggregates() -> None:
                 identity_key[1],
                 ownership=ownership,
             )
+        stable_identities = {
+            key: (
+                {identity[1] for identity in movies.values()},
+                {
+                    identity[3:]
+                    for identities in episodes.values()
+                    for identity in identities
+                },
+            )
+            for key, (movies, episodes) in identity_maps.items()
+        }
 
         for event in events:
             if not _playback_event_is_active(event, active_tracearr_sources):
@@ -2587,16 +2845,31 @@ async def rebuild_playback_history_aggregates() -> None:
             movie_map, episode_map = identity_maps.get(
                 (observed_service, event.observed_service_config_id), ({}, {})
             )
+            stable_movies, stable_episodes = stable_identities.get(
+                (observed_service, event.observed_service_config_id), (set(), set())
+            )
 
             if event.provider_media_type == "movie":
                 movie_id: int | None = None
                 movie_added_at: datetime | None = None
                 direct_movie = movie_map.get(event.source_item_id)
+                if _history_identity_blocked(event):
+                    event.movie_id = event.series_id = event.season_id = (
+                        event.episode_id
+                    ) = None
+                    unmatched_events += 1
+                    continue
+                if (
+                    event.tmdb_id is not None
+                    and direct_movie is not None
+                    and direct_movie[1] != event.tmdb_id
+                ):
+                    direct_movie = None
                 if direct_movie is not None:
                     movie_id, tmdb_id = direct_movie
                     event.tmdb_id = tmdb_id
                     movie_added_at = movie_added_by_id.get(movie_id)
-                elif event.tmdb_id is not None:
+                elif event.tmdb_id is not None and event.tmdb_id in stable_movies:
                     movie_identity = movie_by_tmdb.get(event.tmdb_id)
                     if movie_identity is not None:
                         movie_id, movie_added_at = movie_identity
@@ -2616,6 +2889,34 @@ async def rebuild_playback_history_aggregates() -> None:
                 episode_id = season_id = series_id = None
                 series_added_at = season_added_at = None
                 direct_episodes = episode_map.get(event.source_item_id, [])
+                if _history_identity_blocked(event):
+                    event.movie_id = event.series_id = event.season_id = (
+                        event.episode_id
+                    ) = None
+                    unmatched_events += 1
+                    continue
+                if (
+                    event.tmdb_id is not None
+                    and direct_episodes
+                    and not any(
+                        identity[3:]
+                        == (event.tmdb_id, event.season_number, event.episode_number)
+                        for identity in direct_episodes
+                    )
+                ):
+                    direct_episodes = []
+                if event.tmdb_id is not None:
+                    direct_episodes = sorted(
+                        direct_episodes,
+                        key=lambda identity: (
+                            identity[3:]
+                            != (
+                                event.tmdb_id,
+                                event.season_number,
+                                event.episode_number,
+                            )
+                        ),
+                    )
                 if direct_episodes:
                     (
                         episode_id,
@@ -2634,6 +2935,8 @@ async def rebuild_playback_history_aggregates() -> None:
                     event.tmdb_id is not None
                     and event.season_number is not None
                     and event.episode_number is not None
+                    and (event.tmdb_id, event.season_number, event.episode_number)
+                    in stable_episodes
                 ):
                     identity = episode_by_identity.get(
                         (event.tmdb_id, event.season_number, event.episode_number)

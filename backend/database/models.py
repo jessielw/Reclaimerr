@@ -1324,6 +1324,9 @@ class PlaybackHistoryEvent(Base):
     tmdb_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     season_number: Mapped[int | None] = mapped_column(SmallInteger, default=None)
     episode_number: Mapped[int | None] = mapped_column(Integer, default=None)
+    # Retain the evidence separately from the resolved movie/show identity.
+    # Episode session TMDB IDs identify episodes, never their parent shows.
+    identity_evidence: Mapped[dict | None] = mapped_column(JSON, default=None)
     movie_id: Mapped[int | None] = mapped_column(
         ForeignKey("movies.id", ondelete="SET NULL"),
         default=None,

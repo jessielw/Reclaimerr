@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Retained playback history no longer lets an unresolved episode hide movie history, or an unresolved movie hide episode history. Proven watches remain available while uncertain counts and dates stay unknown. Stable identities take precedence over reused server item IDs, and Tracearr identity recovery validates episode links, retains conflict evidence, and retries failed history replays. #498
 - Toggling **Include file paths** updates the diagnostics preview without flashing or remounting the dialog.
 - Failed file-copy verification now preserves the useful size-mismatch error instead of trying to read the destination after removing the incomplete copy. The source file remains intact.
 - Substantially improved database locking.

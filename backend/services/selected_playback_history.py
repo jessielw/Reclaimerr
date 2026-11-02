@@ -24,13 +24,18 @@ from backend.services.playback_history import (
     PlaybackRuleSnapshot,
     PlaybackTargetKey,
     _Aggregate,
+    _has_stable_history_identity,
+    _history_identity_blocked,
     _identity_maps,
 )
 from backend.services.playback_selection import load_history_sources
 
 
 def history_values(
-    events: list[PlaybackHistoryEvent], *, completion_supported: bool
+    events: list[PlaybackHistoryEvent],
+    *,
+    completion_supported: bool,
+    uncertain_events: list[PlaybackHistoryEvent] | None = None,
 ) -> dict[str, object]:
     """Unknown completion flags must not turn into evidence of no completion."""
     aggregate = _Aggregate(media_type=MediaType.MOVIE)
@@ -61,6 +66,35 @@ def history_values(
         if not unknown or (last is not None and max(unknown) <= last):
             values["last_completed_at"] = last
             values["days_since_last_completed"] = (now - last).days if last else None
+    if uncertain_events:
+        # These are possible additional plays, never zero or negative evidence.
+        for field in (
+            "play_count",
+            "total_duration_minutes",
+            "longest_duration_minutes",
+            "unique_user_count",
+            "usernames",
+        ):
+            values.pop(field, None)
+        if not events:
+            values.pop("has_activity", None)
+        last_activity = aggregate.last_activity_at
+        if last_activity is None or any(
+            event.played_at > last_activity for event in uncertain_events
+        ):
+            values.pop("last_activity_at", None)
+            values.pop("days_since_last_activity", None)
+        possible_completions = [
+            event for event in uncertain_events if event.completed is not False
+        ]
+        if not completed and possible_completions:
+            values.pop("has_completed_watch", None)
+        if possible_completions and (
+            not completed
+            or any(event.played_at > max(completed) for event in possible_completions)
+        ):
+            values.pop("last_completed_at", None)
+            values.pop("days_since_last_completed", None)
     return {f"playback_history.{key}": value for key, value in values.items()}
 
 
@@ -156,7 +190,9 @@ async def load_selected_history_snapshot(
         )
     }
     by_target: dict[PlaybackTargetKey, list[PlaybackHistoryEvent]] = defaultdict(list)
-    unmatched_sources: set[int] = set()
+    unmatched_sources: dict[tuple[int, str], list[PlaybackHistoryEvent]] = defaultdict(
+        list
+    )
     for event in (await db.scalars(select(PlaybackHistoryEvent))).all():
         source = next(
             (
@@ -169,19 +205,32 @@ async def load_selected_history_snapshot(
         if source is None or not source.event_matches(event):
             continue
         movies, episodes, stable_movies, stable_episodes = source_maps[source.server_id]
-        if event.provider_media_type == "movie":
-            keys = movies.get(
-                event.source_item_id, stable_movies.get(event.tmdb_id, [])
+        if _history_identity_blocked(event):
+            keys = []
+        elif event.provider_media_type == "movie":
+            keys = (
+                stable_movies.get(event.tmdb_id, [])
+                if event.tmdb_id is not None
+                else movies.get(event.source_item_id, [])
             )
         else:
-            keys = episodes.get(
-                event.source_item_id,
+            keys = (
                 stable_episodes.get(
                     (event.tmdb_id, event.season_number, event.episode_number), []
-                ),
+                )
+                if event.tmdb_id is not None
+                else episodes.get(event.source_item_id, [])
             )
-        if not keys and event.tmdb_id is None:
-            unmatched_sources.add(source.server_id)
+        if not keys and not _has_stable_history_identity(event):
+            unmatched_sources[(source.server_id, event.provider_media_type)].append(
+                event
+            )
+            retained_type = (event.identity_evidence or {}).get("retained_media_type")
+            if (
+                retained_type in {"movie", "episode"}
+                and retained_type != event.provider_media_type
+            ):
+                unmatched_sources[(source.server_id, retained_type)].append(event)
         for key in set(keys):
             by_target[key].append(event)
 
@@ -197,8 +246,6 @@ async def load_selected_history_snapshot(
                 reason = "missing media-server identity"
             elif not servers.issubset(healthy):
                 reason = "selected history provider unavailable or not synced"
-            elif servers & unmatched_sources:
-                reason = "unmatched provider history prevents complete totals"
             if reason:
                 reasons[scope][reason] = reasons[scope].get(reason, 0) + 1
                 samples[scope].append(target_id)
@@ -208,8 +255,28 @@ async def load_selected_history_snapshot(
                 for s in servers
             )
             values[key] = history_values(
-                by_target[key], completion_supported=completion_supported
+                by_target[key],
+                completion_supported=completion_supported,
+                uncertain_events=[
+                    event
+                    for server in servers
+                    for event in unmatched_sources[
+                        (server, "movie" if scope == "movie_version" else "episode")
+                    ]
+                ],
             )
+            uncertain = any(
+                unmatched_sources[
+                    (server, "movie" if scope == "movie_version" else "episode")
+                ]
+                for server in servers
+            )
+            if uncertain and (
+                requested_fields is None or not requested_fields.issubset(values[key])
+            ):
+                detail = "unmatched provider history prevents complete totals"
+                reasons[scope][detail] = reasons[scope].get(detail, 0) + 1
+                samples[scope].append(target_id)
             if completion_requested and not completion_supported:
                 detail = "selected provider does not report completion"
                 reasons[scope][detail] = reasons[scope].get(detail, 0) + 1
@@ -225,6 +292,9 @@ async def load_selected_history_snapshot(
             ) and "playback_history.usernames" not in values[key]:
                 detail = "provider usernames are incomplete"
                 reasons[scope][detail] = reasons[scope].get(detail, 0) + 1
+            if not values[key]:
+                del values[key]
+                continue
             values[key]["_history_sources"] = [
                 {
                     "server": sources[s].server_name,
