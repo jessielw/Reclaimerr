@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated backend deps platformdirs & filelock.
+
 ### Fixed
 
 - Plex episodes now include watches from every user. Previously only seasons and series merged server-wide history, so an episode watched by another account showed "No value" for **Days since watched** and zero views in episode-scoped rules. #503
