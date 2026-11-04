@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import PurePosixPath
@@ -2623,11 +2623,15 @@ class PlexService:
         # collect all series and season rating keys to scope the history fetch
         series_keys: set[str] = set()
         season_keys: set[str] = set()
+        episode_keys: set[str] = set()
         for s in series:
             series_keys.add(s.id)
             for sd in s.season_data:
                 if sd.service_season_id:
                     season_keys.add(sd.service_season_id)
+                for ep in sd.episode_data:
+                    if ep.plex_rating_key:
+                        episode_keys.add(ep.plex_rating_key)
 
         # collect the numeric section IDs for show libraries
         sections = await self.get_library_sections()
@@ -2650,7 +2654,18 @@ class PlexService:
             library_section_ids=show_section_ids,
             key_field="grandparentRatingKey",
         )
-        history_complete = season_history_complete and series_history_complete
+        # the library scan only reports the connected account's own plays per
+        # episode, so merge cross user history at episode level too
+        episode_history, episode_history_complete = await self._get_all_history(
+            rating_keys=episode_keys,
+            library_section_ids=show_section_ids,
+            key_field="ratingKey",
+        )
+        history_complete = (
+            season_history_complete
+            and series_history_complete
+            and episode_history_complete
+        )
 
         result = []
         for s in series:
@@ -2682,7 +2697,12 @@ class PlexService:
                         subtitle_languages=sd.subtitle_languages,
                         path=sd.path,
                         episode_paths=sd.episode_paths,
-                        episode_data=sd.episode_data,
+                        episode_data=[
+                            self._merge_episode_history(
+                                ep, episode_history.get(ep.plex_rating_key or "")
+                            )
+                            for ep in sd.episode_data
+                        ],
                         media_server_user_rating=sd.media_server_user_rating,
                     )
                 )
@@ -3112,6 +3132,19 @@ class PlexService:
         if hist is None:
             return scan_count
         return max(scan_count, hist[0])
+
+    @classmethod
+    def _merge_episode_history(
+        cls, episode: AggregatedEpisodeData, hist: _HistEntry | None
+    ) -> AggregatedEpisodeData:
+        """Return the episode with cross user history merged into its watch data."""
+        if hist is None:
+            return episode
+        return replace(
+            episode,
+            view_count=cls._merge_view_count(episode.view_count, hist),
+            last_viewed_at=cls._merge_last_viewed(episode.last_viewed_at, hist),
+        )
 
     @staticmethod
     def _merge_last_viewed(

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Plex episodes now include watches from every user. Previously only seasons and series merged server-wide history, so an episode watched by another account showed "No value" for **Days since watched** and zero views in episode-scoped rules. #503
+
 ## [0.6.6] - 2026-11-01
 
 ### Added
