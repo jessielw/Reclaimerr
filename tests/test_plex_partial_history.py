@@ -175,3 +175,74 @@ def test_season_partial_history_stores_naive_utc() -> None:
     _apply_media_server_watch(row, 1, aware, history_complete=False, naive=True)
 
     assert row.last_viewed_at == datetime(2026, 9, 20, 8, 0)
+
+
+def test_episode_watch_data_merges_history_from_other_users(monkeypatch) -> None:
+    """Issue #503: the scan only sees the connected account's plays per episode."""
+    from backend.models.media import (
+        AggregatedEpisodeData,
+        AggregatedSeasonData,
+        AggregatedSeriesData,
+        ExternalIDs,
+    )
+
+    watched = datetime(2026, 6, 14, tzinfo=UTC)
+    episodes = [
+        AggregatedEpisodeData(episode_number=1, view_count=0, plex_rating_key="ep1"),
+        AggregatedEpisodeData(episode_number=2, view_count=0, plex_rating_key="ep2"),
+    ]
+    season = AggregatedSeasonData(
+        service_series_id="show1",
+        season_number=1,
+        size=0,
+        episode_count=2,
+        view_count=0,
+        last_viewed_at=None,
+        service_season_id="season1",
+        episode_data=episodes,
+    )
+    series = AggregatedSeriesData(
+        id="show1",
+        name="Show",
+        year=2026,
+        service="plex",
+        library_name="TV",
+        library_id="4",
+        path=None,
+        added_at=None,
+        external_ids=ExternalIDs(None, None, None, None),
+        size=0,
+        view_count=0,
+        last_viewed_at=None,
+        season_data=[season],
+    )
+    records = [
+        {
+            "ratingKey": "ep1",
+            "parentRatingKey": "season1",
+            "grandparentRatingKey": "show1",
+            "accountID": "2",
+            "viewedAt": int(watched.timestamp()),
+        }
+    ]
+
+    async def fake_get_series(self, included_libraries=None):
+        return [series]
+
+    async def fake_sections(self):
+        return [{"type": "show", "key": "4", "title": "TV"}]
+
+    async def fake_records(self, **kwargs):
+        return records
+
+    monkeypatch.setattr(PlexService, "get_series", fake_get_series)
+    monkeypatch.setattr(PlexService, "get_library_sections", fake_sections)
+    monkeypatch.setattr(PlexService, "_get_all_history_records", fake_records)
+
+    result = asyncio.run(
+        PlexService("token", "http://plex.local").get_aggregated_series()
+    )
+
+    ep1, ep2 = result[0].season_data[0].episode_data
+    assert (ep1.view_count, ep1.last_viewed_at) == (1, watched)
+    assert (ep2.view_count, ep2.last_viewed_at) == (0, None)
