@@ -193,11 +193,14 @@ async def _resolve_series_scope(
 
 
 async def _get_delete_request_media(
-    db: AsyncSession, request: DeleteRequest
+    db: AsyncSession,
+    request: DeleteRequest,
+    *,
+    require_available_version: bool = True,
 ) -> tuple[Movie | Series, int]:
     """Get the media (movie or series) associated with a delete request."""
     if request.media_type is MediaType.MOVIE:
-        if (
+        if require_available_version and (
             request.target_scope == "movie_version"
             or request.movie_version_id is not None
         ):
@@ -472,7 +475,15 @@ async def _build_delete_request_response(
     version: MovieVersion | None = None,
 ) -> DeleteRequestResponse:
     """Build a DeleteRequestResponse from a DeleteRequest, looking up related media and user info as needed."""
-    media, media_id = await _get_delete_request_media(db, request)
+    # Reading/reviewing a stale request must remain possible even after its
+    # version disappears. Approval and retry still require the original target.
+    media, media_id = await _get_delete_request_media(
+        db, request, require_available_version=False
+    )
+    if version is None and request.movie_version_id is not None:
+        version = await db.get(MovieVersion, request.movie_version_id)
+    if version is not None and version.movie_id != request.movie_id:
+        version = None
     if requested_by_username is None:
         if request.requested_by is not None:
             requested_by_username = request.requested_by.username
@@ -516,6 +527,7 @@ async def _build_delete_request_response(
         media_title=media.title,
         media_year=media.year,
         target_scope=target_scope,
+        target_available=target_scope != "movie_version" or version is not None,
         movie_version_id=request.movie_version_id,
         season_id=request.season_id,
         season_number=await _lookup_season_number(
@@ -1054,7 +1066,9 @@ async def deny_delete_request(
             detail=f"Request has already been {request.status.value}",
         )
 
-    media, _ = await _get_delete_request_media(db, request)
+    media, _ = await _get_delete_request_media(
+        db, request, require_available_version=False
+    )
     request.status = ProtectionRequestStatus.DENIED
     request.reviewed_by_user_id = manager.id
     request.reviewed_at = datetime.now(UTC)

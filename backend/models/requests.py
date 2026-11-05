@@ -108,6 +108,7 @@ class DeleteRequestResponse(BaseModel):
     media_title: str
     media_year: int | None
     target_scope: str | None = None
+    target_available: bool = True
     movie_version_id: int | None = None
     season_id: int | None = None
     season_number: int | None = None

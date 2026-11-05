@@ -122,6 +122,7 @@
         request.status === ProtectionRequestStatus.Approved &&
         request.executed_at == null &&
         request.execution_error == null &&
+        request.target_available !== false &&
         !request.playback_deferral,
     ),
   );
@@ -159,7 +160,8 @@
       return req.episode_name ? `${label} "${req.episode_name}"` : label;
     }
     if (req.season_number != null) return `Season ${req.season_number}`;
-    if (req.movie_version_id != null) return "Specific version";
+    if (req.target_scope === "movie_version" || req.movie_version_id != null)
+      return "Specific version";
     return req.media_type === "movie" ? "Whole movie" : "Whole series";
   };
 
@@ -323,6 +325,11 @@
                       {req.playback_deferral.message}
                     </p>
                   {/if}
+                  {#if req.target_available === false}
+                    <p class="mt-2 text-sm text-amber-500">
+                      Requested version unavailable
+                    </p>
+                  {/if}
                   {#if req.execution_error}
                     <p class="mt-2 line-clamp-2 text-sm text-red-500">
                       {req.execution_error}
@@ -444,6 +451,32 @@
                 </div>
               {/if}
 
+              {#if selectedRequest.target_available === false}
+                <div
+                  class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm"
+                >
+                  <p class="font-medium">Requested version unavailable</p>
+                  <p class="mt-1 text-muted-foreground">
+                    The specific version requested for “{selectedRequest.media_title}”
+                    is no longer available. This request cannot delete another
+                    version or the whole movie.
+                  </p>
+                  {#if selectedRequest.status === ProtectionRequestStatus.Pending}
+                    <p class="mt-2 text-muted-foreground">
+                      {#if canManageRequests}
+                        Deny this outdated request to clear it from the pending
+                        list.
+                      {:else}
+                        Cancel this outdated request to clear it from the
+                        pending list.
+                      {/if}
+                      To request deletion of a current version, open the movie in
+                      Movies and choose Request Deletion.
+                    </p>
+                  {/if}
+                </div>
+              {/if}
+
               <div>
                 <p class="mb-2 text-sm font-medium text-foreground">
                   Request Reason
@@ -455,7 +488,7 @@
                 </p>
               </div>
 
-              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.executed_at && !selectedRequest.execution_error && !selectedRequest.playback_deferral}
+              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.executed_at && !selectedRequest.execution_error && !selectedRequest.playback_deferral && selectedRequest.target_available !== false}
                 <div>
                   <p class="mb-2 text-sm font-medium text-amber-500">
                     Execution Status
@@ -498,7 +531,8 @@
                   {#if canManageRequests}
                     <Button
                       class="mt-3"
-                      disabled={retrySubmitting}
+                      disabled={retrySubmitting ||
+                        selectedRequest.target_available === false}
                       onclick={() => retryRequest(selectedRequest)}
                       >Retry deletion</Button
                     >
@@ -522,7 +556,10 @@
               <div class="flex flex-wrap gap-3">
                 {#if canManageRequests && selectedRequest.status === ProtectionRequestStatus.Pending}
                   <!-- approve delete request -->
-                  <Button onclick={() => openApprove(selectedRequest)}>
+                  <Button
+                    disabled={selectedRequest.target_available === false}
+                    onclick={() => openApprove(selectedRequest)}
+                  >
                     <CheckCircle class="size-4" /> Approve
                   </Button>
 

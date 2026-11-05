@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Deletion Requests now loads when a requested movie version is no longer available. Affected requests identify the movie and missing version; owners can cancel stale pending requests and managers can deny them. Approval and retry remain blocked for missing versions. #505
+
 ## [0.6.7] - 2026-11-04
 
 ### Changed

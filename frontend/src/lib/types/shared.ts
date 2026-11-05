@@ -1189,6 +1189,7 @@ export interface DeleteRequest {
   target_scope:
     "movie" | "movie_version" | "series" | "season" | "episode" | null;
   movie_version_id: number | null;
+  target_available: boolean;
   media_title: string;
   media_year: number | null;
   requested_by_user_id: number;
