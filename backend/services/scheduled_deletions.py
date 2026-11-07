@@ -89,8 +89,82 @@ async def routing_settings(db: AsyncSession, media_type: MediaType) -> dict[str,
     }
 
 
+class InventoryCache:
+    """Per-request media rows so many candidates share a few bulk queries."""
+
+    def __init__(self) -> None:
+        self.movie_versions: dict[int, list[MovieVersion]] = {}
+        self.seasons: dict[int, list[Season]] = {}
+        self.episodes: dict[int, list[Episode]] = {}
+        self.episode_versions: dict[int, list[EpisodeVersion]] = {}
+        self.series_roots: dict[int, list[str | None]] = {}
+
+    async def preload(
+        self, db: AsyncSession, candidates: Iterable[ReclaimCandidate]
+    ) -> None:
+        candidates = list(candidates)
+        movie_ids = {
+            c.movie_id
+            for c in candidates
+            if c.media_type is MediaType.MOVIE and c.movie_id is not None
+        }
+        series_ids = {
+            c.series_id
+            for c in candidates
+            if c.media_type is MediaType.SERIES and c.series_id is not None
+        }
+        movie_ids -= self.movie_versions.keys()
+        series_ids -= self.seasons.keys()
+        if movie_ids:
+            for movie_id in movie_ids:
+                self.movie_versions[movie_id] = []
+            for version in (
+                await db.scalars(
+                    select(MovieVersion).where(MovieVersion.movie_id.in_(movie_ids))
+                )
+            ).all():
+                self.movie_versions[version.movie_id].append(version)
+        if not series_ids:
+            return
+        for series_id in series_ids:
+            self.seasons[series_id] = []
+            self.series_roots[series_id] = []
+        seasons = (
+            await db.scalars(select(Season).where(Season.series_id.in_(series_ids)))
+        ).all()
+        for season in seasons:
+            self.seasons[season.series_id].append(season)
+            self.episodes[season.id] = []
+        episodes = (
+            await db.scalars(
+                select(Episode).where(Episode.season_id.in_([s.id for s in seasons]))
+            )
+        ).all()
+        for episode in episodes:
+            self.episodes[episode.season_id].append(episode)
+            self.episode_versions[episode.id] = []
+        for version in (
+            await db.scalars(
+                select(EpisodeVersion).where(
+                    EpisodeVersion.episode_id.in_([e.id for e in episodes])
+                )
+            )
+        ).all():
+            self.episode_versions[version.episode_id].append(version)
+        for ref in (
+            await db.execute(
+                select(SeriesServiceRef.series_id, SeriesServiceRef.path).where(
+                    SeriesServiceRef.series_id.in_(series_ids)
+                )
+            )
+        ).all():
+            self.series_roots[ref.series_id].append(ref.path)
+
+
 async def target_inventory(
-    db: AsyncSession, candidate: ReclaimCandidate
+    db: AsyncSession,
+    candidate: ReclaimCandidate,
+    cache: InventoryCache | None = None,
 ) -> dict[str, Any]:
     """Physical inventory, independent of IDs replaced during a media resync."""
     files: dict[str, int | None] = {}
@@ -106,33 +180,61 @@ async def target_inventory(
                 files[key] = size or None
 
     if candidate.media_type is MediaType.MOVIE:
-        query = select(MovieVersion).where(MovieVersion.movie_id == candidate.movie_id)
-        if candidate.movie_version_id is not None:
-            query = query.where(MovieVersion.id == candidate.movie_version_id)
-        for version in (await db.scalars(query)).all():
+        if cache is not None and candidate.movie_id in cache.movie_versions:
+            movie_versions = [
+                v
+                for v in cache.movie_versions[candidate.movie_id]
+                if candidate.movie_version_id in (None, v.id)
+            ]
+        else:
+            query = select(MovieVersion).where(
+                MovieVersion.movie_id == candidate.movie_id
+            )
+            if candidate.movie_version_id is not None:
+                query = query.where(MovieVersion.id == candidate.movie_version_id)
+            movie_versions = list((await db.scalars(query)).all())
+        for version in movie_versions:
             if not _path(version.path or ""):
                 unidentified_files += 1
             add(version.path, version.size)
     else:
-        query = select(Season).where(Season.series_id == candidate.series_id)
-        if candidate.season_id is not None:
-            query = query.where(Season.id == candidate.season_id)
-        seasons = (await db.scalars(query)).all()
-        episode_query = select(Episode).where(
-            Episode.season_id.in_([s.id for s in seasons])
-        )
-        if candidate.episode_id is not None:
-            episode_query = episode_query.where(Episode.id == candidate.episode_id)
-        episodes = (await db.scalars(episode_query)).all()
+        if cache is not None and candidate.series_id in cache.seasons:
+            seasons = [
+                s
+                for s in cache.seasons[candidate.series_id]
+                if candidate.season_id in (None, s.id)
+            ]
+            episodes = [
+                e
+                for s in seasons
+                for e in cache.episodes.get(s.id, [])
+                if candidate.episode_id in (None, e.id)
+            ]
+            versions = [
+                v for e in episodes for v in cache.episode_versions.get(e.id, [])
+            ]
+        else:
+            query = select(Season).where(Season.series_id == candidate.series_id)
+            if candidate.season_id is not None:
+                query = query.where(Season.id == candidate.season_id)
+            seasons = list((await db.scalars(query)).all())
+            episode_query = select(Episode).where(
+                Episode.season_id.in_([s.id for s in seasons])
+            )
+            if candidate.episode_id is not None:
+                episode_query = episode_query.where(Episode.id == candidate.episode_id)
+            episodes = list((await db.scalars(episode_query)).all())
+            versions = list(
+                (
+                    await db.scalars(
+                        select(EpisodeVersion).where(
+                            EpisodeVersion.episode_id.in_([e.id for e in episodes])
+                        )
+                    )
+                ).all()
+            )
         for episode in episodes:
             add(episode.path, episode.size)
-        versions = (
-            await db.scalars(
-                select(EpisodeVersion).where(
-                    EpisodeVersion.episode_id.in_([e.id for e in episodes])
-                )
-            )
-        ).all()
         represented_episode_ids = {version.episode_id for version in versions}
         for episode in episodes:
             if (
@@ -146,17 +248,19 @@ async def target_inventory(
                 unidentified_files += 1
             add(version.path, version.size)
         if candidate.episode_id is None:
-            roots = {
-                _path(path)
-                for path in (
-                    await db.scalars(
-                        select(SeriesServiceRef.path).where(
-                            SeriesServiceRef.series_id == candidate.series_id
+            if cache is not None and candidate.series_id in cache.series_roots:
+                root_paths = cache.series_roots[candidate.series_id]
+            else:
+                root_paths = list(
+                    (
+                        await db.scalars(
+                            select(SeriesServiceRef.path).where(
+                                SeriesServiceRef.series_id == candidate.series_id
+                            )
                         )
-                    )
-                ).all()
-                if path and _path(path)
-            }
+                    ).all()
+                )
+            roots = {_path(path) for path in root_paths if path and _path(path)}
             for season in seasons:
                 for path in season.episode_paths or []:
                     add(path)
@@ -335,10 +439,24 @@ async def active_schedules(db: AsyncSession) -> list[ScheduledDeletion]:
     )
 
 
+async def inventory_cache(
+    db: AsyncSession,
+    candidates: Iterable[ReclaimCandidate],
+    schedules: list[ScheduledDeletion],
+) -> InventoryCache | None:
+    """Bulk-load media rows, but only when schedules make holds necessary."""
+    if not schedules:
+        return None
+    cache = InventoryCache()
+    await cache.preload(db, candidates)
+    return cache
+
+
 async def blocking_schedule(
     db: AsyncSession,
     candidate: ReclaimCandidate,
     schedules: list[ScheduledDeletion] | None = None,
+    cache: InventoryCache | None = None,
 ) -> ScheduledDeletion | None:
     schedules = await active_schedules(db) if schedules is None else schedules
     relevant = [s for s in schedules if s.id != executing_schedule_id.get()]
@@ -400,7 +518,7 @@ async def blocking_schedule(
         if scope_overlap:
             return schedule
         if inventory is None:
-            inventory = await target_inventory(db, candidate)
+            inventory = await target_inventory(db, candidate, cache)
         if schedule_inventory_overlap(inventory, target):
             return schedule
     return None

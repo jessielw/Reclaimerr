@@ -52,9 +52,11 @@ from backend.models.scheduled_deletions import (
     ScheduleCandidatesRequest,
 )
 from backend.services.scheduled_deletions import (
+    InventoryCache,
     blocking_schedule,
     resolve_target,
     schedule_response,
+    target_inventory,
 )
 from backend.tasks import cleanup
 
@@ -289,6 +291,88 @@ def test_unrelated_queued_item_without_files_does_not_block_scheduling(monkeypat
             await db.commit()
             saved = await schedule(db, user, candidate)
             assert saved.state == "scheduled"
+
+    asyncio.run(run())
+
+
+def test_cached_inventory_matches_uncached_and_uses_constant_queries(monkeypatch):
+    async def run():
+        async with database(monkeypatch) as factory, factory() as db:
+            _, movie, version, movie_candidate, _ = await seed(db)
+            series = Series(title="Show", tmdb_id=1234)
+            db.add(series)
+            await db.flush()
+            season = Season(series_id=series.id, season_number=1, path="/show/s1")
+            db.add(season)
+            await db.flush()
+            episode = Episode(
+                season_id=season.id, episode_number=1, path="/show/s1/e1.mkv", size=100
+            )
+            db.add(episode)
+            await db.flush()
+            db.add(
+                EpisodeVersion(
+                    episode_id=episode.id,
+                    service=Service.PLEX,
+                    service_item_id="e",
+                    service_media_id="e1",
+                    library_id="tv",
+                    library_name="TV",
+                    path="/show/s1/e1-alt.mkv",
+                    size=50,
+                )
+            )
+            await db.commit()
+
+            def series_candidate(**scope):
+                return ReclaimCandidate(
+                    media_type=MediaType.SERIES,
+                    series_id=series.id,
+                    matched_rule_ids=[],
+                    matched_criteria={},
+                    reason="Manual",
+                    **scope,
+                )
+
+            candidates = [
+                movie_candidate,
+                ReclaimCandidate(
+                    media_type=MediaType.MOVIE,
+                    movie_id=movie.id,
+                    matched_rule_ids=[],
+                    matched_criteria={},
+                    reason="Whole movie",
+                ),
+                series_candidate(),
+                series_candidate(season_id=season.id),
+                series_candidate(season_id=season.id, episode_id=episode.id),
+            ]
+            cache = InventoryCache()
+            statements = []
+            engine = db.bind.sync_engine
+
+            def count(*_):
+                statements.append(1)
+
+            event.listen(engine, "before_cursor_execute", count)
+            await cache.preload(db, candidates)
+            event.remove(engine, "before_cursor_execute", count)
+            assert len(statements) <= 6
+            statements.clear()
+            event.listen(engine, "before_cursor_execute", count)
+            for candidate in candidates:
+                assert await target_inventory(
+                    db, candidate, cache
+                ) == await target_inventory(db, candidate)
+            event.remove(engine, "before_cursor_execute", count)
+            # 5 uncached inventories ran; the 5 cached ones issued no queries.
+            uncached_only = len(statements)
+            statements.clear()
+            event.listen(engine, "before_cursor_execute", count)
+            for candidate in candidates:
+                await target_inventory(db, candidate, cache)
+            event.remove(engine, "before_cursor_execute", count)
+            assert len(statements) == 0 < uncached_only
 
     asyncio.run(run())
 

@@ -197,7 +197,11 @@ from backend.services.playback_history import (
 )
 from backend.services.radarr import RadarrClient
 from backend.services.requester_warnings import warn_requesters_before_deletion
-from backend.services.scheduled_deletions import active_schedules, blocking_schedule
+from backend.services.scheduled_deletions import (
+    active_schedules,
+    blocking_schedule,
+    inventory_cache,
+)
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
 from backend.services.selected_playback_history import load_selected_history_snapshot
 from backend.services.sonarr import SonarrClient
@@ -631,11 +635,12 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
         blocked_count = 0
         waiting_count = 0
         manual_schedules = await active_schedules(db)
+        manual_cache = await inventory_cache(db, candidates, manual_schedules)
         for candidate in candidates:
             if (candidate.matched_criteria or {}).get("scheduled_deletion_id"):
                 blocked_count += 1
                 continue
-            if await blocking_schedule(db, candidate, manual_schedules):
+            if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
                 waiting_count += 1
                 continue
             blocked = False
