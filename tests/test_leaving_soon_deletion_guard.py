@@ -16,6 +16,7 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimCandidate,
+    ScheduledDeletion,
     Series,
     SeriesServiceRef,
     ServiceConfig,
@@ -1153,3 +1154,59 @@ class LeavingSoonDeadlineResolutionTests(unittest.IsolatedAsyncioTestCase):
             result = await cleanup._build_leaving_soon_expected_item_ids(db, configs)
 
         self.assertEqual(result, ({}, {}, {}))
+
+    async def test_manual_schedule_without_a_candidate_is_listed_by_its_date(
+        self,
+    ) -> None:
+        async with self.sessionmaker() as db:
+            db.add(GeneralSettings(leaving_soon_enabled=True))
+            plex_config = ServiceConfig(
+                service_type=Service.PLEX,
+                name="Plex",
+                base_url="http://plex",
+                api_key="key",
+                enabled=True,
+                is_main=True,
+            )
+            movie = Movie(title="Movie", tmdb_id=1234)
+            db.add_all([plex_config, movie])
+            await db.flush()
+            db.add(
+                MovieVersion(
+                    movie_id=movie.id,
+                    service=Service.PLEX,
+                    service_item_id="plex-item",
+                    service_media_id="plex-media",
+                    library_id="plex-library",
+                    library_name="Movies",
+                )
+            )
+            when = datetime(2026, 12, 1, 3, 0)
+            for state in ("scheduled", "blocked"):
+                db.add(
+                    ScheduledDeletion(
+                        scheduled_at=when,
+                        target={
+                            "media_type": "movie",
+                            "media_id": movie.id,
+                            "scope": "movie",
+                        },
+                        created_by_username="admin",
+                        state=state,
+                    )
+                )
+            config_id = plex_config.id
+            await db.commit()
+
+        async with self.sessionmaker() as db:
+            configs = await cleanup._get_enabled_leaving_soon_configs(db)
+            (
+                movies,
+                _series,
+                deadlines,
+            ) = await cleanup._build_leaving_soon_expected_item_ids(db, configs)
+
+        self.assertEqual(movies, {config_id: {"plex-item"}})
+        self.assertEqual(
+            deadlines[config_id]["plex-item"], datetime(2026, 12, 1, 3, tzinfo=UTC)
+        )

@@ -10,8 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Scheduled manual deletion** for single and bulk cleanup candidates. Choose **Delete on…**, manage schedules from Candidates, and view them on Calendar. Schedules survive rescans and restarts, hold overlapping cleanup, and recheck permissions, protection, playback, and exact file scope before execution.
 
+- A **Next Deletion** tile on the dashboard showing the earliest automatic or manually scheduled deletion.
+- **Reschedule** and **Cancel** buttons directly on scheduled candidate rows.
+- Quick time presets (**In 1 hour**, **Tomorrow**, **In 1 week**) when scheduling a deletion, and a note on blocked schedules explaining they must be rescheduled.
+
 ### Changed
 
+- Scheduling, rescheduling, or canceling a deletion refreshes the Leaving Soon collections within about a minute, combining bursts of changes into one sync.
+- Manually scheduled deletions stay in the Leaving Soon collection, sorted by their scheduled time, even if a rescan removes the candidate.
+- Requester Leaving Soon warnings now cover manually scheduled deletions, using the scheduled time, even when automatic deletion is off.
+- The dashboard's next deletion date now includes manually scheduled deletions.
 - Movie-wide cleanup candidates are now held back by any version-specific protection, protection request, or deletion request on the same movie, instead of only by movie-wide ones.
 
 ### Fixed

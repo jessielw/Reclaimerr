@@ -11,6 +11,9 @@
   import Bug from "@lucide/svelte/icons/bug";
   import Shield from "@lucide/svelte/icons/shield";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import CalendarClock from "@lucide/svelte/icons/calendar-clock";
+  import CalendarX from "@lucide/svelte/icons/calendar-x";
+  import { scheduledDeletionEditRequest } from "$lib/stores/scheduled-deletion-edit";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
 
   interface Props {
@@ -115,6 +118,28 @@
       entry.scheduled_deletion_at,
     )}</span
   >
+{/if}
+{#if canDelete && entry.scheduled_deletion_id}
+  {@render action(
+    `Reschedule ${scope} deletion`,
+    "bg-blue-600/80 hover:bg-blue-600/60",
+    CalendarClock,
+    () =>
+      scheduledDeletionEditRequest.set({
+        scheduleId: entry.scheduled_deletion_id!,
+        action: "reschedule",
+      }),
+  )}
+  {@render action(
+    `Cancel scheduled ${scope} deletion`,
+    "bg-destructive/80 hover:bg-destructive/60",
+    CalendarX,
+    () =>
+      scheduledDeletionEditRequest.set({
+        scheduleId: entry.scheduled_deletion_id!,
+        action: "cancel",
+      }),
+  )}
 {/if}
 {#if canDelete && !entry.scheduled_deletion_id}
   {#if moveEnabled}

@@ -592,6 +592,43 @@ def test_missing_tv_scope_never_broadens_to_parent(monkeypatch, scope):
     asyncio.run(run())
 
 
+def test_leaving_soon_sync_requests_are_coalesced(monkeypatch):
+    calls = []
+
+    async def fake_reconcile():
+        calls.append(1)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(cleanup, "LEAVING_SOON_SYNC_DELAY_SECONDS", 0.05)
+    monkeypatch.setattr(
+        cleanup, "_reconcile_leaving_soon_after_candidate_actions", fake_reconcile
+    )
+
+    async def run():
+        for _ in range(5):
+            cleanup.request_leaving_soon_sync()
+        await asyncio.sleep(0.1)  # first sync is running now
+        cleanup.request_leaving_soon_sync()  # change during the run: one more pass
+        cleanup.request_leaving_soon_sync()
+        await cleanup._leaving_soon_sync_task
+
+    asyncio.run(run())
+    assert len(calls) == 2
+
+
+def test_dashboard_next_deletion_includes_manual_schedule(monkeypatch):
+    from backend.services.reclaim_stats import next_auto_delete_at
+
+    async def run():
+        async with database(monkeypatch) as factory, factory() as db:
+            user, _, _, candidate, _ = await seed(db)
+            when = datetime(2099, 2, 3, 1, 0, tzinfo=UTC)
+            await schedule(db, user, candidate, when)
+            assert await next_auto_delete_at(db) == when
+
+    asyncio.run(run())
+
+
 def test_calendar_suppresses_earlier_auto_date_and_survives_candidate_removal(
     monkeypatch,
 ):

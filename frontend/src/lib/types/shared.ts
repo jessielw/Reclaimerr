@@ -1522,6 +1522,7 @@ export interface DashboardKpis {
   reclaimed_movies: number;
   reclaimed_series: number;
   reclaimed_total_bytes: number;
+  next_deletion_at?: string | null;
 }
 
 export interface ReclaimHistoryEntry {

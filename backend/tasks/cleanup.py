@@ -5071,7 +5071,27 @@ async def _build_leaving_soon_expected_item_ids(
             )
         )
     ).all()
-    if not candidate_rows:
+
+    # a manual schedule keeps its media in the collection, with its own date,
+    # even after a rescan removed the candidate row that first flagged it
+    manual_by_movie: dict[int, datetime] = {}
+    manual_by_version: dict[int, datetime] = {}
+    manual_by_series: dict[int, datetime] = {}
+    for schedule in await active_schedules(db):
+        if schedule.state not in ("scheduled", "running"):
+            continue
+        target = schedule.target
+        when = ensure_utc(schedule.scheduled_at)
+        if target["media_type"] == MediaType.SERIES.value:
+            bucket, key = manual_by_series, target["media_id"]
+        elif target["scope"] == "version" and target.get("movie_version_id"):
+            bucket, key = manual_by_version, target["movie_version_id"]
+        else:
+            bucket, key = manual_by_movie, target["media_id"]
+        bucket[int(key)] = min(when, bucket.get(int(key), when))
+    if not candidate_rows and not (
+        manual_by_movie or manual_by_version or manual_by_series
+    ):
         return movie_expected_by_config, series_expected_by_config, deadlines_by_config
 
     (
@@ -5124,6 +5144,14 @@ async def _build_leaving_soon_expected_item_ids(
         if media_type == MediaType.SERIES and row.series_id is not None:
             series_candidate_ids.add(int(row.series_id))
             _keep_soonest(deadline_by_series_id, int(row.series_id), deadline)
+
+    # the manual date replaces the automatic one: it is when the item really goes
+    movie_candidate_ids.update(manual_by_movie)
+    deadline_by_movie_id.update(manual_by_movie)
+    movie_candidate_version_ids.update(manual_by_version)
+    deadline_by_version_id.update(manual_by_version)
+    series_candidate_ids.update(manual_by_series)
+    deadline_by_series_id.update(manual_by_series)
 
     if movie_candidate_version_ids:
         version_rows = (
@@ -5787,6 +5815,42 @@ async def _reconcile_leaving_soon_after_candidate_actions() -> None:
             await _sync_leaving_soon_collections(db)
     except Exception as e:
         LOG.warning(f"Leaving Soon post-action reconciliation failed: {e}")
+
+
+# Schedule changes can arrive in bursts (bulk scheduling, quick edits) and a
+# collection sync talks to every media server, so changes are coalesced.
+LEAVING_SOON_SYNC_DELAY_SECONDS = 60
+_leaving_soon_sync_task: asyncio.Task[None] | None = None
+_leaving_soon_sync_started = False
+_leaving_soon_sync_dirty = False
+
+
+async def _debounced_leaving_soon_sync() -> None:
+    global _leaving_soon_sync_started, _leaving_soon_sync_dirty
+    await asyncio.sleep(LEAVING_SOON_SYNC_DELAY_SECONDS)
+    _leaving_soon_sync_started = True
+    try:
+        while True:
+            _leaving_soon_sync_dirty = False
+            await _reconcile_leaving_soon_after_candidate_actions()
+            if not _leaving_soon_sync_dirty:
+                return
+    finally:
+        _leaving_soon_sync_started = False
+
+
+def request_leaving_soon_sync() -> None:
+    """Sync the Leaving Soon collections soon, at most once per delay window.
+
+    Many calls inside the window share one sync. A call made while a sync is
+    already running schedules one more pass, so no change is missed.
+    """
+    global _leaving_soon_sync_task, _leaving_soon_sync_dirty
+    if _leaving_soon_sync_task is not None and not _leaving_soon_sync_task.done():
+        if _leaving_soon_sync_started:
+            _leaving_soon_sync_dirty = True
+        return
+    _leaving_soon_sync_task = asyncio.create_task(_debounced_leaving_soon_sync())
 
 
 def _is_candidate_spike(created: int, existing: int) -> bool:

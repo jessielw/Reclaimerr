@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.logger import LOG
+from backend.core.utils.datetime_utils import ensure_utc
 from backend.database.models import (
     GeneralSettings,
     MediaUserIdentity,
@@ -172,13 +173,15 @@ async def warn_requesters_before_deletion(
     window_days = settings_row.requester_warning_days if settings_row else 7
     if window_days <= 0:
         return result
-    # nothing is deleted automatically while the deletion task is off
-    if not await db.scalar(
-        select(TaskSchedule.enabled).where(
-            TaskSchedule.task == Task.DELETE_CLEANUP_CANDIDATES
+    # nothing is deleted automatically while the deletion task is off; manual
+    # schedules still run, so they are still warned about
+    auto_delete_enabled = bool(
+        await db.scalar(
+            select(TaskSchedule.enabled).where(
+                TaskSchedule.task == Task.DELETE_CLEANUP_CANDIDATES
+            )
         )
-    ):
-        return result
+    )
 
     candidates = (
         (
@@ -203,7 +206,18 @@ async def warn_requesters_before_deletion(
     manual_schedules = await active_schedules(db)
     manual_cache = await inventory_cache(db, candidates, manual_schedules)
     for candidate in candidates:
-        if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
+        schedule = await blocking_schedule(
+            db, candidate, manual_schedules, manual_cache
+        )
+        if schedule is not None:
+            # a manual schedule replaces the automatic date; blocked or failed
+            # schedules will not run on their own, so they are not warned about
+            when = ensure_utc(schedule.scheduled_at)
+            if schedule.state == "scheduled" and when <= window_end:
+                due.append(candidate)
+                deadlines[candidate.id] = when
+            continue
+        if not auto_delete_enabled:
             continue
         policy = resolve_auto_delete_policy(
             media_type=cast(MediaType, candidate.media_type),

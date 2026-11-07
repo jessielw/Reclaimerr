@@ -6,7 +6,11 @@
   import DashboardTile from "$lib/components/dashboard-tile.svelte";
   import RecentlyAdded from "$lib/components/media/recently-added.svelte";
   import LeavingSoon from "$lib/components/media/leaving-soon.svelte";
-  import { formatDate, formatDistanceToNow } from "$lib/utils/date";
+  import {
+    formatDate,
+    formatDateTimeToLocaleString,
+    formatDistanceToNow,
+  } from "$lib/utils/date";
   import { formatFileSize } from "$lib/utils/formatters";
   import TrendingUp from "@lucide/svelte/icons/trending-up";
   import TrendingDown from "@lucide/svelte/icons/trending-down";
@@ -361,7 +365,7 @@
             </DashboardTile>
           </section>
 
-          <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
             <!-- total reclaimable -->
             <DashboardTile href={tileLinks.candidates} class="min-h-24">
               <p class="text-sm text-muted-foreground">Total Reclaimable</p>
@@ -372,6 +376,19 @@
                 {dashboard.kpis.reclaimable_total_bytes > 0
                   ? "Cleanup opportunity available"
                   : "Nothing reclaimable right now"}
+              </p>
+            </DashboardTile>
+
+            <!-- next deletion (automatic or manually scheduled) -->
+            <DashboardTile href={tileLinks.candidates} class="min-h-24">
+              <p class="text-sm text-muted-foreground">Next Deletion</p>
+              <p class="text-xl font-bold text-primary mt-2">
+                {dashboard.kpis.next_deletion_at
+                  ? formatDateTimeToLocaleString(dashboard.kpis.next_deletion_at)
+                  : "None scheduled"}
+              </p>
+              <p class="text-xs text-muted-foreground mt-2">
+                Automatic or manually scheduled
               </p>
             </DashboardTile>
 

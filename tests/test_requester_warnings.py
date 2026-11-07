@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.database import Base
@@ -15,6 +16,7 @@ from backend.database.models import (
     Movie,
     ReclaimCandidate,
     ReclaimRule,
+    ScheduledDeletion,
     Season,
     Series,
     ServiceConfig,
@@ -218,6 +220,56 @@ def test_nothing_is_sent_when_warnings_or_auto_delete_are_off(
     harness = Harness(monkeypatch, _movie_snapshot(BOB))
     harness.run(**kwargs)
     assert harness.sent == []
+
+
+def _manual_schedule(when: datetime, state: str = "scheduled"):
+    async def add(db: AsyncSession, _rule: ReclaimRule) -> None:
+        movie_id = await db.scalar(select(Movie.id))
+        db.add(
+            ScheduledDeletion(
+                scheduled_at=when.replace(tzinfo=None),
+                target={
+                    "media_type": "movie",
+                    "media_id": movie_id,
+                    "scope": "movie",
+                },
+                created_by_username="admin",
+                state=state,
+            )
+        )
+
+    return add
+
+
+@pytest.mark.parametrize("task_enabled", [True, False], ids=["task-on", "task-off"])
+def test_a_manual_schedule_warns_requesters_for_its_own_date(
+    monkeypatch: pytest.MonkeyPatch, task_enabled: bool
+) -> None:
+    harness = Harness(monkeypatch, _movie_snapshot(BOB))
+    # the automatic date is 4 days out, the manual one 2: the manual one wins,
+    # and manual schedules still run when the automatic task is off
+    (result,) = harness.run(
+        task_enabled=task_enabled,
+        extra=_manual_schedule(NOW + timedelta(days=2)),
+    )
+
+    assert result.warned_candidates == 1
+    assert harness.sent[0][1].startswith("Dune (2021) will be deleted on October 11")
+
+
+@pytest.mark.parametrize(
+    ("when", "state"),
+    [(NOW + timedelta(days=30), "scheduled"), (NOW + timedelta(days=2), "blocked")],
+    ids=["outside-window", "blocked"],
+)
+def test_manual_schedules_that_will_not_run_soon_send_nothing(
+    monkeypatch: pytest.MonkeyPatch, when: datetime, state: str
+) -> None:
+    harness = Harness(monkeypatch, _movie_snapshot(BOB))
+    (result,) = harness.run(extra=_manual_schedule(when, state))
+
+    assert harness.sent == []
+    assert result.warned_candidates == 0
 
 
 def test_missing_seerr_data_leaves_the_candidate_for_the_next_scan(

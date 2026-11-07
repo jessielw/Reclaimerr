@@ -10,6 +10,7 @@
     localDateTime,
   } from "$lib/utils/scheduled-deletion-time.js";
   import { formatDateTimeToLocaleString } from "$lib/utils/date";
+  import { scheduledDeletionEditRequest } from "$lib/stores/scheduled-deletion-edit";
   import { toast } from "svelte-sonner";
   import type { ScheduledDeletion } from "$lib/types/shared";
 
@@ -28,6 +29,13 @@
   let target = $state<ScheduledDeletion | null>(null);
   let action = $state<"reschedule" | "cancel">("reschedule");
   let open = $state(false);
+  let listOpen = $state(false);
+  const nextAt = $derived(
+    schedules
+      .filter((item) => item.state === "scheduled")
+      .map((item) => item.scheduled_at)
+      .sort()[0],
+  );
   let value = $state("");
   let busy = $state(false);
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -46,6 +54,7 @@
         return !next || next.state !== previous.state;
       });
       schedules = result;
+      if (!result.length) listOpen = false;
       error = "";
       if (changed) onChanged?.();
     } catch (e) {
@@ -73,6 +82,15 @@
     value = localDateTime(new Date(schedule.scheduled_at));
     open = true;
   }
+  // a candidate row asked to edit its schedule
+  $effect(() => {
+    const request = $scheduledDeletionEditRequest;
+    if (!request) return;
+    scheduledDeletionEditRequest.set(null);
+    const schedule = schedules.find((item) => item.id === request.scheduleId);
+    if (schedule && schedule.state !== "running")
+      edit(schedule, request.action);
+  });
   async function save() {
     if (!target || busy) return;
     busy = true;
@@ -111,14 +129,37 @@
   </div>
 {/if}
 {#if schedules.length}
-  <section
-    class="rounded-lg border border-border bg-card text-foreground"
-    aria-label="Scheduled manual deletions"
+  <div
+    class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground"
   >
-    <h2 class="border-b border-border px-4 py-3 font-semibold">
-      Scheduled manual deletions ({schedules.length})
-    </h2>
-    <ul class="max-h-80 divide-y divide-border overflow-y-auto">
+    <span>
+      <strong>{schedules.length}</strong> scheduled manual deletion{schedules.length ===
+      1
+        ? ""
+        : "s"}{#if nextAt}
+        · next: {formatDateTimeToLocaleString(nextAt)}{/if}
+    </span>
+    <Button size="sm" variant="outline" onclick={() => (listOpen = true)}
+      >Manage</Button
+    >
+  </div>
+{/if}
+
+<Dialog.Root bind:open={listOpen}>
+  <Dialog.Content
+    class="max-h-[90dvh] overflow-y-auto text-foreground sm:max-w-2xl"
+  >
+    <Dialog.Header>
+      <Dialog.Title
+        >Scheduled manual deletions ({schedules.length})</Dialog.Title
+      >
+      <Dialog.Description
+        >Reschedule or cancel before execution starts.</Dialog.Description
+      >
+    </Dialog.Header>
+    <ul
+      class="max-h-[60dvh] divide-y divide-border overflow-y-auto rounded-md border border-border"
+    >
       {#each schedules as schedule (schedule.id)}
         <li class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div class="min-w-0 flex-1">
@@ -130,6 +171,12 @@
                 schedule.scheduled_at,
               )} · {schedule.state}
             </p>
+            {#if schedule.state === "blocked"}<p
+                class="text-sm text-muted-foreground"
+              >
+                Blocked, for example by active playback or protection. It will
+                not retry; reschedule to try again.
+              </p>{/if}
             {#if schedule.last_error}<p class="text-sm text-destructive">
                 {schedule.last_error}
               </p>{/if}
@@ -154,8 +201,8 @@
         </li>
       {/each}
     </ul>
-  </section>
-{/if}
+  </Dialog.Content>
+</Dialog.Root>
 
 <Dialog.Root
   bind:open

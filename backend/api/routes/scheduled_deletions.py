@@ -34,6 +34,7 @@ from backend.services.scheduled_deletions import (
     snapshot_target,
     target_inventory,
 )
+from backend.tasks.cleanup import request_leaving_soon_sync
 
 router = APIRouter(prefix="/api/media", tags=["scheduled-deletions"])
 
@@ -124,9 +125,7 @@ async def schedule_candidate_deletions(
             queued_inventory = await target_inventory(db, candidate)
             if not queued_inventory["files"] and not queued_inventory["directories"]:
                 continue
-            if any(
-                schedule_inventory_overlap(queued_inventory, t) for t in targets
-            ):
+            if any(schedule_inventory_overlap(queued_inventory, t) for t in targets):
                 raise HTTPException(
                     409, "An overlapping delete or move operation is already queued"
                 )
@@ -144,6 +143,7 @@ async def schedule_candidate_deletions(
             schedules.append(schedule)
         # Intent and execution job are committed together.
         await db.commit()
+        request_leaving_soon_sync()
         return [await schedule_response(db, schedule) for schedule in schedules]
 
 
@@ -211,6 +211,7 @@ async def reschedule_deletion(
         schedule.state, schedule.last_error = "scheduled", None
         await add_schedule_job(db, schedule)
         await db.commit()
+        request_leaving_soon_sync()
         return await schedule_response(db, schedule)
 
 
@@ -226,4 +227,5 @@ async def cancel_scheduled_deletion(
         schedule.state = "canceled"
         schedule.completed_at = datetime.now(UTC)
         await db.commit()
+        request_leaving_soon_sync()
     return {"message": "Scheduled deletion canceled. Normal cleanup rules apply again."}
