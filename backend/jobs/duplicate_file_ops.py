@@ -77,6 +77,7 @@ from backend.services.playback_guard import (
     playback_step_completed,
 )
 from backend.services.radarr import RadarrClient
+from backend.services.scheduled_deletions import blocking_file_paths
 from backend.services.sonarr import SonarrClient
 from backend.services.upgrade_leftovers import (
     check_before_delete,
@@ -730,6 +731,11 @@ async def delete_duplicate_files(
             version_ids=item.version_ids,
         )
         target = PlaybackTarget()
+        scheduled = await blocking_file_paths(db, (file.path for file in selected))
+        if scheduled is not None:
+            raise DuplicateActionError(
+                f"This file has scheduled deletion #{scheduled.id}; cancel its schedule before deleting it here"
+            )
         if item.media_type is MediaType.MOVIE:
             for version_id in item.version_ids:
                 candidate = ReclaimCandidate(
@@ -792,6 +798,11 @@ async def delete_leftover(
         row = await db.get(UpgradeLeftover, item.id)
         if row is None:
             raise DuplicateActionError("No longer listed - rescan")
+        scheduled = await blocking_file_paths(db, (row.local_path, row.dropped_path))
+        if scheduled is not None:
+            raise DuplicateActionError(
+                f"This file has scheduled deletion #{scheduled.id}; cancel its schedule before deleting it here"
+            )
         target = PlaybackTarget(
             paths=[
                 (row.local_path, None, None, False),

@@ -35,7 +35,7 @@ from backend.models.dashboard import (
     DashboardServiceSummary,
     DashboardViewer,
 )
-from backend.services.reclaim_stats import load_reclaim_totals
+from backend.services.reclaim_stats import load_reclaim_totals, next_auto_delete_at
 from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
@@ -313,6 +313,7 @@ async def get_dashboard(
         reclaimed_movies=totals.reclaimed_movies,
         reclaimed_series=totals.reclaimed_series,
         reclaimed_total_bytes=totals.reclaimed_bytes,
+        next_deletion_at=to_utc_isoformat(await next_auto_delete_at(db, now)),
     )
     request_summary = DashboardRequestsSummary(
         pending_count=pending_requests,

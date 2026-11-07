@@ -17,6 +17,11 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import { formatFileSize } from "$lib/utils/formatters";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+  import DeletionTiming from "$lib/components/candidates/deletion-timing.svelte";
+  import {
+    scheduledDeletionError,
+    scheduledDeletionTime,
+  } from "$lib/utils/scheduled-deletion-time.js";
 
   const TMDB_POSTER_WIDTH = 342;
   const inputPlaceHolderText =
@@ -52,6 +57,15 @@
 
   const isAdmin = $derived($auth.user?.role === "admin");
 
+  // managers can schedule a deletion directly, without a delete request
+  const canSchedule = $derived(
+    isAdmin ||
+      ($auth.user?.permissions ?? []).includes(Permission.ManageReclaim),
+  );
+  let timing = $state<"now" | "later">("now");
+  let deleteWhen = $state("");
+  const scheduling = $derived(canSchedule && timing === "later");
+
   const canRequestDelete = $derived(
     isAdmin ||
       ($auth.user?.permissions ?? []).includes(Permission.Request) ||
@@ -79,6 +93,8 @@
   $effect(() => {
     if (open) {
       reason = "";
+      timing = "now";
+      deleteWhen = "";
       scopeMode = "whole";
       selectedSeasonIds = new Set();
       selectedVersionIds = new Set();
@@ -159,8 +175,9 @@
 
   const canSubmit = $derived(
     !!media &&
-      canRequestDelete &&
-      (isAdmin || !!reason.trim()) &&
+      (scheduling
+        ? !scheduledDeletionError(deleteWhen)
+        : canRequestDelete && (isAdmin || !!reason.trim())) &&
       !media.status.is_protected &&
       !media.status.has_pending_delete_request &&
       (scopeMode === "whole" ||
@@ -185,6 +202,7 @@
         media_id: media.id,
         reason: reason.trim(),
       };
+      const scheduledAt = scheduling ? scheduledDeletionTime(deleteWhen) : "";
 
       const scopePayloads: Array<Record<string, number>> = [];
       if (scopeMode === "whole") scopePayloads.push({});
@@ -202,6 +220,30 @@
         for (const versionId of selectedVersionIds) {
           scopePayloads.push({ movie_version_id: versionId });
         }
+      }
+
+      if (scheduling) {
+        const scheduled = await Promise.allSettled(
+          scopePayloads.map((scope) =>
+            post_api("/api/media/schedule-deletion", {
+              media_type: mediaType,
+              media_id: media.id,
+              scheduled_at: scheduledAt,
+              ...scope,
+            }),
+          ),
+        );
+        const done = scheduled.filter((r) => r.status === "fulfilled").length;
+        const firstError = scheduled.find((r) => r.status === "rejected") as
+          PromiseRejectedResult | undefined;
+        if (done > 0)
+          toast.success(`Scheduled ${done} deletion${done === 1 ? "" : "s"}`);
+        if (firstError)
+          toast.error(
+            firstError.reason?.message ?? "Failed to schedule deletion",
+          );
+        if (done > 0) handleClose();
+        return;
       }
 
       const results = await Promise.allSettled(
@@ -528,7 +570,15 @@
             {/if}
           </div>
 
-          {#if !isAdmin}
+          {#if canSchedule}
+            <DeletionTiming
+              bind:mode={timing}
+              bind:value={deleteWhen}
+              nowLabel="Submit deletion request"
+            />
+          {/if}
+
+          {#if !isAdmin && !scheduling}
             <div class="space-y-2">
               <Label for="delete-reason" class="text-foreground">
                 Reason{isAdmin ? " (optional)" : ""}
@@ -552,7 +602,13 @@
       <Button variant="secondary" onclick={() => handleClose()}>Cancel</Button>
       <Button onclick={handleSubmit} disabled={!canSubmit || submitting}>
         {#if submitting}
-          {isAdmin ? "Submitting..." : "Requesting..."}
+          {scheduling
+            ? "Scheduling..."
+            : isAdmin
+              ? "Submitting..."
+              : "Requesting..."}
+        {:else if scheduling}
+          Schedule Deletion
         {:else}
           {isAdmin ? "Submit Deletion" : "Request Deletion"}
         {/if}

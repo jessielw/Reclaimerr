@@ -29,6 +29,7 @@ from backend.api.routes.media import router as media_router
 from backend.api.routes.protected import router as protected_router
 from backend.api.routes.requests import router as requests_router
 from backend.api.routes.rules import router as rules_router
+from backend.api.routes.scheduled_deletions import router as scheduled_deletions_router
 from backend.api.routes.settings import router as settings_router
 from backend.api.routes.setup import router as setup_router
 from backend.api.routes.storage import router as storage_router
@@ -237,6 +238,7 @@ fastapi_app.include_router(account_router)
 fastapi_app.include_router(tasks_router)
 fastapi_app.include_router(background_jobs_router)
 fastapi_app.include_router(media_router)
+fastapi_app.include_router(scheduled_deletions_router)
 fastapi_app.include_router(requests_router)
 fastapi_app.include_router(delete_requests_router)
 fastapi_app.include_router(diagnostics_router)

@@ -9,8 +9,15 @@ from sqlalchemy import delete, select
 from backend.core.logger import LOG
 from backend.core.task_tracking import track_task_execution
 from backend.database import async_db
-from backend.database.models import AdminNotice, BackgroundJob, TaskRun, UserSession
-from backend.enums import Task
+from backend.database.models import (
+    AdminNotice,
+    BackgroundJob,
+    ScheduledDeletion,
+    TaskRun,
+    UserSession,
+)
+from backend.enums import BackgroundJobStatus, Task
+from backend.services.scheduled_deletions import ACTIVE_SCHEDULE_STATES
 
 __all__ = ["weekly_house_keeping"]
 
@@ -36,11 +43,26 @@ async def _trim_task_runs(keep_recent: int) -> None:
 
 
 async def _trim_background_jobs(keep_recent: int) -> None:
-    """Trim old background jobs from the database, keeping only the most recent N runs total."""
+    """Trim finished history while preserving queued work and active schedules."""
     async with async_db() as session:
         try:
             rows_to_del = (
                 select(BackgroundJob.id)
+                .where(
+                    BackgroundJob.status.in_(
+                        [
+                            BackgroundJobStatus.COMPLETED,
+                            BackgroundJobStatus.FAILED,
+                            BackgroundJobStatus.CANCELED,
+                        ]
+                    ),
+                    BackgroundJob.id.notin_(
+                        select(ScheduledDeletion.job_id).where(
+                            ScheduledDeletion.state.in_(ACTIVE_SCHEDULE_STATES),
+                            ScheduledDeletion.job_id.is_not(None),
+                        )
+                    ),
+                )
                 .order_by(BackgroundJob.created_at.desc())
                 .offset(keep_recent)
             )

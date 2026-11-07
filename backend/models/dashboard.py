@@ -14,6 +14,7 @@ class DashboardKpis(BaseModel):
     reclaimed_movies: int
     reclaimed_series: int
     reclaimed_total_bytes: int
+    next_deletion_at: str | None = None
 
 
 class DashboardRequestsSummary(BaseModel):

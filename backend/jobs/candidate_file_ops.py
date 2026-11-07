@@ -199,6 +199,10 @@ async def run_candidate_file_op_job(
 ) -> dict[str, Any]:
     """Serialize candidate file operations with candidate reconciliation tasks."""
     async with candidate_workflow_lock:
+        if payload.scheduled_deletion_id is not None:
+            from backend.jobs.scheduled_deletions import run_scheduled_deletion
+
+            return await run_scheduled_deletion(job_id, payload)
         return await _run_candidate_file_op_job_unlocked(job_id, payload)
 
 

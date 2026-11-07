@@ -38,6 +38,7 @@ class CandidateFileOpJobPayload(BaseModel):
     requested_by_user_id: int
     requested_by_username: str
     delete_request_id: int | None = None
+    scheduled_deletion_id: int | None = None
     item_labels: list[str] = []
     item_label_total: int | None = None
     item_details: list[CandidateFileOpJobItem] = []

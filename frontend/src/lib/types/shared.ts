@@ -760,6 +760,7 @@ export interface CandidateFileOpJobResult {
 }
 
 export interface CandidateFileOpJobPayload {
+  scheduled_deletion_id?: number | null;
   operation: "delete" | "move";
   candidate_ids: number[];
   requested_by_user_id: number;
@@ -1296,6 +1297,8 @@ export interface CandidatePlaybackWatchers {
 }
 
 export interface ReclaimCandidateEntry {
+  scheduled_deletion_id?: number | null;
+  scheduled_deletion_at?: string | null;
   id: number;
   matched_rule_ids: number[];
   reason: string;
@@ -1519,6 +1522,7 @@ export interface DashboardKpis {
   reclaimed_movies: number;
   reclaimed_series: number;
   reclaimed_total_bytes: number;
+  next_deletion_at?: string | null;
 }
 
 export interface ReclaimHistoryEntry {
@@ -1609,7 +1613,8 @@ export interface DashboardResponse {
 }
 
 export interface CalendarItem {
-  candidate_id: number;
+  scheduled_deletion_id?: number | null;
+  candidate_id: number | null;
   media_type: string;
   scope: "movie" | "version" | "series" | "season" | "episode";
   title: string;
@@ -1623,6 +1628,15 @@ export interface CalendarItem {
   operation: "delete" | "move";
   state: string;
   eligible_at: string;
+}
+
+export interface ScheduledDeletion {
+  id: number;
+  scheduled_at: string;
+  state: string;
+  target: { title: string; scope: string; operation: "delete" | "move" };
+  created_by_username: string;
+  last_error: string | null;
 }
 
 export interface CalendarDay {

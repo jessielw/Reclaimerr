@@ -25,6 +25,11 @@ from backend.database.models import (
 from backend.enums import MediaType
 from backend.services.arr_readd import READD_ACTION
 from backend.services.reclaimable import non_reclaiming_candidate_totals
+from backend.services.scheduled_deletions import (
+    active_schedules,
+    blocking_schedule,
+    inventory_cache,
+)
 
 # Auto-delete states that end in a deletion or move without anyone acting.
 SCHEDULED_AUTO_DELETE_STATES = frozenset({"scheduled", "eligible", "postponed"})
@@ -129,8 +134,14 @@ async def next_auto_delete_at(
     automatic deletion task.
     """
     candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
+    manual_schedules = await active_schedules(db)
+    manual_deadlines = [
+        ensure_utc(schedule.scheduled_at)
+        for schedule in manual_schedules
+        if schedule.state == "scheduled"
+    ]
     if not candidates:
-        return None
+        return min(manual_deadlines, default=None)
     inputs = await load_auto_delete_inputs(
         db,
         (
@@ -140,8 +151,11 @@ async def next_auto_delete_at(
         ),
     )
     resolved_now = now or datetime.now(UTC)
-    deadlines = []
+    deadlines = list(manual_deadlines)
+    manual_cache = await inventory_cache(db, candidates, manual_schedules)
     for candidate in candidates:
+        if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
+            continue
         policy = resolve_auto_delete_policy(
             media_type=cast(MediaType, candidate.media_type),
             matched_rule_ids=cast(list[int], candidate.matched_rule_ids or []),

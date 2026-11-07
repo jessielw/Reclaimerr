@@ -1921,6 +1921,16 @@ async def get_candidates(
             last_activity_at=to_utc_isoformat(merged.last_activity_at),
         )
 
+    from backend.services.scheduled_deletions import (
+        active_schedules,
+        blocking_schedule,
+        inventory_cache,
+    )
+
+    manual_schedules = await active_schedules(db)
+    manual_cache = await inventory_cache(
+        db, [r.ReclaimCandidate for r in rows], manual_schedules
+    )
     items_out: list[CandidateEntry] = []
     for row in rows:
         c = row.ReclaimCandidate
@@ -2144,9 +2154,14 @@ async def get_candidates(
             else None
         )
 
+        manual_schedule = await blocking_schedule(db, c, manual_schedules, manual_cache)
         items_out.append(
             CandidateEntry(
                 id=c.id,
+                scheduled_deletion_id=manual_schedule.id if manual_schedule else None,
+                scheduled_deletion_at=to_utc_isoformat(manual_schedule.scheduled_at)
+                if manual_schedule
+                else None,
                 matched_rule_ids=list(c.matched_rule_ids or []),
                 reason=c.reason,
                 media_type=c.media_type.value,

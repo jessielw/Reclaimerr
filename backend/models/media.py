@@ -770,6 +770,8 @@ class CandidateEntry(CandidateEntryBase):
     """A single reclaim candidate with enough info to display and act on."""
 
     id: int
+    scheduled_deletion_id: int | None = None
+    scheduled_deletion_at: str | None = None
     matched_rule_ids: list[int]
     reason: str
     has_pending_request: bool

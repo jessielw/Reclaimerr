@@ -208,12 +208,18 @@ export const newestCandidateCreatedAt = (
 export const earliestAutoDeleteEntry = (
   entries: ReclaimCandidateEntry[],
 ): ReclaimCandidateEntry | null => {
-  const activeEntries = entries.filter((entry) => entry.auto_delete_is_active);
+  const activeEntries = entries.filter(
+    (entry) => entry.auto_delete_is_active || entry.scheduled_deletion_at,
+  );
   if (activeEntries.length === 0) return entries[0] ?? null;
 
   return activeEntries.reduce((earliest, entry) =>
-    candidateDateEpoch(entry.auto_delete_eligible_at) <
-    candidateDateEpoch(earliest.auto_delete_eligible_at)
+    candidateDateEpoch(
+      entry.scheduled_deletion_at ?? entry.auto_delete_eligible_at,
+    ) <
+    candidateDateEpoch(
+      earliest.scheduled_deletion_at ?? earliest.auto_delete_eligible_at,
+    )
       ? entry
       : earliest,
   );
@@ -244,6 +250,9 @@ export const candidateAutoDeleteLabel = (
   entry: ReclaimCandidateEntry,
   formatDate: (value: string) => string,
 ): string => {
+  if (entry.scheduled_deletion_at) {
+    return `Manually scheduled for ${formatDate(entry.scheduled_deletion_at)}`;
+  }
   if (entry.auto_delete_state === "canceled") {
     return "Auto-delete canceled";
   }
@@ -393,7 +402,7 @@ export const candidateMediaMetaFields = (
     // label: entry.auto_delete_is_active
     //   ? autoDeleteLabel
     //   : "Auto-delete eligibility",
-    label: "Auto delete",
+    label: entry.scheduled_deletion_at ? "Scheduled deletion" : "Auto delete",
     value: candidateAutoDeleteLabel(entry, formatDate),
     // containerClass: "rounded-sm bg-destructive/10 px-1.5",
     // labelClass: "font-medium text-destructive/75",

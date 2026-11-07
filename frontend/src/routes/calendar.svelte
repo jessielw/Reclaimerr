@@ -286,7 +286,7 @@
                 >
                   {formatFileSize(day.total_bytes)}
                 </p>
-                {#each day.items.slice(0, 2) as item (item.candidate_id)}
+                {#each day.items.slice(0, 2) as item (item.scheduled_deletion_id ? `manual-${item.scheduled_deletion_id}` : `candidate-${item.candidate_id}`)}
                   <p
                     class="truncate text-[11px] text-foreground"
                     title={item.title}
@@ -312,8 +312,8 @@
       <div
         class="bg-card rounded-lg border border-border p-8 text-center text-muted-foreground"
       >
-        Nothing is scheduled in this range. Candidates appear here once a rule
-        with automatic deletion has flagged them.
+        Nothing is scheduled in this range. Schedule a manual deletion from
+        Candidates, or enable automatic deletion on a cleanup rule.
       </div>
     {/if}
 
@@ -335,7 +335,7 @@
           </span>
         </div>
         <ul class="divide-y divide-border">
-          {#each selectedDay.items as item (item.candidate_id)}
+          {#each selectedDay.items as item (item.scheduled_deletion_id ? `manual-${item.scheduled_deletion_id}` : `candidate-${item.candidate_id}`)}
             <li
               class="flex flex-wrap items-center justify-between gap-2 px-3 py-2"
             >
@@ -348,6 +348,14 @@
                 </p>
               </div>
               <div class="flex items-center gap-1.5">
+                {#if item.scheduled_deletion_id}
+                  <Badge variant="outline" class="text-[10px]"
+                    >Manual · {item.state}</Badge
+                  >
+                  <a href="/candidates" use:link class="text-xs underline"
+                    >Manage schedule</a
+                  >
+                {/if}
                 <Badge variant="outline" class="text-[10px]">
                   {scopeLabel(item.scope)}
                 </Badge>

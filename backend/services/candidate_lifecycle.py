@@ -5,7 +5,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auto_delete import resolve_auto_delete_policy
@@ -71,6 +71,7 @@ async def candidate_deletion_blockers(
         protection_scope = and_(
             ProtectedMedia.movie_id == candidate.movie_id,
             or_(
+                literal(candidate.movie_version_id is None),
                 ProtectedMedia.movie_version_id.is_(None),
                 ProtectedMedia.movie_version_id == candidate.movie_version_id,
             ),
@@ -78,6 +79,7 @@ async def candidate_deletion_blockers(
         request_scope = and_(
             ProtectionRequest.movie_id == candidate.movie_id,
             or_(
+                literal(candidate.movie_version_id is None),
                 ProtectionRequest.movie_version_id.is_(None),
                 ProtectionRequest.movie_version_id == candidate.movie_version_id,
             ),
@@ -85,6 +87,7 @@ async def candidate_deletion_blockers(
         delete_scope = and_(
             DeleteRequest.movie_id == candidate.movie_id,
             or_(
+                literal(candidate.movie_version_id is None),
                 DeleteRequest.movie_version_id.is_(None),
                 DeleteRequest.movie_version_id == candidate.movie_version_id,
             ),

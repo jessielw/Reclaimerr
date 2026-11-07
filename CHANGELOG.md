@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.9] - 2026-11-07
+
+### Added
+
+- **Scheduled manual deletion** for single and bulk cleanup candidates. Choose **Delete on…**, manage schedules from Candidates, and view them on Calendar. Schedules survive rescans and restarts, hold overlapping cleanup, and recheck permissions, protection, playback, and exact file scope before execution.
+- A **Next Deletion** tile on the dashboard showing the earliest automatic or manually scheduled deletion.
+- **Delete on…** from the Movies and Series delete dialog for users who can manage cleanup. It schedules the deletion directly, with the same checks and views as candidate schedules, and skips the delete request.
+- **Reschedule** and **Cancel** buttons directly on scheduled candidate rows.
+- Quick time presets (**In 1 hour**, **Tomorrow**, **In 1 week**) when scheduling a deletion, and a note on blocked schedules explaining they must be rescheduled.
+
+### Changed
+
+- Scheduling, rescheduling, or canceling a deletion refreshes the Leaving Soon collections within about a minute, combining bursts of changes into one sync.
+- Manually scheduled deletions stay in the Leaving Soon collection, sorted by their scheduled time, even if a rescan removes the candidate.
+- Requester Leaving Soon warnings now cover manually scheduled deletions, using the scheduled time, even when automatic deletion is off.
+- The dashboard's next deletion date now includes manually scheduled deletions.
+- Movie-wide cleanup candidates are now held back by any version-specific protection, protection request, or deletion request on the same movie, instead of only by movie-wide ones.
+- Updated backend deps.
+
+### Fixed
+
+- Scheduling a deletion is no longer rejected because an unrelated queued delete or move has media or files that are already gone.
+
 ## [0.6.8] - 2026-11-05
 
 ### Fixed

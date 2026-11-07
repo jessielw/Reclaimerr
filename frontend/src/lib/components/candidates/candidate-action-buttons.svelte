@@ -3,6 +3,7 @@
   import DiagnosticsDialog from "$lib/components/diagnostics/diagnostics-dialog.svelte";
   import type { DiagnosticsTarget } from "$lib/types/diagnostics";
   import { auth } from "$lib/stores/auth";
+  import { formatDateTimeToLocaleString } from "$lib/utils/date";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
@@ -10,6 +11,9 @@
   import Bug from "@lucide/svelte/icons/bug";
   import Shield from "@lucide/svelte/icons/shield";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import CalendarClock from "@lucide/svelte/icons/calendar-clock";
+  import CalendarX from "@lucide/svelte/icons/calendar-x";
+  import { scheduledDeletionEditRequest } from "$lib/stores/scheduled-deletion-edit";
   import { MediaType, type ReclaimCandidateEntry } from "$lib/types/shared";
 
   interface Props {
@@ -108,7 +112,36 @@
 {/if}
 
 <!-- deletion permissions -->
-{#if canDelete}
+{#if entry.scheduled_deletion_at}
+  <span class="text-xs text-blue-400 self-center"
+    >Scheduled for {formatDateTimeToLocaleString(
+      entry.scheduled_deletion_at,
+    )}</span
+  >
+{/if}
+{#if canDelete && entry.scheduled_deletion_id}
+  {@render action(
+    `Reschedule ${scope} deletion`,
+    "bg-blue-600/80 hover:bg-blue-600/60",
+    CalendarClock,
+    () =>
+      scheduledDeletionEditRequest.set({
+        scheduleId: entry.scheduled_deletion_id!,
+        action: "reschedule",
+      }),
+  )}
+  {@render action(
+    `Cancel scheduled ${scope} deletion`,
+    "bg-destructive/80 hover:bg-destructive/60",
+    CalendarX,
+    () =>
+      scheduledDeletionEditRequest.set({
+        scheduleId: entry.scheduled_deletion_id!,
+        action: "cancel",
+      }),
+  )}
+{/if}
+{#if canDelete && !entry.scheduled_deletion_id}
   {#if moveEnabled}
     {@render action(
       `Move ${scope} to destination`,
