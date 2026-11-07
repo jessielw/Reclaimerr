@@ -32,6 +32,11 @@ from backend.services.reclaim_stats import (
     SCHEDULED_AUTO_DELETE_STATES,
     load_auto_delete_inputs,
 )
+from backend.services.scheduled_deletions import (
+    active_schedules,
+    blocking_schedule,
+    schedule_response,
+)
 
 router = APIRouter(prefix="/api", tags=["calendar"])
 
@@ -156,8 +161,11 @@ async def get_calendar(
 
     now = datetime.now(UTC)
     buckets: dict[date, list[CalendarItem]] = {}
+    manual_schedules = await active_schedules(db)
     for row in rows:
         candidate = row.ReclaimCandidate
+        if await blocking_schedule(db, candidate, manual_schedules):
+            continue
         policy = resolve_auto_delete_policy(
             media_type=cast(MediaType, candidate.media_type),
             matched_rule_ids=cast(list[int], candidate.matched_rule_ids),
@@ -210,6 +218,35 @@ async def get_calendar(
                 estimated_space_bytes=_estimated_bytes(row, candidate),
                 operation=operation,
                 state=policy.state,
+                eligible_at=eligible_at,
+            )
+        )
+
+    for schedule in manual_schedules:
+        eligible_at = ensure_utc(schedule.scheduled_at)
+        day = (eligible_at + offset).date()
+        if not start <= day <= end:
+            continue
+        target = schedule.target
+        response = await schedule_response(db, schedule)
+        buckets.setdefault(day, []).append(
+            CalendarItem(
+                candidate_id=target["candidate_id"],
+                scheduled_deletion_id=schedule.id,
+                media_type=target["media_type"],
+                scope=target["scope"],
+                title=target["title"],
+                year=target["year"],
+                media_id=target["media_id"],
+                movie_version_id=target.get("movie_version_id"),
+                series_id=target["media_id"]
+                if target["media_type"] == "series"
+                else None,
+                season_id=target.get("season_id"),
+                episode_id=target.get("episode_id"),
+                estimated_space_bytes=target.get("estimated_space_bytes"),
+                operation=target["operation"],
+                state=response.state,
                 eligible_at=eligible_at,
             )
         )

@@ -2,7 +2,21 @@
 
 Reclaimerr deletes candidates in a fixed order.
 
-Scheduled automatic deletion only applies to candidates from rules that explicitly enable automatic deletion. It then applies the candidate's review period. The default movie and TV delays can be overridden by auto-delete-enabled candidate rules, and the longest delay from all matching opted-in rules wins. Candidates remain visible and tagged while waiting. Manual delete and move actions are immediate and do not use this delay.
+Scheduled automatic deletion only applies to candidates from rules that explicitly enable automatic deletion. It then applies the candidate's review period. The default movie and TV delays can be overridden by auto-delete-enabled candidate rules, and the longest delay from all matching opted-in rules wins. Candidates remain visible and tagged while waiting. Manual delete and move actions do not use this delay. Manual deletion can run immediately or at a chosen date and time.
+
+## Schedule a Manual Deletion
+
+Users with permission to delete cleanup candidates can choose **Delete on…** in the single-item or bulk deletion dialog. Pick a future date and time in your local timezone, check the displayed timezone, and select **Schedule deletion**. Existing **Move Instead of Delete** actions still apply and are shown before confirmation.
+
+The **Scheduled manual deletions** panel on Candidates shows the date, operation, and current state. Use **Reschedule** or **Cancel scheduled deletion** before execution starts. Calendar also shows manual schedules and links to their controls on Candidates. Regular deletion requests retain their existing approval flow.
+
+Schedules survive restarts, cleanup rescans, and changes to candidate rows. An overlapping automatic deletion or manual delete/move is held until the schedule finishes or is canceled. Canceling a schedule restores normal cleanup rules, including any automatic deletion date that has already passed.
+
+Execution starts **at or after** the chosen time. If Reclaimerr is offline or another operation holds the required services, the job waits. Before execution, Reclaimerr checks the scheduling user's current deletion permission, the original scope and file inventory, deletion rule actions, active protections, pending requests, and active playback. A missing version, changed inventory, or changed rule action blocks execution instead of broadening or changing the operation. The selected files must have identifiable paths to be scheduled.
+
+Blocked or failed schedules stay visible and continue holding overlapping cleanup. They do not retry automatically. Resolve the reported issue and reschedule; if the files or rule actions changed, cancel and schedule the current selection again. A restart during execution is reported as failed so you can inspect History before retrying.
+
+## Automatic Deletion Warnings
 
 Seerr requesters can be warned before their titles are deleted automatically. After each cleanup scan, a candidate whose deadline is within **Warn requesters before deletion** (General Settings, default 7 days, 0 turns it off) sends its requesters one notification of type **Your Requests Leaving Soon**, linking to the Candidates page so they can request protection. A user with several titles in the window gets them in a single message. Each candidate warns once. If its deadline is postponed afterwards, no second warning is sent; the log notes it.
 

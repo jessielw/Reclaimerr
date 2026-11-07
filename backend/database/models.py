@@ -2237,6 +2237,32 @@ class DeleteRequest(Base):
     )
 
 
+class ScheduledDeletion(Base):
+    """Durable manual intent, independent of rule-generated candidate rows."""
+
+    __tablename__ = "scheduled_deletions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    target: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_by_username: Mapped[str] = mapped_column(String(255))
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("background_jobs.id", ondelete="SET NULL"), default=None
+    )
+    state: Mapped[str] = mapped_column(String(32), default="scheduled", index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), init=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), init=False
+    )
+
+
 class ReclaimHistory(Base):
     """Historical record of reclaim actions taken on media items."""
 

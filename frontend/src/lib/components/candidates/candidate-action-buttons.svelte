@@ -3,6 +3,7 @@
   import DiagnosticsDialog from "$lib/components/diagnostics/diagnostics-dialog.svelte";
   import type { DiagnosticsTarget } from "$lib/types/diagnostics";
   import { auth } from "$lib/stores/auth";
+  import { formatDateTimeToLocaleString } from "$lib/utils/date";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
@@ -108,7 +109,14 @@
 {/if}
 
 <!-- deletion permissions -->
-{#if canDelete}
+{#if entry.scheduled_deletion_at}
+  <span class="text-xs text-blue-400 self-center"
+    >Scheduled for {formatDateTimeToLocaleString(
+      entry.scheduled_deletion_at,
+    )}</span
+  >
+{/if}
+{#if canDelete && !entry.scheduled_deletion_id}
   {#if moveEnabled}
     {@render action(
       `Move ${scope} to destination`,

@@ -13,6 +13,7 @@ class CalendarItem(BaseModel):
     """One scheduled candidate action on the calendar."""
 
     candidate_id: int
+    scheduled_deletion_id: int | None = None
     media_type: str
     scope: CandidateScope
     title: str

@@ -39,6 +39,12 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import FolderOutput from "@lucide/svelte/icons/folder-output";
   import ProtectionRequestDialog from "$lib/components/media/protection-request-dialog.svelte";
+  import DeletionTiming from "$lib/components/candidates/deletion-timing.svelte";
+  import ScheduledDeletions from "$lib/components/candidates/scheduled-deletions.svelte";
+  import {
+    scheduledDeletionError,
+    scheduledDeletionTime,
+  } from "$lib/utils/scheduled-deletion-time.js";
   import Shield from "@lucide/svelte/icons/shield";
   import Eraser from "@lucide/svelte/icons/eraser";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
@@ -157,6 +163,11 @@
   let deleteDialogOpen = $state(false);
   let deleteTarget = $state<ReclaimCandidateEntry | null>(null);
   let deleteSubmitting = $state(false);
+  let deleteTiming = $state<"now" | "later">("now");
+  let deleteWhen = $state("");
+  let bulkDeleteTiming = $state<"now" | "later">("now");
+  let bulkDeleteWhen = $state("");
+  let scheduleRefreshKey = $state(0);
 
   // single item move
   let moveDialogOpen = $state(false);
@@ -179,6 +190,12 @@
   // bulk delete confirmation
   let bulkDeleteDialogOpen = $state(false);
   let bulkDeleteSubmitting = $state(false);
+  $effect(() => {
+    if (bulkDeleteDialogOpen) {
+      bulkDeleteTiming = "now";
+      bulkDeleteWhen = "";
+    }
+  });
 
   // the delete/move job currently running; blocks queueing another until done
   let activeJob = $state<{
@@ -676,8 +693,9 @@
       );
       const running = jobs.find(
         (job) =>
-          job.status === BackgroundJobStatus.Pending ||
-          job.status === BackgroundJobStatus.Running,
+          !job.payload?.scheduled_deletion_id &&
+          (job.status === BackgroundJobStatus.Pending ||
+            job.status === BackgroundJobStatus.Running),
       );
       if (!running || activeJob) return;
       updateActiveJob(running.id, running, null);
@@ -742,6 +760,8 @@
   };
 
   const openSingleDelete = (entry: ReclaimCandidateEntry) => {
+    deleteTiming = "now";
+    deleteWhen = "";
     deleteTarget = entry;
     deleteDialogOpen = true;
   };
@@ -776,7 +796,11 @@
     if (!deleteTarget) return;
     deleteSubmitting = true;
     try {
-      await queueCandidateOperation("delete", [deleteTarget.id]);
+      if (deleteTiming === "later") {
+        await scheduleDeletion([deleteTarget.id], deleteWhen);
+      } else {
+        await queueCandidateOperation("delete", [deleteTarget.id]);
+      }
       deleteDialogOpen = false;
       deleteTarget = null;
     } catch (e: any) {
@@ -791,14 +815,35 @@
     bulkDeleteSubmitting = true;
     const selectedCandidateIds = selectedEntries.map((e) => e.id);
     try {
-      await queueCandidateOperation("delete", selectedCandidateIds);
+      if (bulkDeleteTiming === "later") {
+        await scheduleDeletion(selectedCandidateIds, bulkDeleteWhen);
+      } else {
+        await queueCandidateOperation("delete", selectedCandidateIds);
+      }
+      bulkDeleteDialogOpen = false;
+      selectedIds = new Set();
     } catch (e: any) {
       toast.error(e.message ?? "Failed to delete candidates.");
     } finally {
       bulkDeleteSubmitting = false;
-      bulkDeleteDialogOpen = false;
-      selectedIds = new Set();
     }
+  };
+
+  const schedulesChanged = async () => {
+    await loadCandidates(currentPage);
+    uiIndicators.invalidate();
+  };
+
+  const scheduleDeletion = async (candidateIds: number[], when: string) => {
+    await post_api("/api/media/candidates/schedule-deletion", {
+      candidate_ids: candidateIds,
+      scheduled_at: scheduledDeletionTime(when),
+    });
+    toast.success(
+      `Scheduled ${candidateIds.length} deletion${candidateIds.length === 1 ? "" : "s"}`,
+    );
+    scheduleRefreshKey += 1;
+    await schedulesChanged();
   };
 
   const submitSingleMove = async () => {
@@ -1187,8 +1232,13 @@
 </script>
 
 <!-- bulk delete confirmation -->
-<AlertDialog.Root bind:open={bulkDeleteDialogOpen}>
-  <AlertDialog.Content class="text-foreground">
+<AlertDialog.Root
+  open={bulkDeleteDialogOpen}
+  onOpenChange={(open) => {
+    if (!bulkDeleteSubmitting) bulkDeleteDialogOpen = open;
+  }}
+>
+  <AlertDialog.Content class="max-h-[90dvh] overflow-y-auto text-foreground">
     <AlertDialog.Header>
       <AlertDialog.Title
         >Delete {selectedEntries.length} Item{selectedEntries.length !== 1
@@ -1220,27 +1270,41 @@
         {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
+    <DeletionTiming bind:mode={bulkDeleteTiming} bind:value={bulkDeleteWhen} />
     <AlertDialog.Footer>
       <AlertDialog.Cancel disabled={bulkDeleteSubmitting}
         >Cancel</AlertDialog.Cancel
       >
-      <AlertDialog.Action
+      <Button
         onclick={submitBulkDelete}
-        disabled={bulkDeleteSubmitting}
+        disabled={bulkDeleteSubmitting ||
+          (bulkDeleteTiming === "later" &&
+            !!scheduledDeletionError(bulkDeleteWhen))}
       >
         {bulkDeleteSubmitting
-          ? "Deleting..."
-          : `Delete ${selectedEntries.length}`}
-      </AlertDialog.Action>
+          ? "Saving..."
+          : bulkDeleteTiming === "later"
+            ? `Schedule ${selectedEntries.length}`
+            : `Delete ${selectedEntries.length}`}
+      </Button>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
 
 <!-- single delete confirmation -->
-<AlertDialog.Root bind:open={deleteDialogOpen}>
-  <AlertDialog.Content class="text-foreground">
+<AlertDialog.Root
+  open={deleteDialogOpen}
+  onOpenChange={(open) => {
+    if (!deleteSubmitting) deleteDialogOpen = open;
+  }}
+>
+  <AlertDialog.Content class="max-h-[90dvh] overflow-y-auto text-foreground">
     <AlertDialog.Header>
-      <AlertDialog.Title>Delete Permanently?</AlertDialog.Title>
+      <AlertDialog.Title
+        >{deleteTiming === "later"
+          ? "Schedule Deletion?"
+          : "Delete Permanently?"}</AlertDialog.Title
+      >
       <AlertDialog.Description>
         {#if deleteTarget}
           {#if deleteWillMove(deleteTarget)}
@@ -1279,15 +1343,21 @@
         {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
+    <DeletionTiming bind:mode={deleteTiming} bind:value={deleteWhen} />
     <AlertDialog.Footer>
       <AlertDialog.Cancel disabled={deleteSubmitting}>Cancel</AlertDialog.Cancel
       >
-      <AlertDialog.Action
+      <Button
         onclick={submitSingleDelete}
-        disabled={deleteSubmitting}
+        disabled={deleteSubmitting ||
+          (deleteTiming === "later" && !!scheduledDeletionError(deleteWhen))}
       >
-        {deleteSubmitting ? "Deleting..." : "Delete"}
-      </AlertDialog.Action>
+        {deleteSubmitting
+          ? "Saving..."
+          : deleteTiming === "later"
+            ? "Schedule deletion"
+            : "Delete"}
+      </Button>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
@@ -1434,6 +1504,11 @@
 
 <div class="p-2.5 md:p-8">
   <div class="max-w-7xl mx-auto space-y-4">
+    <ScheduledDeletions
+      canManage={canDelete}
+      refreshKey={scheduleRefreshKey}
+      onChanged={schedulesChanged}
+    />
     <div
       class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
     >

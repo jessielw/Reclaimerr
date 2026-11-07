@@ -68,8 +68,16 @@ def _candidate_file_op_summary(payload: dict[str, Any]) -> str:
     else:
         label = "Delete candidates"
 
+    if payload.get("scheduled_deletion_id") is not None:
+        label = "Scheduled deletion"
     candidate_ids = payload.get("candidate_ids")
-    item_count = len(candidate_ids) if isinstance(candidate_ids, list) else None
+    item_count = (
+        1
+        if payload.get("scheduled_deletion_id") is not None
+        else len(candidate_ids)
+        if isinstance(candidate_ids, list)
+        else None
+    )
     result = payload.get("result")
     if isinstance(result, dict):
         succeeded = result.get("succeeded")

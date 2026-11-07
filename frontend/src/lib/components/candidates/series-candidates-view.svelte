@@ -142,6 +142,8 @@
           ...groupMetaSource,
           created_at: groupDateAdded ?? groupMetaSource.created_at,
           auto_delete_delay_days: groupAutoDelete.auto_delete_delay_days,
+          scheduled_deletion_id: groupAutoDelete.scheduled_deletion_id ?? null,
+          scheduled_deletion_at: groupAutoDelete.scheduled_deletion_at ?? null,
           auto_delete_eligible_at: groupAutoDelete.auto_delete_eligible_at,
           auto_delete_is_eligible: groupAutoDelete.auto_delete_is_eligible,
           delete_attempts: groupWorstFailure?.delete_attempts ?? 0,

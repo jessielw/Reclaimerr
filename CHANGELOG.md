@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Scheduled manual deletion** for single and bulk cleanup candidates. Choose **Delete on…**, manage schedules from Candidates, and view them on Calendar. Schedules survive rescans and restarts, hold overlapping cleanup, and recheck permissions, protection, playback, and exact file scope before execution.
+
+### Changed
+
+- Movie-wide cleanup candidates are now held back by any version-specific protection, protection request, or deletion request on the same movie, instead of only by movie-wide ones.
+
+### Fixed
+
+- Scheduling a deletion is no longer rejected because an unrelated queued delete or move has media or files that are already gone.
+
 ## [0.6.8] - 2026-11-05
 
 ### Fixed

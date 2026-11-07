@@ -197,6 +197,7 @@ from backend.services.playback_history import (
 )
 from backend.services.radarr import RadarrClient
 from backend.services.requester_warnings import warn_requesters_before_deletion
+from backend.services.scheduled_deletions import active_schedules, blocking_schedule
 from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_cache
 from backend.services.selected_playback_history import load_selected_history_snapshot
 from backend.services.sonarr import SonarrClient
@@ -629,7 +630,14 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
         eligible_ids: list[int] = []
         blocked_count = 0
         waiting_count = 0
+        manual_schedules = await active_schedules(db)
         for candidate in candidates:
+            if (candidate.matched_criteria or {}).get("scheduled_deletion_id"):
+                blocked_count += 1
+                continue
+            if await blocking_schedule(db, candidate, manual_schedules):
+                waiting_count += 1
+                continue
             blocked = False
             if candidate.media_type is MediaType.MOVIE:
                 blocked = (
@@ -14731,6 +14739,20 @@ async def _run_playback_guarded_candidates_impl(
                 "completed_steps": [],
             }
         candidates = [c for c in candidates if c.id not in pending_ids]
+        schedules = await active_schedules(db)
+        allowed_candidates = []
+        for candidate in candidates:
+            if await blocking_schedule(db, candidate, schedules):
+                result.deferrals[candidate.id] = {
+                    "code": "manual_deletion_scheduled",
+                    "message": "Deferred: this media has a manual deletion schedule; cancel it before another delete or move",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "server_config_ids": [],
+                    "completed_steps": [],
+                }
+            else:
+                allowed_candidates.append(candidate)
+        candidates = allowed_candidates
         rule_ids = {rid for c in candidates for rid in c.matched_rule_ids or []}
         rules = {
             r.id: r
