@@ -237,7 +237,7 @@ async def get_calendar(
         response = await schedule_response(db, schedule)
         buckets.setdefault(day, []).append(
             CalendarItem(
-                candidate_id=target["candidate_id"],
+                candidate_id=target.get("candidate_id"),
                 scheduled_deletion_id=schedule.id,
                 media_type=target["media_type"],
                 scope=target["scope"],

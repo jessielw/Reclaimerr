@@ -1614,7 +1614,7 @@ export interface DashboardResponse {
 
 export interface CalendarItem {
   scheduled_deletion_id?: number | null;
-  candidate_id: number;
+  candidate_id: number | null;
   media_type: string;
   scope: "movie" | "version" | "series" | "season" | "episode";
   title: string;

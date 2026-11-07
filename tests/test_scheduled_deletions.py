@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.api.routes.calendar import get_calendar
@@ -15,6 +15,7 @@ from backend.api.routes.scheduled_deletions import (
     cancel_scheduled_deletion,
     reschedule_deletion,
     schedule_candidate_deletions,
+    schedule_media_deletion,
 )
 from backend.database import Base
 from backend.database.models import (
@@ -50,6 +51,7 @@ from backend.models.jobs import CandidateFileOpJobPayload
 from backend.models.scheduled_deletions import (
     RescheduleDeletionRequest,
     ScheduleCandidatesRequest,
+    ScheduleMediaRequest,
 )
 from backend.services.scheduled_deletions import (
     InventoryCache,
@@ -614,6 +616,97 @@ def test_leaving_soon_sync_requests_are_coalesced(monkeypatch):
 
     asyncio.run(run())
     assert len(calls) == 2
+
+
+def test_schedule_routes_are_served_where_the_frontend_calls_them():
+    from backend.api.routes.scheduled_deletions import router
+
+    paths = {route.path for route in router.routes}
+    assert "/api/media/candidates/schedule-deletion" in paths
+    assert "/api/media/schedule-deletion" in paths
+
+
+def media_request(movie, version=None, when=None, **extra):
+    return ScheduleMediaRequest(
+        media_type=MediaType.MOVIE,
+        media_id=movie.id,
+        movie_version_id=version.id if version else None,
+        scheduled_at=when or datetime.now(UTC) + timedelta(days=2),
+        **extra,
+    )
+
+
+def test_media_schedule_needs_no_candidate_and_runs_like_any_other(monkeypatch):
+    async def run():
+        async with database(monkeypatch) as factory, factory() as db:
+            user, movie, version, candidate, _ = await seed(db)
+            await db.delete(candidate)  # a plain library item, flagged by no rule
+            await db.commit()
+            saved = (
+                await schedule_media_deletion(media_request(movie, version), user, db)
+            )[0]
+            assert saved.target["candidate_id"] is None
+            assert saved.target["scope"] == "version"
+            assert saved.target["title"] == "Scheduled movie"
+            assert saved.target["estimated_space_bytes"] == 1000
+            assert await db.scalar(select(func.count(ReclaimCandidate.id))) == 0
+            calendar = await get_calendar(
+                user,
+                saved.scheduled_at.date() - timedelta(days=1),
+                saved.scheduled_at.date() + timedelta(days=1),
+                db,
+                0,
+                50,
+            )
+            assert calendar.days[0].items[0].candidate_id is None
+            # a second schedule for the same file is refused
+            with pytest.raises(HTTPException) as error:
+                await schedule_media_deletion(media_request(movie, version), user, db)
+            assert error.value.status_code == 409
+            job = await due_job(db, saved.id)
+            delete_files = AsyncMock(return_value=SimpleNamespace(deleted=1))
+            monkeypatch.setattr(
+                candidate_file_ops, "delete_specific_candidates", delete_files
+            )
+            await candidate_file_ops.run_candidate_file_op_job(
+                job.id, CandidateFileOpJobPayload.model_validate(job.payload)
+            )
+            delete_files.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("blocker", ["protected", "permission", "mismatch"])
+def test_media_schedule_is_refused_for_protected_media_and_unprivileged_users(
+    monkeypatch, blocker
+):
+    async def run():
+        async with database(monkeypatch) as factory, factory() as db:
+            user, movie, version, _, _ = await seed(db)
+            expected = 409
+            if blocker == "protected":
+                db.add(
+                    ProtectedMedia(
+                        media_type=MediaType.MOVIE,
+                        movie_id=movie.id,
+                        protected_by_user_id=user.id,
+                        permanent=True,
+                    )
+                )
+                await db.commit()
+            elif blocker == "permission":
+                user.role, expected = UserRole.USER, 403
+            else:
+                other = Movie(title="Other", tmdb_id=1, year=2000)
+                db.add(other)
+                await db.commit()
+                movie = other  # the version belongs to a different movie
+            with pytest.raises(HTTPException) as error:
+                await schedule_media_deletion(media_request(movie, version), user, db)
+            assert error.value.status_code == expected
+            assert await db.scalar(select(func.count(ScheduledDeletion.id))) == 0
+
+    asyncio.run(run())
 
 
 def test_dashboard_next_deletion_includes_manual_schedule(monkeypatch):

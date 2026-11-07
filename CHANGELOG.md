@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Scheduled manual deletion** for single and bulk cleanup candidates. Choose **Delete on…**, manage schedules from Candidates, and view them on Calendar. Schedules survive rescans and restarts, hold overlapping cleanup, and recheck permissions, protection, playback, and exact file scope before execution.
 
 - A **Next Deletion** tile on the dashboard showing the earliest automatic or manually scheduled deletion.
+- **Delete on…** from the Movies and Series delete dialog for users who can manage cleanup. It schedules the deletion directly, with the same checks and views as candidate schedules, and skips the delete request.
 - **Reschedule** and **Cancel** buttons directly on scheduled candidate rows.
 - Quick time presets (**In 1 hour**, **Tomorrow**, **In 1 week**) when scheduling a deletion, and a note on blocked schedules explaining they must be rescheduled.
 

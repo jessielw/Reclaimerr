@@ -111,7 +111,8 @@
       !media.status.has_pending_request,
   );
   const canRequestDelete = $derived(
-    canRequestExceptions &&
+    (canRequestExceptions ||
+      ($auth.user?.permissions ?? []).includes(Permission.ManageReclaim)) &&
       !!media &&
       !media.status.is_protected &&
       !media.status.has_pending_delete_request,

@@ -339,7 +339,10 @@ async def snapshot_target(
         "episode_id": candidate.episode_id,
         "season_number": season.season_number if season else None,
         "episode_number": episode.episode_number if episode else None,
-        "estimated_space_bytes": candidate.estimated_space_bytes,
+        # media scheduled without a candidate has no stored estimate
+        "estimated_space_bytes": candidate.estimated_space_bytes
+        or sum(size or 0 for size in inventory["files"].values())
+        or None,
         "matched_rule_ids": list(candidate.matched_rule_ids or []),
         "rule_actions": actions,
         "routing_settings": await routing_settings(db, candidate.media_type),

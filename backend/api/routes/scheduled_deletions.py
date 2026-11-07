@@ -15,11 +15,12 @@ from backend.database.models import (
     ScheduledDeletion,
     User,
 )
-from backend.enums import BackgroundJobStatus, BackgroundJobType, PageAccess
+from backend.enums import BackgroundJobStatus, BackgroundJobType, MediaType, PageAccess
 from backend.models.scheduled_deletions import (
     RescheduleDeletionRequest,
     ScheduleCandidatesRequest,
     ScheduledDeletionResponse,
+    ScheduleMediaRequest,
 )
 from backend.services.candidate_lifecycle import candidate_deletion_blockers
 from backend.services.scheduled_deletions import (
@@ -77,74 +78,120 @@ async def schedule_candidate_deletions(
                 409,
                 "Some selected candidates are no longer available; refresh the list",
             )
-        targets = []
-        for candidate in candidates:
-            if candidate.delete_request_id is not None:
-                raise HTTPException(
-                    409, "Approved deletion requests cannot be scheduled here"
-                )
-            if await candidate_deletion_blockers(db, candidate):
-                raise HTTPException(
-                    409, "A selected item is protected or has a pending request"
-                )
-            if await blocking_schedule(db, candidate):
-                raise HTTPException(
-                    409, "A selected item already overlaps a scheduled deletion"
-                )
-            target = await snapshot_target(db, candidate)
-            if any(
-                schedule_inventory_overlap(target["inventory"], previous)
-                for previous in targets
-            ):
-                raise HTTPException(
-                    409,
-                    "Selected scopes overlap; choose either a parent item or its children",
-                )
-            targets.append(target)
-        # Reject already queued parent/child operations, not just identical IDs.
-        jobs = (
-            await db.scalars(
-                select(BackgroundJob).where(
-                    BackgroundJob.job_type == BackgroundJobType.CANDIDATE_FILE_OP,
-                    BackgroundJob.status.in_(
-                        [BackgroundJobStatus.PENDING, BackgroundJobStatus.RUNNING]
-                    ),
-                )
+        return await _create_schedules(db, user, list(candidates), when)
+
+
+@router.post("/schedule-deletion", response_model=list[ScheduledDeletionResponse])
+async def schedule_media_deletion(
+    request: ScheduleMediaRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> list[ScheduledDeletionResponse]:
+    """Schedule a deletion straight from the Movies/Series screens."""
+    require_delete_permission(user)
+    when = future_time(request.scheduled_at)
+    is_movie = request.media_type is MediaType.MOVIE
+    if is_movie and (request.season_id or request.episode_id):
+        raise HTTPException(422, "Movies have no seasons or episodes")
+    if not is_movie and request.movie_version_id:
+        raise HTTPException(422, "Series have no movie versions")
+    if request.episode_id and not request.season_id:
+        raise HTTPException(422, "An episode needs its season")
+    # Never added to the session: it only describes the scope to schedule.
+    stand_in = ReclaimCandidate(
+        media_type=request.media_type,
+        movie_id=request.media_id if is_movie else None,
+        series_id=None if is_movie else request.media_id,
+        movie_version_id=request.movie_version_id,
+        season_id=request.season_id,
+        episode_id=request.episode_id,
+        matched_rule_ids=[],
+        matched_criteria={},
+        reason="Manually scheduled deletion",
+    )
+    async with candidate_workflow_lock:
+        return await _create_schedules(db, user, [stand_in], when)
+
+
+async def _create_schedules(
+    db: AsyncSession,
+    user: User,
+    candidates: list[ReclaimCandidate],
+    when: datetime,
+) -> list[ScheduledDeletionResponse]:
+    """Validate and save schedules. Call with candidate_workflow_lock held.
+
+    Candidates may be unsaved stand-ins built from a media target; only their
+    scope fields are read.
+    """
+    targets = []
+    for candidate in candidates:
+        if candidate.delete_request_id is not None:
+            raise HTTPException(
+                409, "Approved deletion requests cannot be scheduled here"
             )
-        ).all()
-        queued_ids = {
-            cid for job in jobs for cid in (job.payload or {}).get("candidate_ids", [])
-        }
-        for candidate in (
-            await db.scalars(
-                select(ReclaimCandidate).where(ReclaimCandidate.id.in_(queued_ids))
+        if await candidate_deletion_blockers(db, candidate):
+            raise HTTPException(
+                409, "A selected item is protected or has a pending request"
             )
-        ).all():
-            # Inventory only: an unrelated queued item with missing media or
-            # files must not prevent scheduling.
-            queued_inventory = await target_inventory(db, candidate)
-            if not queued_inventory["files"] and not queued_inventory["directories"]:
-                continue
-            if any(schedule_inventory_overlap(queued_inventory, t) for t in targets):
-                raise HTTPException(
-                    409, "An overlapping delete or move operation is already queued"
-                )
-        schedules = []
-        for target in targets:
-            schedule = ScheduledDeletion(
-                scheduled_at=when,
-                target=target,
-                created_by_user_id=user.id,
-                created_by_username=user.username,
+        if await blocking_schedule(db, candidate):
+            raise HTTPException(
+                409, "A selected item already overlaps a scheduled deletion"
             )
-            db.add(schedule)
-            await db.flush()
-            await add_schedule_job(db, schedule)
-            schedules.append(schedule)
-        # Intent and execution job are committed together.
-        await db.commit()
-        request_leaving_soon_sync()
-        return [await schedule_response(db, schedule) for schedule in schedules]
+        target = await snapshot_target(db, candidate)
+        if any(
+            schedule_inventory_overlap(target["inventory"], previous)
+            for previous in targets
+        ):
+            raise HTTPException(
+                409,
+                "Selected scopes overlap; choose either a parent item or its children",
+            )
+        targets.append(target)
+    # Reject already queued parent/child operations, not just identical IDs.
+    jobs = (
+        await db.scalars(
+            select(BackgroundJob).where(
+                BackgroundJob.job_type == BackgroundJobType.CANDIDATE_FILE_OP,
+                BackgroundJob.status.in_(
+                    [BackgroundJobStatus.PENDING, BackgroundJobStatus.RUNNING]
+                ),
+            )
+        )
+    ).all()
+    queued_ids = {
+        cid for job in jobs for cid in (job.payload or {}).get("candidate_ids", [])
+    }
+    for candidate in (
+        await db.scalars(
+            select(ReclaimCandidate).where(ReclaimCandidate.id.in_(queued_ids))
+        )
+    ).all():
+        # Inventory only: an unrelated queued item with missing media or
+        # files must not prevent scheduling.
+        queued_inventory = await target_inventory(db, candidate)
+        if not queued_inventory["files"] and not queued_inventory["directories"]:
+            continue
+        if any(schedule_inventory_overlap(queued_inventory, t) for t in targets):
+            raise HTTPException(
+                409, "An overlapping delete or move operation is already queued"
+            )
+    schedules = []
+    for target in targets:
+        schedule = ScheduledDeletion(
+            scheduled_at=when,
+            target=target,
+            created_by_user_id=user.id,
+            created_by_username=user.username,
+        )
+        db.add(schedule)
+        await db.flush()
+        await add_schedule_job(db, schedule)
+        schedules.append(schedule)
+    # Intent and execution job are committed together.
+    await db.commit()
+    request_leaving_soon_sync()
+    return [await schedule_response(db, schedule) for schedule in schedules]
 
 
 async def _editable_schedule(db: AsyncSession, schedule_id: int) -> ScheduledDeletion:

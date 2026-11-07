@@ -12,7 +12,7 @@ CandidateOperation = Literal["delete", "move"]
 class CalendarItem(BaseModel):
     """One scheduled candidate action on the calendar."""
 
-    candidate_id: int
+    candidate_id: int | None = None
     scheduled_deletion_id: int | None = None
     media_type: str
     scope: CandidateScope

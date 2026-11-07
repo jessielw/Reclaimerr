@@ -10,7 +10,13 @@
     mode = $bindable<"now" | "later">("now"),
     value = $bindable(""),
     allowNow = true,
-  }: { mode?: "now" | "later"; value?: string; allowNow?: boolean } = $props();
+    nowLabel = "Delete now",
+  }: {
+    mode?: "now" | "later";
+    value?: string;
+    allowNow?: boolean;
+    nowLabel?: string;
+  } = $props();
   const id = $props.id();
   const presets = [
     { label: "In 1 hour", apply: (d: Date) => d.setHours(d.getHours() + 1) },
@@ -35,7 +41,8 @@
     <fieldset class="flex flex-wrap gap-4">
       <legend class="mb-2 font-medium">When should this run?</legend>
       <label class="flex items-center gap-2"
-        ><input type="radio" name={id} value="now" bind:group={mode} /> Delete now</label
+        ><input type="radio" name={id} value="now" bind:group={mode} />
+        {nowLabel}</label
       >
       <label class="flex items-center gap-2"
         ><input type="radio" name={id} value="later" bind:group={mode} /> Delete on…</label
