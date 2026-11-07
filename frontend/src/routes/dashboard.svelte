@@ -384,7 +384,9 @@
               <p class="text-sm text-muted-foreground">Next Deletion</p>
               <p class="text-xl font-bold text-primary mt-2">
                 {dashboard.kpis.next_deletion_at
-                  ? formatDateTimeToLocaleString(dashboard.kpis.next_deletion_at)
+                  ? formatDateTimeToLocaleString(
+                      dashboard.kpis.next_deletion_at,
+                    )
                   : "None scheduled"}
               </p>
               <p class="text-xs text-muted-foreground mt-2">

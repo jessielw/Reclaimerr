@@ -168,9 +168,7 @@ async def get_calendar(
     )
     for row in rows:
         candidate = row.ReclaimCandidate
-        if await blocking_schedule(
-            db, candidate, manual_schedules, manual_cache
-        ):
+        if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
             continue
         policy = resolve_auto_delete_policy(
             media_type=cast(MediaType, candidate.media_type),

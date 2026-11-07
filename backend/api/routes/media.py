@@ -2154,9 +2154,7 @@ async def get_candidates(
             else None
         )
 
-        manual_schedule = await blocking_schedule(
-            db, c, manual_schedules, manual_cache
-        )
+        manual_schedule = await blocking_schedule(db, c, manual_schedules, manual_cache)
         items_out.append(
             CandidateEntry(
                 id=c.id,
