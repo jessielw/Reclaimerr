@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Requester Leaving Soon warnings now cover manually scheduled deletions, using the scheduled time, even when automatic deletion is off.
 - The dashboard's next deletion date now includes manually scheduled deletions.
 - Movie-wide cleanup candidates are now held back by any version-specific protection, protection request, or deletion request on the same movie, instead of only by movie-wide ones.
+- Updated backend deps.
 
 ### Fixed
 
