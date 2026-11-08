@@ -185,6 +185,10 @@ class NotificationSetting(Base):
     # URL is built at send time from SMTPSettings plus the resolved recipient.
     url: Mapped[str | None] = mapped_column(String(500), default=None)
     name: Mapped[str | None] = mapped_column(String(100), default=None)
+    # SHA-256 of the exact url an admin approved. Non-admins may only deliver to
+    # destinations outside the fixed-host allowlist while this matches the
+    # current url, so editing the url silently revokes the approval.
+    approved_url_hash: Mapped[str | None] = mapped_column(String(64), default=None)
 
     # notification types
     new_cleanup_candidates: Mapped[bool] = mapped_column(Boolean, default=False)

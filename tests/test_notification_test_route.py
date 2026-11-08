@@ -25,13 +25,31 @@ def _user(role: UserRole) -> User:
     )
 
 
+class _NoSavedDestinations:
+    """Stands in for the session: the user has no saved destination rows."""
+
+    async def execute(self, _stmt):
+        class _Result:
+            def scalars(self):
+                return self
+
+            def first(self):
+                return None
+
+        return _Result()
+
+
+async def _fake_db():
+    yield _NoSavedDestinations()
+
+
 def _app(user: User) -> FastAPI:
     app = FastAPI()
     register_exception_handlers(app)
     app.state.limiter = notification_routes.limiter
     notification_routes.limiter.reset()
     app.include_router(notification_routes.router, prefix="/api/settings")
-    app.dependency_overrides[get_db] = lambda: None
+    app.dependency_overrides[get_db] = _fake_db
     app.dependency_overrides[get_current_user] = lambda: user
     return app
 
@@ -39,7 +57,9 @@ def _app(user: User) -> FastAPI:
 def _post_tests(
     monkeypatch, role: UserRole, count: int, url: str = "discord://123/abc"
 ) -> list:
-    async def fake_test_notification_url(_url: str) -> tuple[bool, str | None]:
+    async def fake_test_notification_url(
+        _url: str, **_kwargs: object
+    ) -> tuple[bool, str | None]:
         return False, INTERNAL_ERROR
 
     monkeypatch.setattr(
@@ -84,7 +104,9 @@ def test_test_notifications_are_rate_limited(monkeypatch) -> None:
 def test_non_admin_cannot_test_an_arbitrary_host(monkeypatch) -> None:
     sent: list[str] = []
 
-    async def fake_test_notification_url(url: str) -> tuple[bool, str | None]:
+    async def fake_test_notification_url(
+        url: str, **_kwargs: object
+    ) -> tuple[bool, str | None]:
         sent.append(url)
         return True, None
 

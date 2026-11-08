@@ -5,6 +5,7 @@
   import { NotificationChannel, NotificationType } from "$lib/types/shared";
   import type { NotificationEmailStatus } from "$lib/types/shared";
   import SmtpSettings from "./notifications/smtp-settings.svelte";
+  import RestrictedDestinations from "./notifications/restricted-destinations.svelte";
   import Mail from "@lucide/svelte/icons/mail";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -52,6 +53,9 @@
     deleteRequestExecutionFailed: boolean;
     requesterLeavingSoon: boolean;
     preferences: Record<string, { detail: string; max_items?: number }>;
+    // set by the server: non-admin destinations outside the built-in services
+    // stay `pending` (and are never delivered to) until an admin approves them
+    approval: string | null;
   }
 
   let loading = $state(false);
@@ -86,6 +90,7 @@
     | "url"
     | "targetEmail"
     | "preferences"
+    | "approval"
   >;
 
   const notificationTypeMap: Record<NotificationType, NotificationKey> = {
@@ -249,6 +254,7 @@
           delete_request_execution_failed: boolean;
           requester_leaving_soon: boolean;
           preferences?: Record<string, { detail?: string; max_items?: number }>;
+          approval?: string | null;
         }>
       >("/api/settings/notifications");
 
@@ -273,6 +279,7 @@
         deleteRequestExecutionFailed: n.delete_request_execution_failed,
         requesterLeavingSoon: n.requester_leaving_soon,
         preferences: normalizedPreferences(n.preferences),
+        approval: n.approval ?? null,
       }));
     } catch (err: any) {
       toast.error(`Failed to load notifications: ${err.message}`);
@@ -318,6 +325,7 @@
         deleteRequestExecutionFailed: false,
         requesterLeavingSoon: true,
         preferences: defaultPreferences(),
+        approval: null,
       },
     ];
     expandedStates[newId] = true; // auto-expand new notification
@@ -390,6 +398,7 @@
           delete_request_execution_failed: boolean;
           requester_leaving_soon: boolean;
           preferences?: Record<string, { detail?: string; max_items?: number }>;
+          approval?: string | null;
         };
       }>("/api/settings/notifications", payload);
 
@@ -418,6 +427,7 @@
           response.data.delete_request_execution_failed,
         requesterLeavingSoon: response.data.requester_leaving_soon,
         preferences: normalizedPreferences(response.data.preferences),
+        approval: response.data.approval ?? null,
       };
 
       // update expanded state if ID changed (new notification saved)
@@ -498,6 +508,9 @@
     } else if (!notification.url.trim()) {
       toast.error("Apprise URL is required to test");
       return;
+    } else if (notification.approval === "pending") {
+      toast.error("An administrator needs to approve this destination first");
+      return;
     }
 
     try {
@@ -571,6 +584,7 @@
   {:else}
     {#if isAdmin}
       <SmtpSettings onChanged={refreshAfterSmtpChange} />
+      <RestrictedDestinations />
     {/if}
 
     <!-- add notification buttons -->
@@ -646,6 +660,11 @@
                 >
                   {notification.name || `Notification Service ${index + 1}`}
                 </h3>
+                {#if notification.approval === "pending"}
+                  <Badge variant="outline" class="shrink-0">
+                    Awaiting approval
+                  </Badge>
+                {/if}
               </div>
 
               <!-- right side: desktop only controls -->
@@ -873,6 +892,23 @@
                         last two parts of your Discord webhook URL (<code
                           >https://discord.com/api/webhooks/ID/TOKEN</code
                         >).
+                      </p>
+                    {/if}
+                    {#if !isAdmin}
+                      <p class="mt-1 text-xs text-muted-foreground">
+                        Discord, Telegram, Slack, Pushover, Pushbullet and
+                        ntfy.sh work right away. Any other service is saved
+                        as pending and needs an administrator to approve it
+                        before it sends anything.
+                      </p>
+                    {/if}
+                    {#if notification.approval === "pending"}
+                      <p
+                        class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                      >
+                        Awaiting administrator approval. Nothing is sent to
+                        this destination until then, and editing the URL asks
+                        for approval again.
                       </p>
                     {/if}
                     <p class="mt-1 text-xs text-muted-foreground">

@@ -8,7 +8,7 @@ Reclaimerr is configured through General Settings, service settings, and a small
 - **Authentication** - choose allowed Local, Media, and SSO login methods, configure OpenID Connect, and customize SSO labels
 - **General Settings** - path mappings, move destinations, public application URL, fallback deletion, Leaving Soon, and default auto-delete review periods
 - **Tasks** - schedule scans, tagging, syncs, and optional auto-deletion
-- **Notifications** - configure Apprise destinations, and an instance-wide SMTP server so users can be notified at their account email address
+- **Notifications** - configure Apprise destinations, and an instance-wide SMTP server so users can be notified at their account email address. Non-admin users can use Discord, Telegram, Slack, Pushover, Pushbullet, and ntfy.sh right away; any other destination needs an admin to approve it first
 
 ## Sonarr versions and episode ordering
 

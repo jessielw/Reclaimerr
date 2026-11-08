@@ -8,18 +8,28 @@ from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
-from backend.core.auth import require_page_access
+from backend.core.auth import require_admin, require_page_access
 from backend.core.logger import LOG
 from backend.database import get_db
 from backend.database.models import NotificationSetting, User
 from backend.enums import NotificationChannel, NotificationType, PageAccess, UserRole
 from backend.models.settings import (
+    ApproveDestinationRequest,
     NotificationEmailStatus,
     NotificationSettingItem,
     NotificationTestRequest,
+    RestrictedDestination,
     normalize_notification_preferences,
 )
-from backend.services.notification_destinations import destination_error_for_user
+from backend.services.admin_notices import create_event_notice
+from backend.services.notification_destinations import (
+    approval_error,
+    describe_destination,
+    destination_approval,
+    destination_approval_for_user,
+    is_deliverable,
+    url_fingerprint,
+)
 from backend.services.notifications import test_notification_url, test_system_email
 from backend.services.smtp import load_smtp_config
 
@@ -35,11 +45,39 @@ GENERIC_TEST_FAILURE = (
 )
 
 
-def _require_destination_allowed(url: str, user: User) -> None:
-    """Reject a destination the user's role may not deliver to (SSRF guard)."""
-    error = destination_error_for_user(url, user)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
+def _approval_for(notification: NotificationSetting, user: User):
+    """Approval state of an apprise row, or None for a system email row."""
+    if notification.channel != NotificationChannel.APPRISE or not notification.url:
+        return None
+    return destination_approval_for_user(
+        notification.url, user, notification.approved_url_hash
+    )
+
+
+def _to_item(notification: NotificationSetting, user: User) -> NotificationSettingItem:
+    return NotificationSettingItem(
+        id=notification.id,
+        enabled=notification.enabled,
+        name=notification.name,
+        channel=NotificationChannel(notification.channel),
+        url=notification.url,
+        target_email=notification.target_email,
+        new_cleanup_candidates=notification.new_cleanup_candidates,
+        request_approved=notification.request_approved,
+        request_declined=notification.request_declined,
+        admin_message=notification.admin_message,
+        task_failure=notification.task_failure,
+        admin_new_delete_request=notification.admin_new_delete_request,
+        admin_new_protection_request=notification.admin_new_protection_request,
+        admin_request_cancelled=notification.admin_request_cancelled,
+        admin_delete_execution_failed=notification.admin_delete_execution_failed,
+        update_available=notification.update_available,
+        delete_request_execution_succeeded=notification.delete_request_execution_succeeded,
+        delete_request_execution_failed=notification.delete_request_execution_failed,
+        requester_leaving_soon=notification.requester_leaving_soon,
+        preferences=normalize_notification_preferences(notification.preferences),
+        approval=_approval_for(notification, user),
+    )
 
 
 @router.get("/notifications")
@@ -55,31 +93,7 @@ async def get_notification_settings(
     )
     notifications = result.scalars().all()
 
-    return [
-        NotificationSettingItem(
-            id=n.id,
-            enabled=n.enabled,
-            name=n.name,
-            channel=NotificationChannel(n.channel),
-            url=n.url,
-            target_email=n.target_email,
-            new_cleanup_candidates=n.new_cleanup_candidates,
-            request_approved=n.request_approved,
-            request_declined=n.request_declined,
-            admin_message=n.admin_message,
-            task_failure=n.task_failure,
-            admin_new_delete_request=n.admin_new_delete_request,
-            admin_new_protection_request=n.admin_new_protection_request,
-            admin_request_cancelled=n.admin_request_cancelled,
-            admin_delete_execution_failed=n.admin_delete_execution_failed,
-            update_available=n.update_available,
-            delete_request_execution_succeeded=n.delete_request_execution_succeeded,
-            delete_request_execution_failed=n.delete_request_execution_failed,
-            requester_leaving_soon=n.requester_leaving_soon,
-            preferences=normalize_notification_preferences(n.preferences),
-        )
-        for n in notifications
-    ]
+    return [_to_item(n, current_user) for n in notifications]
 
 
 @router.get("/notifications/email-status")
@@ -141,8 +155,23 @@ async def test_notification(
             raise HTTPException(
                 status_code=400, detail="Apprise URL is required to test"
             )
-        _require_destination_allowed(data.url, current_user)
-        success, error_message = await test_notification_url(data.url)
+        # a non-admin can only test a destination that is allowed for them: a
+        # built-in service, or one of their own saved URLs an admin approved
+        approved_hash = None
+        if current_user.role is not UserRole.ADMIN:
+            saved = await db.execute(
+                select(NotificationSetting.approved_url_hash).where(
+                    NotificationSetting.user_id == current_user.id,
+                    NotificationSetting.url == data.url,
+                )
+            )
+            approved_hash = saved.scalars().first()
+        state = destination_approval_for_user(data.url, current_user, approved_hash)
+        if not is_deliverable(state):
+            raise HTTPException(status_code=403, detail=approval_error(state))
+        success, error_message = await test_notification_url(
+            data.url, follow_redirects=current_user.role is UserRole.ADMIN
+        )
 
     if not success:
         detail = (
@@ -188,8 +217,13 @@ async def create_or_update_notification(
                 detail="Only administrators can enable admin-only notifications",
             )
 
+    # Non-admins may save a destination outside the built-in services, but it
+    # stays pending (and is never delivered to) until an admin approves it.
+    # Unparseable URLs could never be approved or delivered, so reject them.
+    url_changed = True
     if data.channel == NotificationChannel.APPRISE and data.url:
-        _require_destination_allowed(data.url, current_user)
+        if destination_approval_for_user(data.url, current_user, None) == "invalid":
+            raise HTTPException(status_code=400, detail=approval_error("invalid"))
 
     if data.id:
         # update existing notification
@@ -208,6 +242,11 @@ async def create_or_update_notification(
             raise HTTPException(
                 status_code=403, detail="Not authorized to modify this notification"
             )
+
+        url_changed = notification.url != data.url
+        if url_changed:
+            # an approval is for one exact URL
+            notification.approved_url_hash = None
 
         # update fields
         notification.enabled = data.enabled
@@ -289,30 +328,31 @@ async def create_or_update_notification(
         )
         message = "Notification setting created successfully"
 
+    if (
+        url_changed
+        and notification.channel == NotificationChannel.APPRISE
+        and _approval_for(notification, current_user) == "pending"
+    ):
+        info = describe_destination(notification.url or "") or {}
+        await create_event_notice(
+            db,
+            kind="notification_destination_pending",
+            severity="info",
+            title="Notification destination awaiting approval",
+            message=(
+                f"{current_user.username} added a {info.get('service', 'custom')} "
+                "notification destination that needs administrator approval "
+                "before it can be used."
+            ),
+            action_label="Review",
+            action_href="#/settings",
+            context_json={"notification_id": notification.id},
+        )
+        await db.commit()
+
     return {
         "message": message,
-        "data": NotificationSettingItem(
-            id=notification.id,
-            enabled=notification.enabled,
-            name=notification.name,
-            channel=NotificationChannel(notification.channel),
-            url=notification.url,
-            target_email=notification.target_email,
-            new_cleanup_candidates=notification.new_cleanup_candidates,
-            request_approved=notification.request_approved,
-            request_declined=notification.request_declined,
-            admin_message=notification.admin_message,
-            task_failure=notification.task_failure,
-            admin_new_delete_request=notification.admin_new_delete_request,
-            admin_new_protection_request=notification.admin_new_protection_request,
-            admin_request_cancelled=notification.admin_request_cancelled,
-            admin_delete_execution_failed=notification.admin_delete_execution_failed,
-            update_available=notification.update_available,
-            delete_request_execution_succeeded=notification.delete_request_execution_succeeded,
-            delete_request_execution_failed=notification.delete_request_execution_failed,
-            requester_leaving_soon=notification.requester_leaving_soon,
-            preferences=normalize_notification_preferences(notification.preferences),
-        ),
+        "data": _to_item(notification, current_user),
     }
 
 
@@ -345,3 +385,92 @@ async def delete_notification(
     )
 
     return {"message": "Notification setting deleted successfully"}
+
+
+@router.get("/notifications/restricted-destinations")
+async def list_restricted_destinations(
+    _admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> list[RestrictedDestination]:
+    """Non-admin destinations outside the built-in services, for admin review."""
+    result = await db.execute(
+        select(NotificationSetting, User)
+        .join(User, User.id == NotificationSetting.user_id)
+        .where(
+            NotificationSetting.channel == NotificationChannel.APPRISE,
+            NotificationSetting.url.is_not(None),
+            User.role != UserRole.ADMIN,
+        )
+        .order_by(NotificationSetting.id)
+    )
+    items: list[RestrictedDestination] = []
+    for notification, owner in result.all():
+        url = notification.url or ""
+        state = destination_approval(url, owner.role, notification.approved_url_hash)
+        info = describe_destination(url)
+        if state not in ("pending", "approved") or info is None:
+            continue
+        items.append(
+            RestrictedDestination(
+                id=notification.id,
+                username=owner.username,
+                name=notification.name,
+                state=state,
+                service=str(info["service"]),
+                host=str(info["host"]),
+                redacted_url=str(info["redacted_url"]),
+                internal_host=bool(info["internal_host"]),
+                fingerprint=url_fingerprint(url),
+            )
+        )
+    return items
+
+
+@router.post("/notifications/{notification_id}/approval")
+async def approve_destination(
+    notification_id: int,
+    data: ApproveDestinationRequest,
+    admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Approve the exact URL an admin reviewed for a non-admin destination."""
+    notification = await db.get(NotificationSetting, notification_id)
+    if (
+        notification is None
+        or notification.channel != NotificationChannel.APPRISE
+        or not notification.url
+    ):
+        raise HTTPException(status_code=404, detail="Notification setting not found")
+    if describe_destination(notification.url) is None:
+        raise HTTPException(status_code=400, detail=approval_error("invalid"))
+    if url_fingerprint(notification.url) != data.fingerprint:
+        # the owner changed the URL after the admin loaded the review list
+        raise HTTPException(
+            status_code=409,
+            detail="This destination changed since you opened it. Review it again.",
+        )
+    notification.approved_url_hash = data.fingerprint
+    await db.commit()
+    LOG.info(
+        f"Admin {admin.username} approved notification destination {notification_id}"
+    )
+    return {"message": "Destination approved"}
+
+
+@router.delete("/notifications/{notification_id}/approval")
+async def revoke_destination_approval(
+    notification_id: int,
+    admin: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Withdraw a destination's approval; it goes back to pending."""
+    notification = await db.get(NotificationSetting, notification_id)
+    if notification is None:
+        raise HTTPException(status_code=404, detail="Notification setting not found")
+    notification.approved_url_hash = None
+    await db.commit()
+    LOG.info(
+        f"Admin {admin.username} revoked approval of notification destination "
+        f"{notification_id}"
+    )
+    return {"message": "Approval revoked"}

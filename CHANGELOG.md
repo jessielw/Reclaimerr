@@ -8,7 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-- Non-admin accounts can now only add notification destinations that deliver to a fixed public service (Discord, Telegram, Slack, Pushover, Pushbullet, ntfy.sh). Generic webhook-style destinations (`json://`, `xml://`, `form://`) and self-hosted ones (such as Gotify, private ntfy, or mailto) are admin-only, closing a server-side request forgery path to internal network addresses. The check runs when saving, testing, and on every delivery, so previously saved destinations that no longer qualify are skipped.
+- Non-admin accounts can freely use notification destinations that deliver to a fixed public service (Discord, Telegram, Slack, Pushover, Pushbullet, ntfy.sh). Any other destination (generic webhooks such as `json://`, self-hosted services, mailto) now stays pending until an admin approves that exact URL, closing a server-side request forgery path to internal network addresses. Editing a URL withdraws its approval, and non-admin destinations no longer follow HTTP redirects. The check runs when saving, testing, and on every delivery, so previously saved destinations that no longer qualify are skipped until approved.
+
+### Added
+
+- A **Destination approvals** panel in Notification settings for admins to review, approve, or revoke other users' custom destinations (with secrets redacted and internal addresses flagged), plus an admin notice when one is waiting.
 
 ## [0.6.9] - 2026-11-07
 
