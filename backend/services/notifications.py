@@ -41,6 +41,7 @@ from backend.database.models import (
 from backend.enums import LogLevel, NotificationChannel, NotificationType, UserRole
 from backend.models.settings import normalize_notification_preferences
 from backend.services.admin_notices import create_event_notice
+from backend.services.notification_destinations import destination_error_for_user
 from backend.services.smtp import SmtpConfig, build_mailto_url, load_smtp_config
 
 __all__ = [
@@ -976,6 +977,15 @@ def _resolve_destination(
     url = (setting.url or "").strip()
     if not url:
         LOG.warning(f"Skipping notification destination {setting.id}: no URL set")
+        return None
+    # re-checked on every delivery so rows saved before the restriction existed,
+    # or by someone who has since lost admin, cannot reach arbitrary hosts
+    error = destination_error_for_user(url, user)
+    if error:
+        LOG.warning(
+            f"Skipping notification destination {setting.id}: not permitted for "
+            "this account (only an administrator can use this kind of destination)"
+        )
         return None
     return url, setting.name or f"notification {setting.id}"
 

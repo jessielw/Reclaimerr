@@ -144,7 +144,7 @@ def _setting(**overrides: object) -> NotificationSetting:
     base: dict[str, object] = {
         "user_id": 1,
         "enabled": True,
-        "url": "discord://token",
+        "url": "discord://123/abc",
         "channel": NotificationChannel.APPRISE,
     }
     base.update(overrides)
@@ -159,7 +159,7 @@ def test_resolve_apprise_destination_passes_the_url_through() -> None:
     setting = _setting(name="Discord")
     resolved = _resolve_destination(setting, _user("jess@inbox.net"), None)
 
-    assert resolved == ("discord://token", "Discord")
+    assert resolved == ("discord://123/abc", "Discord")
 
 
 def test_resolve_apprise_destination_without_a_url_is_skipped() -> None:

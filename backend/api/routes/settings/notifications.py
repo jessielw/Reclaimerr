@@ -19,6 +19,7 @@ from backend.models.settings import (
     NotificationTestRequest,
     normalize_notification_preferences,
 )
+from backend.services.notification_destinations import destination_error_for_user
 from backend.services.notifications import test_notification_url, test_system_email
 from backend.services.smtp import load_smtp_config
 
@@ -32,6 +33,13 @@ GENERIC_TEST_FAILURE = (
     "Test notification failed. Check the destination and try again, or ask an "
     "administrator to check the logs."
 )
+
+
+def _require_destination_allowed(url: str, user: User) -> None:
+    """Reject a destination the user's role may not deliver to (SSRF guard)."""
+    error = destination_error_for_user(url, user)
+    if error:
+        raise HTTPException(status_code=403, detail=error)
 
 
 @router.get("/notifications")
@@ -133,6 +141,7 @@ async def test_notification(
             raise HTTPException(
                 status_code=400, detail="Apprise URL is required to test"
             )
+        _require_destination_allowed(data.url, current_user)
         success, error_message = await test_notification_url(data.url)
 
     if not success:
@@ -178,6 +187,9 @@ async def create_or_update_notification(
                 status_code=403,
                 detail="Only administrators can enable admin-only notifications",
             )
+
+    if data.channel == NotificationChannel.APPRISE and data.url:
+        _require_destination_allowed(data.url, current_user)
 
     if data.id:
         # update existing notification

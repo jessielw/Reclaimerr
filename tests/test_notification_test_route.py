@@ -36,7 +36,9 @@ def _app(user: User) -> FastAPI:
     return app
 
 
-def _post_tests(monkeypatch, role: UserRole, count: int) -> list:
+def _post_tests(
+    monkeypatch, role: UserRole, count: int, url: str = "discord://123/abc"
+) -> list:
     async def fake_test_notification_url(_url: str) -> tuple[bool, str | None]:
         return False, INTERNAL_ERROR
 
@@ -51,7 +53,7 @@ def _post_tests(monkeypatch, role: UserRole, count: int) -> list:
             return [
                 await client.post(
                     "/api/settings/notifications/test",
-                    json={"channel": "apprise", "url": "json://10.0.0.5:8080/admin"},
+                    json={"channel": "apprise", "url": url},
                 )
                 for _ in range(count)
             ]
@@ -67,7 +69,9 @@ def test_non_admin_does_not_see_the_raw_delivery_error(monkeypatch) -> None:
 
 
 def test_admin_sees_the_raw_delivery_error(monkeypatch) -> None:
-    (response,) = _post_tests(monkeypatch, UserRole.ADMIN, 1)
+    (response,) = _post_tests(
+        monkeypatch, UserRole.ADMIN, 1, url="json://10.0.0.5:8080/admin"
+    )
     assert response.status_code == 400
     assert response.json()["detail"] == INTERNAL_ERROR
 
@@ -75,3 +79,32 @@ def test_admin_sees_the_raw_delivery_error(monkeypatch) -> None:
 def test_test_notifications_are_rate_limited(monkeypatch) -> None:
     responses = _post_tests(monkeypatch, UserRole.USER, 6)
     assert [r.status_code for r in responses] == [400] * 5 + [429]
+
+
+def test_non_admin_cannot_test_an_arbitrary_host(monkeypatch) -> None:
+    sent: list[str] = []
+
+    async def fake_test_notification_url(url: str) -> tuple[bool, str | None]:
+        sent.append(url)
+        return True, None
+
+    monkeypatch.setattr(
+        notification_routes, "test_notification_url", fake_test_notification_url
+    )
+
+    async def run():
+        async with AsyncClient(
+            transport=ASGITransport(app=_app(_user(UserRole.USER))),
+            base_url="http://test",
+        ) as client:
+            return await client.post(
+                "/api/settings/notifications/test",
+                json={
+                    "channel": "apprise",
+                    "url": "json://169.254.169.254/latest/meta-data",
+                },
+            )
+
+    response = asyncio.run(run())
+    assert response.status_code == 403
+    assert sent == []

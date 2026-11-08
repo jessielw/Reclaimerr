@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Non-admin accounts can now only add notification destinations that deliver to a fixed public service (Discord, Telegram, Slack, Pushover, Pushbullet, ntfy.sh). Generic webhook-style destinations (`json://`, `xml://`, `form://`) and self-hosted ones (such as Gotify, private ntfy, or mailto) are admin-only, closing a server-side request forgery path to internal network addresses. The check runs when saving, testing, and on every delivery, so previously saved destinations that no longer qualify are skipped.
+
 ## [0.6.9] - 2026-11-07
 
 ### Added
