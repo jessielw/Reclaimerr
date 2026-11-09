@@ -908,18 +908,18 @@
                     {#if !isAdmin}
                       <p class="mt-1 text-xs text-muted-foreground">
                         Discord, Telegram, Slack, Pushover, Pushbullet and
-                        ntfy.sh work right away. Any other service is saved
-                        as pending and needs an administrator to approve it
-                        before it sends anything.
+                        ntfy.sh work right away. Any other service is saved as
+                        pending and needs an administrator to approve it before
+                        it sends anything.
                       </p>
                     {/if}
                     {#if notification.approval === "pending"}
                       <p
                         class="mt-1 text-xs text-amber-600 dark:text-amber-400"
                       >
-                        Awaiting administrator approval. Nothing is sent to
-                        this destination until then, and editing the URL asks
-                        for approval again.
+                        Awaiting administrator approval. Nothing is sent to this
+                        destination until then, and editing the URL asks for
+                        approval again.
                       </p>
                     {/if}
                     <p class="mt-1 text-xs text-muted-foreground">

@@ -40,10 +40,9 @@
     try {
       busyId = destination.id;
       // the fingerprint pins the approval to the URL shown on screen
-      await post_api(
-        `/api/settings/notifications/${destination.id}/approval`,
-        { fingerprint: destination.fingerprint },
-      );
+      await post_api(`/api/settings/notifications/${destination.id}/approval`, {
+        fingerprint: destination.fingerprint,
+      });
       toast.success("Destination approved");
     } catch (err: any) {
       toast.error(err.message);
@@ -56,7 +55,9 @@
   async function revoke(destination: RestrictedDestination) {
     try {
       busyId = destination.id;
-      await delete_api(`/api/settings/notifications/${destination.id}/approval`);
+      await delete_api(
+        `/api/settings/notifications/${destination.id}/approval`,
+      );
       toast.success("Approval revoked");
     } catch (err: any) {
       toast.error(err.message);
