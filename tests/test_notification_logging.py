@@ -6,8 +6,8 @@ import logging
 import pytest
 from tenacity import RetryError, stop_after_attempt, wait_none
 
-from backend.database.models import NotificationSetting
-from backend.enums import NotificationChannel
+from backend.database.models import NotificationSetting, User
+from backend.enums import NotificationChannel, UserRole
 from backend.services import notifications
 from backend.services.smtp import SmtpConfig
 
@@ -97,7 +97,8 @@ def test_unnamed_notification_destination_uses_its_id():
     )
     setting.id = 42
 
-    assert notifications._resolve_destination(setting, None, None) == (
+    owner = User(username="owner", password_hash="hashed", role=UserRole.USER)
+    assert notifications._resolve_destination(setting, owner, None) == (
         setting.url,
         "notification 42",
     )

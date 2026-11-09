@@ -270,6 +270,9 @@ class NotificationSettingItem(BaseModel):
     preferences: dict[str, dict[str, Any]] = Field(
         default_factory=default_notification_preferences
     )
+    # response only: whether this destination needs/has admin approval. Always
+    # recomputed server side; a value sent by the client is ignored.
+    approval: Literal["not_required", "approved", "pending", "invalid"] | None = None
 
     @model_validator(mode="after")
     def sanitize_fields(self) -> NotificationSettingItem:
@@ -279,6 +282,25 @@ class NotificationSettingItem(BaseModel):
         )
         self.preferences = normalize_notification_preferences(self.preferences)
         return self
+
+
+class RestrictedDestination(BaseModel):
+    """A non-admin destination outside the built-in services, for admin review."""
+
+    id: int
+    username: str
+    name: str | None
+    state: Literal["approved", "pending"]
+    service: str
+    host: str
+    redacted_url: str
+    internal_host: bool
+    # echoed back on approve so a URL edited mid-review cannot be approved blind
+    fingerprint: str
+
+
+class ApproveDestinationRequest(BaseModel):
+    fingerprint: str
 
 
 class NotificationTestRequest(BaseModel):

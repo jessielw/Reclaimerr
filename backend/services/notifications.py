@@ -41,6 +41,11 @@ from backend.database.models import (
 from backend.enums import LogLevel, NotificationChannel, NotificationType, UserRole
 from backend.models.settings import normalize_notification_preferences
 from backend.services.admin_notices import create_event_notice
+from backend.services.notification_destinations import (
+    destination_approval_for_user,
+    email_recipient_for,
+    is_deliverable,
+)
 from backend.services.smtp import SmtpConfig, build_mailto_url, load_smtp_config
 
 __all__ = [
@@ -917,14 +922,22 @@ async def send_notification(
     notify_type: apprise.NotifyType = apprise.NotifyType.INFO,
     *,
     log_label: str,
+    follow_redirects: bool = True,
 ) -> bool:
     """Send a single notification to a specific URL with automatic retry logic.
+
+    Non-admin destinations pass `follow_redirects=False`: Apprise follows HTTP
+    redirects by default, which would let an approved public host bounce the
+    request to an internal address.
 
     `log_label` must name the destination without its delivery URL, which can
     contain SMTP passwords or notification service tokens.
     """
     ap = apprise.Apprise(asset=_APPRISE_ASSET)
     ap.add(url)
+    if not follow_redirects:
+        for plugin in ap:
+            plugin.redirects = False
     label = log_label or "notification destination"
     if body_format == apprise.NotifyFormat.MARKDOWN and _is_telegram_url(url):
         message = _telegram_bullets(message)
@@ -942,6 +955,11 @@ async def send_notification(
     except Exception as e:
         LOG.error(f"Failed to send notification to {label}: {e}")
         raise
+
+
+def _follows_redirects(owner: User | None) -> bool:
+    """Only admins' destinations may follow HTTP redirects (SSRF hardening)."""
+    return owner is not None and owner.role is UserRole.ADMIN
 
 
 def _resolve_destination(
@@ -962,9 +980,7 @@ def _resolve_destination(
                 "configured or is incomplete"
             )
             return None
-        recipient = (
-            setting.target_email or (user.email if user else None) or ""
-        ).strip()
+        recipient = email_recipient_for(user, setting.target_email)
         if not recipient:
             LOG.warning(
                 f"Skipping email destination {setting.id}: no recipient address "
@@ -976,6 +992,17 @@ def _resolve_destination(
     url = (setting.url or "").strip()
     if not url:
         LOG.warning(f"Skipping notification destination {setting.id}: no URL set")
+        return None
+    # re-checked on every delivery so rows saved before the restriction existed,
+    # edited after approval, or owned by someone who has since lost admin cannot
+    # reach arbitrary hosts
+    state = destination_approval_for_user(url, user, setting.approved_url_hash)
+    if not is_deliverable(state):
+        LOG.warning(
+            f"Skipping notification destination {setting.id}: it is {state} for "
+            "this account (non-admin accounts need an administrator to approve "
+            "destinations outside the built-in services)"
+        )
         return None
     return url, setting.name or f"notification {setting.id}"
 
@@ -1052,6 +1079,7 @@ async def notify_user(
                 body_format=composed_format or body_format,
                 notify_type=_notify_type_for(notification_type),
                 log_label=log_label,
+                follow_redirects=_follows_redirects(setting.user),
             )
 
             if success:
@@ -1228,6 +1256,7 @@ async def notify_all_users(
                 body_format=composed_format or body_format,
                 notify_type=_notify_type_for(notification_type),
                 log_label=log_label,
+                follow_redirects=_follows_redirects(user),
             )
 
             if success:
@@ -1306,6 +1335,8 @@ async def notify_update_available(
 async def test_notification_url(
     url: str,
     log_label: str | None = None,
+    *,
+    follow_redirects: bool = True,
 ) -> tuple[bool, str | None]:
     """Test a notification by sending a test payload to the provided URL."""
     label = log_label or "notification test"
@@ -1325,6 +1356,7 @@ async def test_notification_url(
             body_format=_DEFAULT_BODY_FORMAT,
             notify_type=apprise.NotifyType.SUCCESS,
             log_label=label,
+            follow_redirects=follow_redirects,
         ), None
     except RetryError:
         LOG.error(f"Failed to send notification after multiple attempts to {label}")

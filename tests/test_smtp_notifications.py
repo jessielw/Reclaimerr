@@ -4,7 +4,7 @@ import apprise
 import pytest
 
 from backend.database.models import NotificationSetting, User
-from backend.enums import NotificationChannel
+from backend.enums import NotificationChannel, UserRole
 from backend.services.notifications import _resolve_destination
 from backend.services.smtp import (
     SECURITY_DEFAULT_PORTS,
@@ -144,7 +144,7 @@ def _setting(**overrides: object) -> NotificationSetting:
     base: dict[str, object] = {
         "user_id": 1,
         "enabled": True,
-        "url": "discord://token",
+        "url": "discord://123/abc",
         "channel": NotificationChannel.APPRISE,
     }
     base.update(overrides)
@@ -159,7 +159,7 @@ def test_resolve_apprise_destination_passes_the_url_through() -> None:
     setting = _setting(name="Discord")
     resolved = _resolve_destination(setting, _user("jess@inbox.net"), None)
 
-    assert resolved == ("discord://token", "Discord")
+    assert resolved == ("discord://123/abc", "Discord")
 
 
 def test_resolve_apprise_destination_without_a_url_is_skipped() -> None:
@@ -182,12 +182,30 @@ def test_resolve_email_prefers_the_destination_override() -> None:
         url=None,
         target_email="other@inbox.net",
     )
-    resolved = _resolve_destination(setting, _user("jess@inbox.net"), _config())
+    admin = _user("jess@inbox.net")
+    admin.role = UserRole.ADMIN
+    resolved = _resolve_destination(setting, admin, _config())
 
     assert resolved is not None
     url, label = resolved
     assert label == "system email to other@inbox.net"
     assert _parse(url).targets == [(False, "other@inbox.net")]
+
+
+def test_resolve_email_ignores_the_override_for_non_admins() -> None:
+    setting = _setting(
+        channel=NotificationChannel.SYSTEM_EMAIL,
+        url=None,
+        target_email="victim@example.com",
+    )
+    user = _user("jess@inbox.net")
+    user.role = UserRole.USER
+    resolved = _resolve_destination(setting, user, _config())
+
+    assert resolved is not None
+    url, label = resolved
+    assert label == "system email to jess@inbox.net"
+    assert _parse(url).targets == [(False, "jess@inbox.net")]
 
 
 def test_resolve_email_is_skipped_without_smtp() -> None:

@@ -64,6 +64,9 @@ from backend.services.admin_notices import (
     sync_login_recovery_notice,
 )
 from backend.services.lifecycle_webhooks import recover_pending_webhook_deliveries
+from backend.services.notification_destinations import (
+    sync_pending_destination_notice,
+)
 from backend.services.watch_identity import seed_watch_user_aliases_if_empty
 from backend.utils.create_admin import create_initial_admin
 
@@ -141,6 +144,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await sync_login_recovery_notice(
                 session, recovery_active=settings.auth_force_local_login
             )
+            # destinations saved before approvals existed need an admin's review
+            await sync_pending_destination_notice(session)
             await session.commit()
 
         # load service configs from database and initialize clients
