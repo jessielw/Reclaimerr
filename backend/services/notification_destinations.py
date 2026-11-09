@@ -62,6 +62,34 @@ PENDING_DESTINATION_ERROR = (
 )
 
 
+EMAIL_RECIPIENT_ERROR = (
+    "You can only send email notifications to your own account address. Remove "
+    "the custom address, or ask an administrator to set it up."
+)
+
+
+def email_recipient_for(user: User | None, target_email: str | None) -> str:
+    """Address a system-email destination delivers to ("" when there is none).
+
+    Email goes out through the admin's SMTP server, so non-admins are pinned to
+    their own account address; a stored override is ignored for them. Only
+    admins may point it at another address.
+    """
+    own = ((user.email if user else None) or "").strip()
+    custom = (target_email or "").strip()
+    if user is not None and user.role is UserRole.ADMIN and custom:
+        return custom
+    return own
+
+
+def email_override_allowed(user: User, target_email: str | None) -> bool:
+    """Whether saving this custom address is permitted for the user."""
+    custom = (target_email or "").strip()
+    if not custom or user.role is UserRole.ADMIN:
+        return True
+    return custom.lower() == (user.email or "").strip().lower()
+
+
 def url_fingerprint(url: str) -> str:
     """Stable hash of the exact URL an approval applies to."""
     return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()

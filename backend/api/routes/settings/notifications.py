@@ -22,9 +22,12 @@ from backend.models.settings import (
     normalize_notification_preferences,
 )
 from backend.services.notification_destinations import (
+    EMAIL_RECIPIENT_ERROR,
     approval_error,
     describe_destination,
     destination_approval_for_user,
+    email_override_allowed,
+    email_recipient_for,
     is_deliverable,
     restricted_destinations,
     sync_pending_destination_notice,
@@ -140,7 +143,7 @@ async def test_notification(
                     "to configure the SMTP server."
                 ),
             )
-        recipient = data.target_email or current_user.email
+        recipient = email_recipient_for(current_user, data.target_email)
         if not recipient:
             raise HTTPException(
                 status_code=400,
@@ -220,6 +223,9 @@ async def create_or_update_notification(
     # Non-admins may save a destination outside the built-in services, but it
     # stays pending (and is never delivered to) until an admin approves it.
     # Unparseable URLs could never be approved or delivered, so reject them.
+    if not email_override_allowed(current_user, data.target_email):
+        raise HTTPException(status_code=400, detail=EMAIL_RECIPIENT_ERROR)
+
     url_changed = True
     if data.channel == NotificationChannel.APPRISE and data.url:
         if destination_approval_for_user(data.url, current_user, None) == "invalid":

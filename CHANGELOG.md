@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Non-admin accounts can freely use notification destinations that deliver to a fixed public service (Discord, Telegram, Slack, Pushover, Pushbullet, ntfy.sh). Any other destination (generic webhooks such as `json://`, self-hosted services, mailto) now stays pending until an admin approves that exact URL, closing a server-side request forgery path to internal network addresses.
 - Editing a destination URL withdraws its approval, and approvals are pinned to the exact URL an admin reviewed, so a URL swapped mid-review cannot be approved by mistake.
 - Notifications to non-admin destinations no longer follow HTTP redirects, so an approved public host cannot bounce a request to an internal address.
+- Email notifications from non-admin accounts can only go to that account's own address. Previously any user could set an arbitrary recipient and have the server's SMTP account email it. Saving another address is rejected, and a previously stored custom address is ignored for non-admins at delivery. Admins can still choose any address.
 - The check runs when saving, testing, and on every delivery, so a destination that is not approved (or no longer qualifies, for example after an admin is demoted) is never delivered to.
 
 ### Added

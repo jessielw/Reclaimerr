@@ -170,3 +170,21 @@ def test_send_notification_disables_redirects_when_asked(monkeypatch) -> None:
             )
         )
     assert seen == [True, False]
+
+
+def test_email_recipient_pins_non_admins_to_their_own_address() -> None:
+    from backend.services.notification_destinations import (
+        email_override_allowed,
+        email_recipient_for,
+    )
+
+    user = User(username="u", password_hash="x", email="me@x.io", role=UserRole.USER)
+    admin = User(username="a", password_hash="x", email="a@x.io", role=UserRole.ADMIN)
+
+    assert email_recipient_for(user, "victim@y.io") == "me@x.io"
+    assert email_recipient_for(admin, "other@y.io") == "other@y.io"
+    assert email_recipient_for(admin, None) == "a@x.io"
+    assert not email_override_allowed(user, "victim@y.io")
+    assert email_override_allowed(user, "ME@x.io")
+    assert email_override_allowed(user, None)
+    assert email_override_allowed(admin, "other@y.io")

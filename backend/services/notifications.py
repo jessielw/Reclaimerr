@@ -43,6 +43,7 @@ from backend.models.settings import normalize_notification_preferences
 from backend.services.admin_notices import create_event_notice
 from backend.services.notification_destinations import (
     destination_approval_for_user,
+    email_recipient_for,
     is_deliverable,
 )
 from backend.services.smtp import SmtpConfig, build_mailto_url, load_smtp_config
@@ -979,9 +980,7 @@ def _resolve_destination(
                 "configured or is incomplete"
             )
             return None
-        recipient = (
-            setting.target_email or (user.email if user else None) or ""
-        ).strip()
+        recipient = email_recipient_for(user, setting.target_email)
         if not recipient:
             LOG.warning(
                 f"Skipping email destination {setting.id}: no recipient address "

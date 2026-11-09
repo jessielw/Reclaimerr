@@ -78,7 +78,7 @@
   // away once the list already holds one (saved or not).
   let hasEmailDestination = $derived(notifications.some(isEmail));
   const emailRecipient = (n: NotificationConfig) =>
-    n.targetEmail.trim() || emailStatus.account_email || "";
+    (isAdmin ? n.targetEmail.trim() : "") || emailStatus.account_email || "";
 
   // map enum values to camelCase property keys
   type NotificationKey = keyof Omit<
@@ -354,9 +354,10 @@
         name: notification.name.trim() || null,
         channel: notification.channel,
         url: isEmail(notification) ? null : notification.url,
-        target_email: isEmail(notification)
-          ? notification.targetEmail.trim() || null
-          : null,
+        target_email:
+          isEmail(notification) && isAdmin
+            ? notification.targetEmail.trim() || null
+            : null,
         new_cleanup_candidates: notification.newCleanupCandidates,
         request_approved: notification.requestApproved,
         request_declined: notification.requestDeclined,
@@ -851,12 +852,22 @@
                       id="target-email-{index}"
                       type="text"
                       bind:value={notification.targetEmail}
+                      disabled={!isAdmin}
                       placeholder={emailStatus.account_email ||
                         "Enter an email address"}
                       class="input-hover-el text-sm"
                     />
                     <p class="mt-1 text-xs text-muted-foreground">
-                      {#if notification.targetEmail.trim()}
+                      {#if !isAdmin}
+                        {#if emailStatus.account_email}
+                          Sent through the server's email settings to your
+                          account address,
+                          <strong>{emailStatus.account_email}</strong>.
+                        {:else}
+                          Your account has no email address. Add one on the
+                          Account tab.
+                        {/if}
+                      {:else if notification.targetEmail.trim()}
                         Sent through the server's email settings to this
                         address.
                       {:else if emailStatus.account_email}
