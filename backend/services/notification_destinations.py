@@ -30,9 +30,15 @@ from apprise.plugins.pushbullet import NotifyPushBullet
 from apprise.plugins.pushover import NotifyPushover
 from apprise.plugins.slack import NotifySlack
 from apprise.plugins.telegram import NotifyTelegram
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database.models import User
-from backend.enums import UserRole
+from backend.database.models import NotificationSetting, User
+from backend.enums import NotificationChannel, UserRole
+from backend.services.admin_notices import (
+    resolve_singleton_notice,
+    upsert_singleton_notice,
+)
 
 DestinationApproval = Literal["not_required", "approved", "pending", "invalid"]
 
@@ -44,6 +50,8 @@ _FIXED_HOST_PLUGINS: tuple[type, ...] = (
     NotifyPushover,
     NotifyPushBullet,
 )
+
+NOTICE_KEY_PENDING_DESTINATIONS = "notification_destinations_pending"
 
 INVALID_DESTINATION_ERROR = (
     "This is not a valid single Apprise destination URL, so it cannot be used."
@@ -148,4 +156,61 @@ def _looks_internal(host: str) -> bool:
         lowered == "localhost"
         or "." not in lowered
         or lowered.endswith((".local", ".lan", ".internal", ".home", ".localdomain"))
+    )
+
+
+async def restricted_destinations(
+    db: AsyncSession,
+) -> list[tuple[NotificationSetting, User, DestinationApproval]]:
+    """Non-admin destinations outside the built-in services, with their state.
+
+    Only `pending` and `approved` rows are returned: built-in services need no
+    review and unparseable URLs can never be approved or delivered.
+    """
+    result = await db.execute(
+        select(NotificationSetting, User)
+        .join(User, User.id == NotificationSetting.user_id)
+        .where(
+            NotificationSetting.channel == NotificationChannel.APPRISE,
+            NotificationSetting.url.is_not(None),
+            User.role != UserRole.ADMIN,
+        )
+        .order_by(NotificationSetting.id)
+    )
+    rows: list[tuple[NotificationSetting, User, DestinationApproval]] = []
+    for notification, owner in result.all():
+        state = destination_approval(
+            notification.url or "", owner.role, notification.approved_url_hash
+        )
+        if state in ("pending", "approved"):
+            rows.append((notification, owner, state))
+    return rows
+
+
+async def sync_pending_destination_notice(db: AsyncSession) -> None:
+    """Keep one admin notice in step with how many destinations await approval.
+
+    A single notice (not one per save) so a user re-saving a destination cannot
+    flood the admin's notices; it only turns unread again when the count changes.
+    Does not commit.
+    """
+    pending = sum(
+        1 for _, _, state in await restricted_destinations(db) if state == "pending"
+    )
+    if pending == 0:
+        await resolve_singleton_notice(db, dedupe_key=NOTICE_KEY_PENDING_DESTINATIONS)
+        return
+    await upsert_singleton_notice(
+        db,
+        dedupe_key=NOTICE_KEY_PENDING_DESTINATIONS,
+        kind="notification_destination_pending",
+        severity="info",
+        title="Notification destinations awaiting approval",
+        message=(
+            f"{pending} notification destination(s) added by other users need "
+            "your approval before they can be used."
+        ),
+        action_label="Review in Settings",
+        action_href="#/settings",
+        context_json={"pending": pending},
     )

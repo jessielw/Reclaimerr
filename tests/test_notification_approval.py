@@ -94,6 +94,7 @@ def test_custom_destination_is_pending_until_an_admin_approves_it(
         async with factory() as db:
             notices = (await db.execute(select(AdminNotice))).scalars().all()
         assert [n.kind for n in notices] == ["notification_destination_pending"]
+        assert notices[0].is_active and notices[0].context_json == {"pending": 1}
 
         blocked = await client.post(
             f"{BASE}/test", json={"channel": "apprise", "url": CUSTOM}
@@ -120,6 +121,9 @@ def test_custom_destination_is_pending_until_an_admin_approves_it(
             f"{BASE}/{nid}/approval", json={"fingerprint": listed[0]["fingerprint"]}
         )
         assert approved.status_code == 200, approved.text
+        async with factory() as db:
+            notice = (await db.execute(select(AdminNotice))).scalars().one()
+        assert not notice.is_active  # nothing left to review
 
         # now the owner can test it, with redirects off
         acting["user"] = member
@@ -200,5 +204,56 @@ def test_built_in_services_and_invalid_urls(tmp_path, monkeypatch) -> None:
         assert own.json()["data"]["approval"] == "not_required"
         listed = await client.get(f"{BASE}/restricted-destinations")
         assert listed.json() == []
+
+    _run_flow(tmp_path, monkeypatch, flow)
+
+
+def test_resaving_a_destination_never_piles_up_admin_notices(
+    tmp_path, monkeypatch
+) -> None:
+    async def flow(client, acting, admin, member, factory, sent) -> None:
+        first = (await client.post(BASE, json=_body(CUSTOM))).json()["data"]["id"]
+        for n in range(5):
+            await client.post(BASE, json=_body(f"json://example.com/{n}", id=first))
+        await client.post(BASE, json=_body("json://example.org/second"))
+
+        async with factory() as db:
+            notices = (await db.execute(select(AdminNotice))).scalars().all()
+        assert len(notices) == 1
+        assert notices[0].context_json == {"pending": 2}
+
+        # deleting the pending rows clears the notice
+        for row in (await client.get(BASE)).json():
+            await client.delete(f"{BASE}/{row['id']}")
+        async with factory() as db:
+            notice = (await db.execute(select(AdminNotice))).scalars().one()
+        assert not notice.is_active
+
+    _run_flow(tmp_path, monkeypatch, flow)
+
+
+def test_startup_sync_flags_destinations_saved_before_approvals(
+    tmp_path, monkeypatch
+) -> None:
+    from backend.services.notification_destinations import (
+        sync_pending_destination_notice,
+    )
+
+    async def flow(client, acting, admin, member, factory, sent) -> None:
+        async with factory() as db:
+            # as an upgraded install would have: a custom URL, no approval hash
+            db.add(
+                NotificationSetting(
+                    user_id=member.id,
+                    enabled=True,
+                    channel="apprise",
+                    url=CUSTOM,
+                )
+            )
+            await db.commit()
+            await sync_pending_destination_notice(db)
+            await db.commit()
+            notice = (await db.execute(select(AdminNotice))).scalars().one()
+        assert notice.is_active and notice.context_json == {"pending": 1}
 
     _run_flow(tmp_path, monkeypatch, flow)

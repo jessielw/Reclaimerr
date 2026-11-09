@@ -8,11 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-- Non-admin accounts can freely use notification destinations that deliver to a fixed public service (Discord, Telegram, Slack, Pushover, Pushbullet, ntfy.sh). Any other destination (generic webhooks such as `json://`, self-hosted services, mailto) now stays pending until an admin approves that exact URL, closing a server-side request forgery path to internal network addresses. Editing a URL withdraws its approval, and non-admin destinations no longer follow HTTP redirects. The check runs when saving, testing, and on every delivery, so previously saved destinations that no longer qualify are skipped until approved.
+- Non-admin accounts can freely use notification destinations that deliver to a fixed public service (Discord, Telegram, Slack, Pushover, Pushbullet, ntfy.sh). Any other destination (generic webhooks such as `json://`, self-hosted services, mailto) now stays pending until an admin approves that exact URL, closing a server-side request forgery path to internal network addresses.
+- Editing a destination URL withdraws its approval, and approvals are pinned to the exact URL an admin reviewed, so a URL swapped mid-review cannot be approved by mistake.
+- Notifications to non-admin destinations no longer follow HTTP redirects, so an approved public host cannot bounce a request to an internal address.
+- The check runs when saving, testing, and on every delivery, so a destination that is not approved (or no longer qualifies, for example after an admin is demoted) is never delivered to.
 
 ### Added
 
-- A **Destination approvals** panel in Notification settings for admins to review, approve, or revoke other users' custom destinations (with secrets redacted and internal addresses flagged), plus an admin notice when one is waiting.
+- A **Destination approvals** panel in Notification settings for admins to review, approve, or revoke other users' custom destinations, with secrets redacted and internal addresses flagged.
+- A single admin notice showing how many destinations are awaiting approval. It updates as destinations are saved, approved, revoked, or deleted, and is checked at startup.
+
+### Changed
+
+- **Upgrade note:** custom notification destinations that non-admin users saved before this release (anything other than Discord, Telegram, Slack, Pushover, Pushbullet, or ntfy.sh) stop delivering until an admin approves them. Admins are notified on startup, and affected users see an "Awaiting approval" badge. Admin-owned destinations are unaffected.
+- Non-admin users who save an unparseable or multi-URL destination now get an error at save time instead of a failure at send time.
 
 ## [0.6.9] - 2026-11-07
 

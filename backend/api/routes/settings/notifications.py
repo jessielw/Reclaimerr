@@ -21,13 +21,13 @@ from backend.models.settings import (
     RestrictedDestination,
     normalize_notification_preferences,
 )
-from backend.services.admin_notices import create_event_notice
 from backend.services.notification_destinations import (
     approval_error,
     describe_destination,
-    destination_approval,
     destination_approval_for_user,
     is_deliverable,
+    restricted_destinations,
+    sync_pending_destination_notice,
     url_fingerprint,
 )
 from backend.services.notifications import test_notification_url, test_system_email
@@ -328,26 +328,8 @@ async def create_or_update_notification(
         )
         message = "Notification setting created successfully"
 
-    if (
-        url_changed
-        and notification.channel == NotificationChannel.APPRISE
-        and _approval_for(notification, current_user) == "pending"
-    ):
-        info = describe_destination(notification.url or "") or {}
-        await create_event_notice(
-            db,
-            kind="notification_destination_pending",
-            severity="info",
-            title="Notification destination awaiting approval",
-            message=(
-                f"{current_user.username} added a {info.get('service', 'custom')} "
-                "notification destination that needs administrator approval "
-                "before it can be used."
-            ),
-            action_label="Review",
-            action_href="#/settings",
-            context_json={"notification_id": notification.id},
-        )
+    if notification.channel == NotificationChannel.APPRISE and url_changed:
+        await sync_pending_destination_notice(db)
         await db.commit()
 
     return {
@@ -378,6 +360,8 @@ async def delete_notification(
         )
 
     await db.delete(notification)
+    await db.flush()
+    await sync_pending_destination_notice(db)
     await db.commit()
 
     LOG.info(
@@ -393,22 +377,11 @@ async def list_restricted_destinations(
     db: AsyncSession = Depends(get_db),
 ) -> list[RestrictedDestination]:
     """Non-admin destinations outside the built-in services, for admin review."""
-    result = await db.execute(
-        select(NotificationSetting, User)
-        .join(User, User.id == NotificationSetting.user_id)
-        .where(
-            NotificationSetting.channel == NotificationChannel.APPRISE,
-            NotificationSetting.url.is_not(None),
-            User.role != UserRole.ADMIN,
-        )
-        .order_by(NotificationSetting.id)
-    )
     items: list[RestrictedDestination] = []
-    for notification, owner in result.all():
+    for notification, owner, state in await restricted_destinations(db):
         url = notification.url or ""
-        state = destination_approval(url, owner.role, notification.approved_url_hash)
         info = describe_destination(url)
-        if state not in ("pending", "approved") or info is None:
+        if info is None or state == "invalid" or state == "not_required":
             continue
         items.append(
             RestrictedDestination(
@@ -450,6 +423,7 @@ async def approve_destination(
             detail="This destination changed since you opened it. Review it again.",
         )
     notification.approved_url_hash = data.fingerprint
+    await sync_pending_destination_notice(db)
     await db.commit()
     LOG.info(
         f"Admin {admin.username} approved notification destination {notification_id}"
@@ -468,6 +442,7 @@ async def revoke_destination_approval(
     if notification is None:
         raise HTTPException(status_code=404, detail="Notification setting not found")
     notification.approved_url_hash = None
+    await sync_pending_destination_notice(db)
     await db.commit()
     LOG.info(
         f"Admin {admin.username} revoked approval of notification destination "
