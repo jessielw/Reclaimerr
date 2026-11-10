@@ -10,6 +10,7 @@ Nothing about a group is stored except the user's "not a duplicate" marks.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -22,7 +23,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.protection_scope import active_protection_clause
-from backend.core.utils.filesystem import normalize_fpath
+from backend.core.utils.filesystem import normalize_fpath, resolve_path
 from backend.database.models import (
     DuplicateIgnore,
     Episode,
@@ -257,6 +258,39 @@ async def load_keeper_priority(
     return normalize_keeper_priority(raw)
 
 
+def _file_exists_on_disk(
+    path: str | None, service: Service, mappings: list[dict[str, Any]]
+) -> bool:
+    return (
+        resolve_path(path, mappings, service_type=service.value, warn_missing=False)
+        is not None
+    )
+
+
+def _drop_missing_rows(
+    rows_by_item: dict[int, list[_Row]], mappings: list[dict[str, Any]]
+) -> None:
+    """Drop versions whose file is gone from disk (stale media server entries).
+
+    Plex keeps a version for every file that disappeared until its trash is
+    emptied, so they would otherwise look like duplicates. An item where no
+    file can be found at all is left alone: Reclaimerr probably cannot see that
+    library's storage, which says nothing about the files.
+    """
+    for item_id in list(rows_by_item):
+        rows = rows_by_item[item_id]
+        present = [r for r in rows if _file_exists_on_disk(r.path, r.service, mappings)]
+        if present and len(present) != len(rows):
+            rows_by_item[item_id] = present
+
+
+async def _load_path_mappings(db: AsyncSession) -> list[dict[str, Any]]:
+    raw = (
+        await db.execute(select(GeneralSettings.path_mappings).limit(1))
+    ).scalar_one_or_none()
+    return list(raw or [])
+
+
 def _resolution_height(f: DuplicateFile) -> int:
     if f.video_height and f.video_width:
         # letterboxed encodes are short but full width; rank by width equivalent
@@ -462,6 +496,7 @@ async def _movie_groups(
     *,
     movie_ids: Sequence[int] | None,
     search: str | None,
+    mappings: list[dict[str, Any]],
 ) -> list[DuplicateGroup]:
     multi = (
         select(MovieVersion.movie_id)
@@ -483,6 +518,8 @@ async def _movie_groups(
     for version, title, year, poster_url in (await db.execute(query)).all():
         rows_by_movie[version.movie_id].append(_Row.of(version))
         meta[version.movie_id] = (title, year, poster_url)
+    await asyncio.to_thread(_drop_missing_rows, rows_by_movie, mappings)
+    rows_by_movie = {k: v for k, v in rows_by_movie.items() if len(v) > 1}
     if not rows_by_movie:
         return []
 
@@ -528,6 +565,7 @@ async def _episode_groups(
     *,
     episode_ids: Sequence[int] | None,
     search: str | None,
+    mappings: list[dict[str, Any]],
 ) -> list[DuplicateGroup]:
     multi = (
         select(EpisodeVersion.episode_id)
@@ -580,6 +618,8 @@ async def _episode_groups(
             "episode_number": episode_number,
             "episode_name": episode_name,
         }
+    await asyncio.to_thread(_drop_missing_rows, rows_by_episode, mappings)
+    rows_by_episode = {k: v for k, v in rows_by_episode.items() if len(v) > 1}
     if not rows_by_episode:
         return []
 
@@ -666,12 +706,15 @@ async def load_duplicate_groups(
         priority = await load_keeper_priority(db)
     search = (search or "").strip() or None
 
+    mappings = await _load_path_mappings(db)
     groups: list[DuplicateGroup] = []
     if media_type in (None, MediaType.MOVIE) and movie_ids != []:
-        groups += await _movie_groups(db, priority, movie_ids=movie_ids, search=search)
+        groups += await _movie_groups(
+            db, priority, movie_ids=movie_ids, search=search, mappings=mappings
+        )
     if media_type in (None, MediaType.SERIES) and episode_ids != []:
         groups += await _episode_groups(
-            db, priority, episode_ids=episode_ids, search=search
+            db, priority, episode_ids=episode_ids, search=search, mappings=mappings
         )
     groups.sort(
         key=lambda g: (
