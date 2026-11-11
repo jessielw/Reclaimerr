@@ -12541,6 +12541,7 @@ async def _delete_episode_candidates(
         # Retrying would fail forever. Only when Sonarr said so for every
         # instance asked and the file is gone from disk too. The episode row
         # is left for the next sync, since it may be shared with another copy.
+        main_server_type = _main_media_server_type()
         if (
             not deleted_via_sonarr
             and episode_file_gone
@@ -12550,9 +12551,7 @@ async def _delete_episode_candidates(
                 episode.path,
                 path_mappings,
                 service_type=(
-                    _main_media_server_type().value
-                    if _main_media_server_type()
-                    else None
+                    main_server_type.value if main_server_type else None
                 ),
                 warn_missing=False,
             )
