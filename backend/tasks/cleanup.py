@@ -12550,9 +12550,7 @@ async def _delete_episode_candidates(
             and not resolve_path(
                 episode.path,
                 path_mappings,
-                service_type=(
-                    main_server_type.value if main_server_type else None
-                ),
+                service_type=(main_server_type.value if main_server_type else None),
                 warn_missing=False,
             )
         ):
