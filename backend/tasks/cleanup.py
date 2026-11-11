@@ -11923,9 +11923,7 @@ async def _delete_season_candidates(
             and not season_state_unverified
             and cand_arr_action != "unmonitor_only"
             and not finalize_season_action
-            and not _season_folder_on_disk(
-                empty_ref, season_number, path_mappings
-            )
+            and not _season_folder_on_disk(empty_ref, season_number, path_mappings)
         ):
             season_already_removed = True
             deleted_via_sonarr = True
@@ -12572,9 +12570,7 @@ async def _delete_episode_candidates(
             )
             async with async_db() as db:
                 await db.execute(
-                    delete(ReclaimCandidate).where(
-                        ReclaimCandidate.id == candidate.id
-                    )
+                    delete(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
                 )
                 await db.commit()
             continue
