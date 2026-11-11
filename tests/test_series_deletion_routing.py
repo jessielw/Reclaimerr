@@ -1781,3 +1781,241 @@ def test_combined_episode_move_stops_before_moving_file(monkeypatch, tmp_path):
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def _already_gone_case(
+    monkeypatch, *, empty_eps, tmp_path=None, second_copy=False, fallback=True
+):
+    """Run a season delete where Sonarr reports nothing left to remove."""
+
+    async def run() -> dict:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            series_paths = [str(tmp_path / "Show")] if tmp_path else None
+            if second_copy:
+                series_paths = ["/data1/Show", "/data2/Show"]
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="season",
+                    media_server_fallback_enabled=fallback,
+                    arr_series_paths=series_paths,
+                    arr_series_ids=[11, 22] if second_copy else None,
+                    season_path="/data2/Show/Season 01"
+                    if second_copy
+                    else "/data/Show/Season 01",
+                    episode_path="/data2/Show/Season 01/Show - S01E01.mkv"
+                    if second_copy
+                    else "/data/Show/Season 01/Show - S01E01.mkv",
+                )
+            gone = FakeSonarr({arr_ids[-1]: empty_eps})
+            sonarrs = {config_ids[-1]: gone}
+            if second_copy:
+                sonarrs[config_ids[0]] = FakeSonarr(
+                    {
+                        arr_ids[0]: [
+                            {
+                                "id": 500,
+                                "seasonNumber": 1,
+                                "episodeNumber": 1,
+                                "episodeFileId": 800,
+                                "hasFile": True,
+                            }
+                        ]
+                    }
+                )
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, sonarrs, media)
+
+            deleted = await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]),
+                approved_by="tester",
+            )
+            async with session_maker() as db:
+                return {
+                    "deleted": deleted,
+                    "candidate": await db.get(ReclaimCandidate, candidate_id),
+                    "seasons": (await db.execute(select(Season))).scalars().all(),
+                    "history": (
+                        await db.execute(select(ReclaimHistory))
+                    ).scalars().all(),
+                    "media": media,
+                    "sonarr": gone,
+                    "other": sonarrs[config_ids[0]],
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+_UNFILED_EPISODE = [
+    {"id": 700, "seasonNumber": 1, "episodeNumber": 1, "episodeFileId": 0}
+]
+
+
+def test_season_already_removed_is_resolved_not_retried(monkeypatch) -> None:
+    """A season whose files are already gone must not fail on every run.
+
+    The media server keeps listing it, the scan re-flags it, and Sonarr has
+    nothing left to delete - so the candidate used to fail forever.
+    """
+    out = _already_gone_case(monkeypatch, empty_eps=_UNFILED_EPISODE)
+
+    assert out["deleted"] == 0
+    assert out["candidate"] is None
+    assert out["history"] == []
+    assert out["sonarr"].deleted_seasons == []
+    assert out["media"].scanned_paths == ["/data/Show/Season 01"]
+
+
+def test_season_already_removed_keeps_record_for_other_copy(monkeypatch) -> None:
+    out = _already_gone_case(
+        monkeypatch, empty_eps=_UNFILED_EPISODE, second_copy=True
+    )
+
+    assert out["candidate"] is None
+    assert len(out["seasons"]) == 1
+    assert out["media"].deleted_items == []
+    # the surviving HD copy's files are never touched
+    assert out["other"].deleted_seasons == []
+
+
+def test_season_not_resolved_when_folder_still_on_disk(monkeypatch, tmp_path) -> None:
+    folder = tmp_path / "Show" / "Season 01"
+    folder.mkdir(parents=True)
+    (folder / "Show - S01E01.mkv").write_bytes(b"x")
+
+    out = _already_gone_case(
+        monkeypatch, empty_eps=_UNFILED_EPISODE, tmp_path=tmp_path, fallback=False
+    )
+
+    assert out["candidate"] is not None
+    assert out["candidate"].delete_attempts == 1
+    assert folder.exists()
+
+
+def test_season_not_resolved_when_sonarr_has_no_series_data(monkeypatch) -> None:
+    class ErroringSonarr(FakeSonarr):
+        async def get_episodes(self, series_id, season_number=None):
+            raise RuntimeError("sonarr down")
+
+    async def run() -> None:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, _ = await _seed_series_case(
+                    db, target_scope="season", media_server_fallback_enabled=False
+                )
+            _patch_services(
+                monkeypatch, {config_ids[0]: ErroringSonarr({})}, FakeMediaServer()
+            )
+            await cleanup._delete_season_candidates(
+                restrict_to_ids=frozenset([candidate_id]), approved_by="tester"
+            )
+            async with session_maker() as db:
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                assert candidate is not None
+                assert candidate.delete_attempts == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def _episode_already_gone(monkeypatch, *, episodes, fallback=True, sibling=False):
+    async def run() -> dict:
+        engine, session_maker = await _make_session(monkeypatch)
+        try:
+            async with session_maker() as db:
+                candidate_id, config_ids, arr_ids = await _seed_series_case(
+                    db,
+                    target_scope="episode",
+                    media_server_fallback_enabled=fallback,
+                    arr_series_paths=["/data1/Show", "/data2/Show"]
+                    if sibling
+                    else None,
+                    arr_series_ids=[11, 22] if sibling else None,
+                    season_path="/data2/Show/Season 01"
+                    if sibling
+                    else "/data/Show/Season 01",
+                    episode_path="/data2/Show/Season 01/Show - S01E01.mkv"
+                    if sibling
+                    else "/data/Show/Season 01/Show - S01E01.mkv",
+                )
+            matched = FakeSonarr({arr_ids[-1]: episodes})
+            sonarrs = {config_ids[-1]: matched}
+            other = None
+            if sibling:
+                other = FakeSonarr(
+                    {
+                        arr_ids[0]: [
+                            {
+                                "id": 500,
+                                "seasonNumber": 1,
+                                "episodeNumber": 1,
+                                "episodeFileId": 800,
+                                "hasFile": True,
+                            }
+                        ]
+                    }
+                )
+                sonarrs[config_ids[0]] = other
+            media = FakeMediaServer()
+            _patch_services(monkeypatch, sonarrs, media)
+            deleted = await cleanup._delete_episode_candidates(
+                restrict_to_ids=frozenset([candidate_id]), approved_by="tester"
+            )
+            async with session_maker() as db:
+                return {
+                    "deleted": deleted,
+                    "candidate": await db.get(ReclaimCandidate, candidate_id),
+                    "history": (await db.execute(select(ReclaimHistory)))
+                    .scalars()
+                    .all(),
+                    "media": media,
+                    "matched": matched,
+                    "other": other,
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+def test_episode_already_removed_is_resolved_not_retried(monkeypatch) -> None:
+    out = _episode_already_gone(
+        monkeypatch,
+        episodes=[
+            {"id": 700, "seasonNumber": 1, "episodeNumber": 1, "episodeFileId": 0}
+        ],
+    )
+
+    assert out["deleted"] == 0
+    assert out["candidate"] is None
+    assert out["history"] == []
+    assert out["matched"].deleted_episode_files == []
+    assert out["media"].deleted_items == []
+    assert out["media"].scanned_paths == ["/data/Show/Season 01/Show - S01E01.mkv"]
+
+
+def test_episode_not_resolved_when_missing_from_sonarr(monkeypatch) -> None:
+    """Absent from Sonarr is not proof the file is gone."""
+    out = _episode_already_gone(monkeypatch, episodes=[], fallback=False)
+
+    assert out["candidate"] is not None
+    assert out["candidate"].delete_attempts == 1
+
+
+def test_episode_never_falls_through_to_sibling_copy(monkeypatch) -> None:
+    out = _episode_already_gone(
+        monkeypatch,
+        episodes=[
+            {"id": 700, "seasonNumber": 1, "episodeNumber": 1, "episodeFileId": 0}
+        ],
+        sibling=True,
+    )
+
+    assert out["candidate"] is None
+    assert out["other"].deleted_episode_files == []
+    assert out["other"].get_episode_calls == []

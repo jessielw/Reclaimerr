@@ -94,6 +94,14 @@ This matters more than it sounds. Skipping the reconciliation leaves the media s
 
 One Plex caveat: a path scan only drops missing items when Plex's _Empty trash automatically after every scan_ library setting is enabled, which is Plex's default. With it turned off, Plex keeps the entry until you empty the trash yourself.
 
+Reclaimerr never empties the Plex trash for you. That action covers the whole library section, and if a drive is briefly unmounted it would permanently erase the watch history, ratings, and collections of everything Plex marked missing. Turning the setting on, or emptying the trash yourself once your storage is mounted, stays your decision.
+
+### When A Season Or Episode Was Already Removed
+
+If the media server still lists something whose files are already gone, the scan flags it again and automatic deletion has nothing left to remove. Reclaimerr clears that candidate instead of failing it on every run, and asks the media server to re-scan the path. It does this only when every Sonarr instance it asked reports no files for the item, none of them errored, and the folder or file is gone from disk. If any of that is uncertain, the candidate fails with its error as before, so a Sonarr outage or an unmounted drive is never mistaken for a finished removal.
+
+Nothing else is touched in that case. No new history entry is written (the real removal was already logged), and the season or episode record is left for the next **Sync Media** run, since it may be shared with a second copy. If the item keeps coming back, check the Plex trash setting above.
+
 ## Series Held In Two Copies
 
 A series you keep twice - an HD copy and a UHD copy, each with its own Sonarr - is stored as one set of season records, because seasons are identified by series and season number with nothing to tell the copies apart. Those season fields (size, path, resolution) describe whichever copy your main media server reported, so they cannot be used to aim a rule at one copy.

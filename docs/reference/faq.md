@@ -17,6 +17,10 @@ The most common reasons are:
 - A delete request is already pending.
 - The task is disabled or waiting on the main server.
 
+## Why does an item I already deleted keep coming back as a candidate?
+
+Your media server is still listing it. Plex keeps an entry for files that disappeared until its trash is emptied, so the next sync re-imports it and the scan flags it again with a fresh review period. Enable Plex's _Empty trash automatically after every scan_ library setting, or empty the trash once your storage is mounted. Reclaimerr does not do this for you, because it affects the whole library. See [Keeping The Media Server In Step](../usage/deletion-flow.md#keeping-the-media-server-in-step).
+
 ## What does Leaving Soon do?
 
 Leaving Soon exposes a managed collection of items that are approaching their reclaim deadline.
