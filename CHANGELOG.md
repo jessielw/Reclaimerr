@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated backend dependencies (alembic, apprise, authlib, fastapi, niquests, pydantic-settings, python-iso639, and semver).
+
 ### Fixed
 
 - Deleting a single movie version through the media-server fallback now also removes the movie from Radarr when no files remain and the rule action is `delete`. Previously only the `remove_if_empty` fallback did, so the entry stayed monitored and Radarr re-downloaded the file (#515).
