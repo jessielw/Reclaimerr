@@ -9398,7 +9398,7 @@ async def _delete_movie_version_candidates(
                     await db.flush()
                     movie_db = await _soft_remove_movie_if_empty(db, ver_db.movie_id)
                     if (
-                        cand_arr_action == "remove_if_empty"
+                        cand_arr_action in {"delete", "remove_if_empty"}
                         and movie_db is not None
                         and movie_db.removed_at is not None
                     ):
