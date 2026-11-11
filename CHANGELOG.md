@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Updated backend dependencies (alembic, apprise, authlib, fastapi, niquests, pydantic-settings, python-iso639, and semver).
+
+### Fixed
+
+- Deleting a single movie version through the media-server fallback now also removes the movie from Radarr when no files remain and the rule action is `delete`. Previously only the `remove_if_empty` fallback did, so the entry stayed monitored and Radarr re-downloaded the file (#515).
+- A season or episode whose files were already removed (but that the media server still lists, so it was flagged again) no longer fails every run with "No Sonarr episode files found" / "No episode file in Sonarr". When Sonarr and the disk both confirm nothing is left, the candidate is cleared and the media server is asked to rescan the path. Reclaimerr also no longer falls through to a different Sonarr copy (e.g. HD) when the path-matched copy (e.g. UHD) has nothing left to delete.
+- Duplicates no longer lists Plex versions whose file is gone from disk (kept by Plex until its trash is emptied) as duplicates. Items where none of the files can be found are left as before, since Reclaimerr then cannot see that storage.
+- Deleting a duplicate now refuses when files exist on disk but none of the kept ones do, so the only real copy can no longer be removed.
+
 ## [0.6.10] - 2026-11-08
 
 ### Security

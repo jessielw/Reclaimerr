@@ -8785,6 +8785,34 @@ def _order_series_arr_refs(
     return ordered, proven_ref_ids
 
 
+def _season_folder_on_disk(
+    ref: SeriesArrRef,
+    season_number: int,
+    path_mappings: list[dict[str, Any]],
+) -> bool:
+    """True when this Sonarr copy's season folder still holds anything on disk.
+
+    Guards the "Sonarr has no files" shortcut: if the folder is still there,
+    Sonarr may simply not know about the files yet, so nothing is assumed.
+    """
+    if not ref.arr_series_path:
+        return False
+    series_path = Path(ref.arr_series_path)
+    if not series_path.is_dir():
+        resolved = resolve_path(
+            ref.arr_series_path,
+            path_mappings,
+            service_type=Service.SONARR.value,
+            service_config_id=ref.service_config_id,
+            warn_missing=False,
+        )
+        if resolved is None or not resolved.is_dir():
+            return False
+        series_path = resolved
+    folder = find_season_folder(series_path, season_number)
+    return bool(folder and folder.is_dir() and any(folder.iterdir()))
+
+
 async def _season_held_by_another_sonarr(
     refs: Sequence[SeriesArrRef],
     acted_config_id: int | None,
@@ -9370,7 +9398,7 @@ async def _delete_movie_version_candidates(
                     await db.flush()
                     movie_db = await _soft_remove_movie_if_empty(db, ver_db.movie_id)
                     if (
-                        cand_arr_action == "remove_if_empty"
+                        cand_arr_action in {"delete", "remove_if_empty"}
                         and movie_db is not None
                         and movie_db.removed_at is not None
                     ):
@@ -11721,15 +11749,23 @@ async def _delete_season_candidates(
                 "is removed",
             )
             continue
-        if finalize_season_action and proven_ref_ids:
+        # When the files were matched to one copy by path, never fall through
+        # to another: if the matched copy has nothing left, deleting a sibling
+        # copy's files (e.g. HD when UHD was targeted) would be the wrong copy.
+        if proven_ref_ids:
             ordered_refs = [ref for ref in ordered_refs if ref.id in proven_ref_ids]
         last_sonarr_error: str | None = None
+        # Tracks whether Sonarr positively confirmed there is nothing left to
+        # remove. Any ref we could not ask, or that errored, voids the proof.
+        empty_ref: SeriesArrRef | None = None
+        season_state_unverified = False
 
         for ref in ordered_refs:
             ref_client = service_manager.get_sonarr(ref.service_config_id)
             if ref_client is None and not finalize_season_action:
                 ref_client = service_manager.sonarr
             if ref_client is None or ref.arr_series_id is None:
+                season_state_unverified = True
                 continue
 
             try:
@@ -11737,6 +11773,7 @@ async def _delete_season_candidates(
             except PlaybackDeferred:
                 raise
             except Exception as e:
+                season_state_unverified = True
                 last_sonarr_error = describe_exception(e)
                 LOG.warning(
                     f"Failed to fetch episodes from Sonarr for "
@@ -11753,6 +11790,7 @@ async def _delete_season_candidates(
                 and file_id > 0
             ]
             if not season_file_ids:
+                empty_ref = empty_ref or ref
                 last_sonarr_error = (
                     f"No Sonarr episode files found for S{season_number:02d}"
                 )
@@ -11778,6 +11816,7 @@ async def _delete_season_candidates(
             except PlaybackDeferred:
                 raise
             except Exception as e:
+                season_state_unverified = True
                 last_sonarr_error = describe_exception(e)
                 LOG.warning(
                     f"Failed to unmonitor '{series_obj.title}' S{season_number:02d} "
@@ -11871,6 +11910,29 @@ async def _delete_season_candidates(
             if deleted_via_sonarr or finalize_season_action:
                 # Once removal starts, never switch to a different physical copy.
                 break
+
+        # The files were already removed (an earlier run, or by hand) and the
+        # media server still lists the season, so the scan re-flagged it. There
+        # is nothing left to delete; retrying would fail forever. Only when
+        # Sonarr said so for every instance asked and no season folder remains.
+        season_already_removed = False
+        if (
+            not deleted_via_sonarr
+            and sonarr_client is None
+            and empty_ref is not None
+            and not season_state_unverified
+            and cand_arr_action != "unmonitor_only"
+            and not finalize_season_action
+            and not _season_folder_on_disk(empty_ref, season_number, path_mappings)
+        ):
+            season_already_removed = True
+            deleted_via_sonarr = True
+            sonarr_ref_config_id = empty_ref.service_config_id
+            LOG.info(
+                f"'{series_obj.title}' S{season_number:02d} has no files left in "
+                "Sonarr or on disk - treating it as already removed and asking "
+                "the media server to rescan it."
+            )
 
         # A surviving copy in another Sonarr changes what is safe to do next:
         # the media-server item and the season record are both shared between
@@ -12131,24 +12193,29 @@ async def _delete_season_candidates(
                     await db.flush()
                     await _soft_remove_series_if_empty(db, candidate.series_id)
 
-            db.add(
-                ReclaimHistory(
-                    approved_by=approved_by,
-                    media_type=MediaType.SERIES,
-                    tmdb_id=series_obj.tmdb_id,
-                    name=f"{series_obj.title} S{season_number:02d}",
-                    size=season.size,
-                    attributes=_build_reclaim_history_attributes(
-                        season=season, sonarr_monitoring=monitoring_attributes
-                    ),
-                    action="unmonitored_only"
-                    if cand_arr_action == "unmonitor_only"
-                    else "unmonitored"
-                    if cand_arr_action in UNMONITOR_LIKE_ARR_ACTIONS
-                    else "deleted",
+            if not season_already_removed:
+                db.add(
+                    ReclaimHistory(
+                        approved_by=approved_by,
+                        media_type=MediaType.SERIES,
+                        tmdb_id=series_obj.tmdb_id,
+                        name=f"{series_obj.title} S{season_number:02d}",
+                        size=season.size,
+                        attributes=_build_reclaim_history_attributes(
+                            season=season, sonarr_monitoring=monitoring_attributes
+                        ),
+                        action="unmonitored_only"
+                        if cand_arr_action == "unmonitor_only"
+                        else "unmonitored"
+                        if cand_arr_action in UNMONITOR_LIKE_ARR_ACTIONS
+                        else "deleted",
+                    )
                 )
-            )
             await db.commit()
+
+        if season_already_removed:
+            # Already reported when the files were actually removed.
+            continue
 
         deleted_count += 1
         event_service_type: Service | None = service_manager.main_media_server_type
@@ -12325,6 +12392,10 @@ async def _delete_episode_candidates(
         sonarr_client = None
         deleted_via_sonarr = False
         last_sonarr_error: str | None = None
+        # Set when Sonarr positively confirms the episode has no file left; any
+        # ref we could not ask, or that errored, voids that proof.
+        episode_state_unverified = False
+        episode_file_gone = False
         async with async_db() as db:
             refs = (
                 (
@@ -12362,17 +12433,24 @@ async def _delete_episode_candidates(
             )
             continue
 
+        # Matched to one copy by path: never fall through to a sibling copy
+        # (e.g. HD when UHD was targeted) if the matched one has nothing left.
+        if proven_ref_ids:
+            ordered_refs = [ref for ref in ordered_refs if ref.id in proven_ref_ids]
+
         for ref in ordered_refs:
             ref_client = service_manager.get_sonarr(ref.service_config_id)
             if ref_client is None:
                 ref_client = service_manager.sonarr
             if ref_client is None or ref.arr_series_id is None:
+                episode_state_unverified = True
                 continue
             try:
                 sonarr_episodes = await ref_client.get_episodes(ref.arr_series_id)
             except PlaybackDeferred:
                 raise
             except Exception as e:
+                episode_state_unverified = True
                 last_sonarr_error = describe_exception(e)
                 LOG.warning(
                     f"Failed to fetch episodes from Sonarr for "
@@ -12388,6 +12466,7 @@ async def _delete_episode_candidates(
                 and ep.get("episodeNumber") == episode.episode_number
             ]
             if not matching:
+                episode_state_unverified = True
                 last_sonarr_error = f"No Sonarr episode found for {ep_label}"
                 LOG.warning(
                     f"No Sonarr episode found for '{series_obj.title}' {ep_label} "
@@ -12414,6 +12493,7 @@ async def _delete_episode_candidates(
                 break
 
             if not sonarr_ep_file_id:
+                episode_file_gone = True
                 last_sonarr_error = f"No episode file in Sonarr for {ep_label}"
                 LOG.debug(
                     f"No episode file in Sonarr for '{series_obj.title}' {ep_label} "
@@ -12445,6 +12525,7 @@ async def _delete_episode_candidates(
             except PlaybackDeferred:
                 raise
             except Exception as e:
+                episode_state_unverified = True
                 last_sonarr_error = describe_exception(e)
                 LOG.warning(
                     f"Sonarr episode file deletion failed for "
@@ -12453,6 +12534,42 @@ async def _delete_episode_candidates(
 
         if last_sonarr_error == SHARED_EPISODE_FILE_ERROR:
             await _mark_candidate_delete_failure(candidate.id, last_sonarr_error)
+            continue
+
+        # The file was already removed (an earlier run, or by hand) and the
+        # media server still lists the episode, so the scan re-flagged it.
+        # Retrying would fail forever. Only when Sonarr said so for every
+        # instance asked and the file is gone from disk too. The episode row
+        # is left for the next sync, since it may be shared with another copy.
+        main_server_type = _main_media_server_type()
+        if (
+            not deleted_via_sonarr
+            and episode_file_gone
+            and not episode_state_unverified
+            and cand_arr_action != "unmonitor_only"
+            and not resolve_path(
+                episode.path,
+                path_mappings,
+                service_type=(main_server_type.value if main_server_type else None),
+                warn_missing=False,
+            )
+        ):
+            LOG.info(
+                f"'{series_obj.title}' {ep_label} has no file left in Sonarr or "
+                "on disk - treating it as already removed and asking the media "
+                "server to rescan it."
+            )
+            await _reconcile_media_server_after_delete(
+                item_id=None,
+                paths=[episode.path],
+                allow_delete_item=False,
+                context=f"episode cleanup '{series_obj.title}' {ep_label}",
+            )
+            async with async_db() as db:
+                await db.execute(
+                    delete(ReclaimCandidate).where(ReclaimCandidate.id == candidate.id)
+                )
+                await db.commit()
             continue
 
         if deleted_via_sonarr and cand_arr_action != "unmonitor_only":

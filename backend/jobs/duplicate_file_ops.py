@@ -17,6 +17,7 @@ job but are removed straight from disk: no Arr or media server tracks them.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -229,6 +230,7 @@ async def _delete_duplicate_files_impl(
     fallback_enabled = settings.media_server_fallback_enabled if settings else True
 
     kept = [f for f in group.files if f not in selected]
+    await asyncio.to_thread(_require_kept_on_disk, group.files, kept, mappings)
     freed = 0
     for f in selected:
         try:
@@ -256,6 +258,34 @@ async def _delete_duplicate_files_impl(
             raise
         freed += f.size
     return freed
+
+
+def _require_kept_on_disk(
+    files: Sequence[DuplicateFile],
+    kept: Sequence[DuplicateFile],
+    mappings: list[dict[str, Any]],
+) -> None:
+    """Refuse when the disk shows files exist but none of them is kept.
+
+    Skipped when no file in the group can be found at all, since Reclaimerr then
+    cannot see that storage and has nothing to verify against.
+    """
+
+    def exists(f: DuplicateFile) -> bool:
+        return (
+            resolve_path(
+                f.path, mappings, service_type=f.service.value, warn_missing=False
+            )
+            is not None
+        )
+
+    if any(exists(f) for f in kept):
+        return
+    if any(exists(f) for f in files):
+        raise DuplicateActionError(
+            "None of the files being kept exist on disk, so deleting would remove "
+            "the only real copy. Refresh the page"
+        )
 
 
 def _arr_file_ids(

@@ -925,3 +925,76 @@ def test_sync_pools_versions_per_episode_and_prunes_on_replace() -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_stale_versions_whose_file_is_gone_are_not_duplicates(tmp_path) -> None:
+    real = tmp_path / "real.mkv"
+    real.write_bytes(b"x")
+    gone = tmp_path / "gone.mkv"
+
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            async with sm() as db:
+                await _seed_movie(
+                    db,
+                    {"media_id": "a", "path": str(real)},
+                    {"media_id": "b", "path": str(gone)},
+                )
+                assert await load_duplicate_groups(db) == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_real_duplicates_survive_and_stale_ones_are_dropped(tmp_path) -> None:
+    paths = [tmp_path / n for n in ("a.mkv", "b.mkv")]
+    for p in paths:
+        p.write_bytes(b"x")
+
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            async with sm() as db:
+                await _seed_movie(
+                    db,
+                    {"media_id": "a", "path": str(paths[0])},
+                    {"media_id": "b", "path": str(paths[1])},
+                    {"media_id": "c", "path": str(tmp_path / "gone.mkv")},
+                )
+                (group,) = await load_duplicate_groups(db)
+                assert {f.path for f in group.files} == {str(p) for p in paths}
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unverifiable_groups_are_left_alone() -> None:
+    async def run() -> None:
+        engine, sm = await _make_session()
+        try:
+            async with sm() as db:
+                await _seed_movie(db, {"media_id": "a"}, {"media_id": "b"})
+                assert len(await load_duplicate_groups(db)) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_delete_refuses_when_no_kept_file_exists(tmp_path) -> None:
+    real = tmp_path / "real.mkv"
+    real.write_bytes(b"x")
+
+    def file(path) -> Any:
+        return type("F", (), {"path": str(path), "service": Service.PLEX})()
+
+    gone = file(tmp_path / "gone.mkv")
+    present = file(real)
+    check = duplicate_file_ops._require_kept_on_disk
+    with pytest.raises(DuplicateActionError, match="only real copy"):
+        check([gone, present], [gone], [])
+    check([gone, present], [present], [])
+    check([gone, file(tmp_path / "x.mkv")], [gone], [])  # nothing verifiable
