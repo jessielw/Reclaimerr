@@ -49,6 +49,9 @@
           {#if entry.error_category}<p>
               Reason: {entry.error_category.replaceAll("_", " ")}
             </p>{/if}
+          {#if detail.reason}<p>
+              Skipped: {detail.reason.replaceAll("_", " ")}
+            </p>{/if}
           {#if detail.deferral_code}<p>
               Deferred: {detail.deferral_code.replaceAll("_", " ")}
             </p>{/if}

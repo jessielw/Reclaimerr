@@ -575,7 +575,8 @@ class OperationDetail(ExportModel):
     kind: Literal["candidate", "duplicate", "upgrade_leftover"] = "candidate"
     action: Literal["move", "delete", "unknown"]
     stage: str
-    outcome: Literal["succeeded", "failed", "deferred", "unknown"]
+    outcome: Literal["succeeded", "failed", "deferred", "skipped", "unknown"]
+    reason: Literal["favorites_protection", "sibling_protection"] | None = None
     subject: Literal["file", "directory", "path", "candidate", "provider_request"]
     path: str | None = None
     destination: str | None = None

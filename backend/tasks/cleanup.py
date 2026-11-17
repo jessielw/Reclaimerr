@@ -1196,6 +1196,15 @@ async def _filter_movie_candidates_by_favorites(
         if candidate.movie_id is None
         or movie_tmdb_map.get(candidate.movie_id) not in favorite_tmdb_ids
     ]
+    allowed = {candidate.id for candidate in filtered}
+    for candidate in candidates:
+        if candidate.id not in allowed:
+            record_outcome(
+                candidate.id,
+                "skipped",
+                stage="validation",
+                reason="favorites_protection",
+            )
     return filtered, len(candidates) - len(filtered)
 
 
@@ -1301,6 +1310,9 @@ async def _filter_movie_candidates_by_sibling_protection(
             and candidate.movie_version_id not in protected_version_ids
         ):
             held_back.append(candidate.id)
+            record_outcome(
+                candidate.id, "skipped", stage="validation", reason="sibling_protection"
+            )
             continue
         filtered.append(candidate)
     return filtered, held_back
@@ -1339,6 +1351,15 @@ async def _filter_series_candidates_by_favorites(
         if candidate.series_id is None
         or series_tmdb_map.get(candidate.series_id) not in favorite_tmdb_ids
     ]
+    allowed = {candidate.id for candidate in filtered}
+    for candidate in candidates:
+        if candidate.id not in allowed:
+            record_outcome(
+                candidate.id,
+                "skipped",
+                stage="validation",
+                reason="favorites_protection",
+            )
     return filtered, len(candidates) - len(filtered)
 
 
@@ -8721,9 +8742,11 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
         return summary
 
 
-async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
+async def _mark_candidate_delete_failure(
+    candidate_id: int, error: str, *, diagnostic_fallback: bool = False
+) -> None:
     """Persist delete failure details for a candidate."""
-    record_outcome(candidate_id, "failed", error=error)
+    record_outcome(candidate_id, "failed", error=error, fallback=diagnostic_fallback)
     async with async_db() as db:
         result = await db.execute(
             select(ReclaimCandidate).where(ReclaimCandidate.id == candidate_id)
@@ -8946,7 +8969,9 @@ async def _diagnose_unhandled_delete_failures(candidate_ids: Iterable[int]) -> N
             diagnosed[candidate_id] = generic
 
     for candidate_id, reason in diagnosed.items():
-        await _mark_candidate_delete_failure(candidate_id, reason)
+        await _mark_candidate_delete_failure(
+            candidate_id, reason, diagnostic_fallback=True
+        )
 
 
 def _has_delete_route(media_type: MediaType) -> bool:

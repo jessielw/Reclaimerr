@@ -161,6 +161,7 @@ export interface TimelineEntry {
   error_category: string | null;
   note: string | null;
   operation: {
+    reason: "favorites_protection" | "sibling_protection" | null;
     action: string;
     stage: string;
     outcome: string;

@@ -23,6 +23,7 @@ from backend.core import auto_delete_diagnostics as auto_diag
 from backend.core.operation_diagnostics import (
     DEFERRAL_CODES,
     OUTCOMES,
+    REASONS,
     STAGES,
     SUBJECTS,
 )
@@ -492,6 +493,10 @@ class BundleCollector(Collector):
                     "item_outcome",
                 ):
                     operation = m.OperationDetail(
+                        reason=detail["reason"]
+                        if isinstance(detail.get("reason"), str)
+                        and detail["reason"] in REASONS
+                        else None,
                         kind="duplicate"
                         if detail.get("kind") == "duplicate"
                         else "upgrade_leftover"

@@ -58,6 +58,8 @@ Timelines combine recorded candidate/review timestamps, correlated job events, s
 
 Bounded operation samples reserve space for the newest final outcome and automatic-deletion decision per target/run, then intermediate failures and recent observations. Timeline count and byte limits retain those terminal records ahead of intermediate events. If terminal records alone exceed the limit, the newest are retained and truncation remains explicit.
 
+Late favorites and physical-sibling protection filters record `skipped` outcomes with safe reason codes. Generic fallback diagnoses preserve these observed guard outcomes. Cleanup result counters retain their existing meaning; a batch's failed count is not proof that every item attempted file removal.
+
 Recording is bounded to 1,000 steps and 1,000 candidate outcomes per operation, with at most 4,000 step associations plus 1,000 outcomes persisted. Limits are reported in the exported observations. Stored operation history is limited to 5,000 events and 14 days, pruned during subsequent recording. These observations are written after operational transactions; recording failure does not undo a completed operation. No operation is retried for diagnostics.
 
 Raw errors and actor identities are excluded. Log summaries are opt-in: up to three bounded 256 KiB log tails, at most 100 summaries, with times, levels, failure categories and correlation IDs. Media reports include only correlated log entries. Original message text, tracebacks, addresses and credentials are never copied. Older uncorrelated logs may contribute nothing to a media bundle.

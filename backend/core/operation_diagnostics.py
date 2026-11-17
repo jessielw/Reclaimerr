@@ -32,7 +32,8 @@ STAGES = {
     "completed",
     "unknown",
 }
-OUTCOMES = {"succeeded", "failed", "deferred", "unknown"}
+OUTCOMES = {"succeeded", "failed", "deferred", "skipped", "unknown"}
+REASONS = {"favorites_protection", "sibling_protection"}
 SUBJECTS = {"file", "directory", "path", "candidate", "provider_request"}
 DEFERRAL_CODES = {
     "currently_playing",
@@ -251,9 +252,13 @@ def record_outcome(
     destination=None,
     action=None,
     deferral_code=None,
+    reason=None,
+    fallback=False,
 ) -> None:
     recorder = current_operation_recorder.get()
     if recorder is None or candidate_id is None or outcome not in OUTCOMES:
+        return
+    if fallback and candidate_id in recorder.outcomes:
         return
     if len(recorder.outcomes) >= 1000 and candidate_id not in recorder.outcomes:
         recorder.dropped += 1
@@ -280,5 +285,6 @@ def record_outcome(
         "deferral_code": deferral_code
         if isinstance(deferral_code, str) and deferral_code in DEFERRAL_CODES
         else None,
+        "reason": reason if isinstance(reason, str) and reason in REASONS else None,
         "occurred_at": datetime.now(UTC),
     }

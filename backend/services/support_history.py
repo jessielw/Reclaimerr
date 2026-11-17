@@ -319,6 +319,7 @@ async def persist_operation_details(
                                 "provider",
                                 "reference",
                                 "deferral_code",
+                                "reason",
                             )
                         }
                         detail["shared_request"] = len(value["candidate_ids"]) > 1
