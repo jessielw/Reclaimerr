@@ -792,7 +792,13 @@ class BundleCollector(Collector):
         if "tasks" in selected or "timeline" in selected:
             allowed.add("payload")
         if "configuration" in selected:
-            allowed.add("path_mappings")
+            allowed.update(
+                {
+                    "path_mappings",
+                    "favorites_usernames",
+                    "requester_watch_user_mappings",
+                }
+            )
         if "services" in selected:
             allowed.add("extra_settings")
         if "decisions" in selected:

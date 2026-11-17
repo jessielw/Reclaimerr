@@ -376,12 +376,20 @@ class Collector:
             "auto_delete_series_delay_days",
             "playback_movie_min_seconds",
             "playback_episode_min_seconds",
+            "add_arr_import_exclusions_on_delete",
+            "favorites_ignore_enabled",
+            "favorites_protect_all_users",
+            "requester_watch_ignore_request_date",
         ]
         rows = self.query(
             "SELECT "
             + ",".join(columns)
             + ",move_destination_movies,move_destination_series,"
             + self.json_column("path_mappings")
+            + ",default_arr_delete_behavior,"
+            + self.json_column("favorites_usernames")
+            + ","
+            + self.json_column("requester_watch_user_mappings")
             + " FROM general_settings LIMIT 1"
         )
         if not rows:
@@ -398,8 +406,56 @@ class Collector:
             self.report.collection.omitted.append(
                 "path_mappings: missing or oversized saved value"
             )
+
+        def saved_list(name):
+            values = object_json(row[name])
+            if not isinstance(values, list):
+                self.report.collection.omitted.append(
+                    name + ": missing, malformed or oversized saved value"
+                )
+                return []
+            if len(values) > 100:
+                self.report.collection.truncated.append(
+                    m.Limit(section=name, returned=100, total=len(values))
+                )
+            return values[:100]
+
+        favorites = [
+            alias
+            for v in saved_list("favorites_usernames")
+            if (alias := self.export.user(v))
+        ]
+        mappings = []
+        for v in saved_list("requester_watch_user_mappings"):
+            if not isinstance(v, dict):
+                continue
+            config_id, user_id = (
+                integer(v.get("seerr_service_config_id")),
+                integer(v.get("seerr_user_id")),
+            )
+            mappings.append(
+                m.RequesterWatchMapping(
+                    seerr_service_config_id=config_id,
+                    seerr_user_id=self.export.user(
+                        f"{config_id}:{user_id}" if config_id is not None else user_id
+                    )
+                    if user_id is not None
+                    else None,
+                    seerr_username=self.export.user(v.get("seerr_username")),
+                    media_user_key=self.export.user(v.get("media_user_key")),
+                    service_type=enum_value(Service, v.get("service_type"))
+                    if isinstance(v.get("service_type"), str)
+                    else None,
+                )
+            )
         return m.Configuration(
             **{k: row[k] for k in columns},
+            default_arr_delete_behavior=row["default_arr_delete_behavior"]
+            if row["default_arr_delete_behavior"]
+            in ("delete", "unmonitor", "unmonitor_only", "remove_if_empty")
+            else "unknown",
+            favorites_usernames=favorites,
+            requester_watch_user_mappings=mappings,
             move_destination_movies=self.export.path(row["move_destination_movies"]),
             move_destination_series=self.export.path(row["move_destination_series"]),
             path_mappings=[
@@ -1071,7 +1127,7 @@ class Collector:
                     )
                     if user
                     else None,
-                    username=self.export.alias("user", r["source_username"]),
+                    username=self.export.user(r["source_username"]),
                     played_at=timestamp(r["played_at"]),
                     duration_seconds=r["duration_seconds"],
                     completed=r["completed"],
@@ -1341,6 +1397,19 @@ class Collector:
                         sonarr_service_config_ids=get_arr_service_config_ids(
                             action, "sonarr"
                         )[:100],
+                        quality_profile_id=integer(action.get("quality_profile_id")),
+                        trigger_search=action.get("trigger_search")
+                        if isinstance(action.get("trigger_search"), bool)
+                        else None,
+                        candidate=action.get("candidate")
+                        if isinstance(action.get("candidate"), bool)
+                        else None,
+                        tag_enabled=action.get("tag_enabled")
+                        if isinstance(action.get("tag_enabled"), bool)
+                        else None,
+                        arr_tag=self.export.alias("tag", action.get("arr_tag"))
+                        if isinstance(action.get("arr_tag"), str)
+                        else None,
                     )
                 result.rules.append(
                     m.RuleInfo(

@@ -58,6 +58,11 @@ class Exporter:
         )
         return value[:2048]
 
+    def user(self, value: object) -> str | None:
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return None
+        return self.alias("user", str(value).strip().lower())
+
     def title(self, value: object) -> str | None:
         if not isinstance(value, str):
             return None
@@ -76,10 +81,12 @@ class Exporter:
         if isinstance(value, (str, int)) and field == "library.id":
             return self.alias("library-reference", value)
         if isinstance(value, int) and ("usernames" in field or "user_ids" in field):
-            return self.alias("user", value)
+            return self.user(value)
         if isinstance(value, (int, float)):
             return value if math.isfinite(value) else None
         if isinstance(value, str):
+            if "user" in field:
+                return self.user(value)
             category = "user" if "user" in field else "literal"
             if "path" in field:
                 return self.path(value)

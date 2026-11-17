@@ -142,6 +142,14 @@ class PathMapping(ExportModel):
     server_id: int | None = None
 
 
+class RequesterWatchMapping(ExportModel):
+    seerr_service_config_id: int | None = None
+    seerr_user_id: str | None = None
+    seerr_username: str | None = None
+    media_user_key: str | None = None
+    service_type: str | None = None
+
+
 class Configuration(ExportModel):
     path_mappings: list[PathMapping] = Field(default_factory=list)
     move_destination_movies: str | None = None
@@ -153,6 +161,17 @@ class Configuration(ExportModel):
     auto_delete_series_delay_days: int
     playback_movie_min_seconds: int
     playback_episode_min_seconds: int
+    default_arr_delete_behavior: Literal[
+        "delete", "unmonitor", "unmonitor_only", "remove_if_empty", "unknown"
+    ]
+    add_arr_import_exclusions_on_delete: bool
+    favorites_ignore_enabled: bool
+    favorites_protect_all_users: bool
+    favorites_usernames: list[str] = Field(default_factory=list)
+    requester_watch_ignore_request_date: bool
+    requester_watch_user_mappings: list[RequesterWatchMapping] = Field(
+        default_factory=list
+    )
 
 
 class DatabaseInfo(ExportModel):
@@ -369,6 +388,11 @@ class RuleAction(ExportModel):
     move_instead_of_delete: bool | None = None
     radarr_service_config_ids: list[int] = Field(default_factory=list)
     sonarr_service_config_ids: list[int] = Field(default_factory=list)
+    quality_profile_id: int | None = None
+    trigger_search: bool | None = None
+    candidate: bool | None = None
+    tag_enabled: bool | None = None
+    arr_tag: str | None = None
 
 
 class RuleInfo(ExportModel):

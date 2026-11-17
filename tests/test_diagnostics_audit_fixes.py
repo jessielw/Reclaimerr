@@ -22,6 +22,8 @@ from backend.database.models import (
     ReclaimCandidate,
     ScheduledDeletion,
     Season,
+    GeneralSettings,
+    ReclaimRule,
 )
 from backend.enums import MediaType, ProtectionRequestStatus
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
@@ -428,3 +430,78 @@ def test_manual_schedule_path_hold_can_cross_media_ids(database):
     assert schedule.stored_path_overlap and not schedule.holds_selected_scope
     assert schedule.media_target.id == 9999
     assert "PRIVATE_ACTOR" not in preview.model_dump_json()
+
+
+def test_cleanup_settings_and_action_targets_keep_identity_relationships(database):
+    with Session(database[2]) as db:
+        settings = db.query(GeneralSettings).one()
+        settings.default_arr_delete_behavior = "unmonitor_only"
+        settings.favorites_ignore_enabled = True
+        settings.favorites_protect_all_users = False
+        settings.favorites_usernames = [" PrivateUser "]
+        settings.requester_watch_ignore_request_date = True
+        settings.requester_watch_user_mappings = [
+            {
+                "seerr_service_config_id": 7,
+                "seerr_user_id": 44,
+                "seerr_username": "MAPPING_SECRET",
+                "media_user_key": "PRIVATEUSER",
+                "service_type": "plex",
+                "token": "TOKEN_SECRET",
+            }
+        ]
+        rule = db.get(ReclaimRule, 1)
+        rule.action = {
+            "arr_action": "change_quality_profile",
+            "quality_profile_id": 42,
+            "trigger_search": False,
+            "radarr_service_config_ids": [5, 6],
+            "arr_tag": "TAG_SECRET",
+            "tag_enabled": True,
+        }
+        rule.definition = {
+            "root": {
+                "type": "group",
+                "op": "and",
+                "children": [
+                    {
+                        "field": "playback.usernames",
+                        "operator": "contains_any",
+                        "value": ["privateuser"],
+                    },
+                    {
+                        "field": "seerr.requested_by_user_ids",
+                        "operator": "contains_any",
+                        "value": ["7:44"],
+                    },
+                ],
+            }
+        }
+        db.commit()
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope="movie_version", id=database[1]["movie_version"]),
+            sections=["configuration", "decisions", "playback"],
+            include_sqlite=True,
+        ),
+        1,
+    )
+    config = preview.report.sections.configuration
+    assert config.default_arr_delete_behavior == "unmonitor_only"
+    assert config.add_arr_import_exclusions_on_delete
+    assert config.favorites_ignore_enabled and not config.favorites_protect_all_users
+    assert config.requester_watch_ignore_request_date
+    mapping = config.requester_watch_user_mappings[0]
+    assert mapping.seerr_service_config_id == 7 and mapping.service_type == "plex"
+    assert mapping.media_user_key == config.favorites_usernames[0]
+    rule = preview.report.sections.decisions.rules[0]
+    assert rule.action.quality_profile_id == 42 and rule.action.trigger_search is False
+    assert rule.action.radarr_service_config_ids == [5, 6]
+    assert rule.action.arr_tag.startswith("tag-")
+    assert (
+        rule.definition["root"]["conditions"][0]["value"] == config.favorites_usernames
+    )
+    assert rule.definition["root"]["conditions"][1]["value"] == [mapping.seerr_user_id]
+    assert "SECRET" not in preview.model_dump_json()
+    assert "privateuser" not in preview.model_dump_json().lower()
