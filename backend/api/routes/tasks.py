@@ -17,6 +17,7 @@ from backend.core.task_runtime import (
     request_task_run,
 )
 from backend.core.task_tracking import COMPLETION_TTL_MINUTES
+from backend.core.utils.cron_utils import InvalidCronSchedule
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.database import get_db
 from backend.database.models import BackgroundJob, TaskRun, TaskSchedule, User
@@ -260,6 +261,8 @@ async def update_schedule(
                 "enabled": task_schedule.enabled,
             },
         }
+    except InvalidCronSchedule as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         detail = str(e)
         if "General Settings" in detail or "opt-in" in detail:

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Cron task schedules now use standard weekday numbering: `0` and `7` are Sunday, and `1-5` is Monday through Friday. Weekly defaults and presets now use weekday names. Invalid cron expressions are rejected before saving, including for disabled tasks. #525
+
+### Changed
+
+- **Upgrade note:** Existing cron schedules with numeric weekdays now run on the corrected days. Review custom task schedules after upgrading, especially automatic deletion schedules. Saved expressions are preserved; untouched weekly defaults switch to named weekdays.
+
 ## [0.6.12] - 2026-11-14
 
 ### Changed

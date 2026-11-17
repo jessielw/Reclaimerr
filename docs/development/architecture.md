@@ -31,9 +31,10 @@ This keeps deployment constrained to one HTTP process that manages both schedule
 The scheduler stores task definitions in the database and mirrors enabled tasks into APScheduler jobs.
 
 - Cron and interval tasks are supported.
+- Cron weekdays use standard crontab numbering (0 or 7 is Sunday, 1 is Monday through 6 is Saturday), translated to names before passing them to APScheduler 3.x.
 - Manual tasks are present in the UI but are not scheduled.
 - Main-server-dependent tasks stay disabled until a main media server exists.
-- Task changes are persisted first, then reflected in the live scheduler.
+- Cron expressions are validated before saving, including for disabled tasks. Valid task changes are persisted first, then reflected in the live scheduler.
 
 ## Background Command Pool
 

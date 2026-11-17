@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.logger import LOG
 from backend.core.task_runtime import can_disable_task, enqueue_scheduled_task
+from backend.core.utils.cron_utils import parse_cron_schedule
 from backend.database import async_db
 from backend.database.models import TaskSchedule
 from backend.enums import ScheduleType, Task
@@ -119,9 +120,9 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         "task": Task.WEEKLY_HOUSE_KEEPING,
         "description": "Performs weekly maintenance tasks to ensure system stability",
         "schedule_type": ScheduleType.CRON,
-        "schedule_value": "0 8 * * 0",  # weekly on Sunday at 8 AM
+        "schedule_value": "0 8 * * sun",  # weekly on Sunday at 8 AM
         "default_schedule_type": ScheduleType.CRON,
-        "default_schedule_value": "0 8 * * 0",
+        "default_schedule_value": "0 8 * * sun",
         "enabled": True,
     },
     {
@@ -132,9 +133,9 @@ DEFAULT_SCHEDULES: tuple[DefaultSchedule, ...] = (
         ),
         "schedule_type": ScheduleType.CRON,
         # weekly on Sunday at 1 AM, ahead of the 2 AM automatic deletion
-        "schedule_value": "0 1 * * 0",
+        "schedule_value": "0 1 * * sun",
         "default_schedule_type": ScheduleType.CRON,
-        "default_schedule_value": "0 1 * * 0",
+        "default_schedule_value": "0 1 * * sun",
         "enabled": True,
     },
     {
@@ -277,7 +278,7 @@ async def setup_scheduler() -> None:
                 interval_seconds = int(task_schedule.schedule_value)
                 trigger = IntervalTrigger(seconds=interval_seconds)
             else:  # CRON
-                trigger = CronTrigger.from_crontab(task_schedule.schedule_value)
+                trigger = parse_cron_schedule(task_schedule.schedule_value)
 
             # add job to scheduler (APScheduler still uses job terminology)
             scheduler.add_job(
@@ -313,7 +314,7 @@ async def refresh_main_server_tasks() -> None:
             if db_schedule.schedule_type is ScheduleType.INTERVAL:
                 trigger = IntervalTrigger(seconds=int(db_schedule.schedule_value))
             else:
-                trigger = CronTrigger.from_crontab(db_schedule.schedule_value)
+                trigger = parse_cron_schedule(db_schedule.schedule_value)
             scheduler.add_job(
                 enqueue_scheduled_task,
                 trigger,
@@ -341,6 +342,13 @@ async def update_task_schedule(
         if not can_disable_task(task) and task_schedule.enabled != enabled:
             raise ValueError(f"Task '{task.value}' does not support enable/disable")
 
+        # Validate cron expressions even for disabled tasks, before persisting.
+        trigger: CronTrigger | IntervalTrigger | None = None
+        if schedule_type is ScheduleType.CRON:
+            trigger = parse_cron_schedule(schedule_value)
+        elif schedule_type is ScheduleType.INTERVAL and enabled:
+            trigger = IntervalTrigger(seconds=int(schedule_value))
+
         was_enabled = task_schedule.enabled
         task_schedule.schedule_type = schedule_type
         task_schedule.schedule_value = schedule_value
@@ -355,14 +363,8 @@ async def update_task_schedule(
 
         # update scheduler
         if enabled:
-            # create trigger
-            if schedule_type is ScheduleType.MANUAL:
+            if trigger is None:
                 return task_schedule
-            elif schedule_type is ScheduleType.INTERVAL:  # interval
-                interval_seconds = int(schedule_value)
-                trigger = IntervalTrigger(seconds=interval_seconds)
-            else:  # CRON
-                trigger = CronTrigger.from_crontab(schedule_value)
 
             # update or add job
             scheduler.add_job(
