@@ -69,6 +69,7 @@ Media metadata is synced from connected services and then used to drive candidat
 
 ## Design Constraints
 
+- A cleanup candidate keeps its original flag date and lifecycle controls when a previously matched rule cannot be evaluated. The saved rule snapshot records an automatic-deletion hold until a successful scan replaces it with a verified match. Confirmed non-matches are removed normally.
 - Safety defaults matter more than automation.
 - Candidate state must remain auditable.
 - Deletion should route through the most specific service available.

@@ -273,6 +273,11 @@ SONARR_EPISODE_FETCH_CONCURRENCY = 8
 CANDIDATE_SPIKE_MIN_NEW = 25
 CANDIDATE_SPIKE_POSTPONE_DAYS = 3
 
+# Persist uncertainty alongside the saved rule snapshot, without resetting the
+# candidate's clock or lifecycle controls. A verified scan replaces the snapshot
+# and clears this hold. Automatic deletion must not use the stale verdict.
+_CANDIDATE_UNAVAILABLE_RULE_IDS = "_unavailable_rule_ids"
+
 
 @dataclass(slots=True)
 class _SonarrRuleDataResult:
@@ -637,6 +642,9 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
         manual_schedules = await active_schedules(db)
         manual_cache = await inventory_cache(db, candidates, manual_schedules)
         for candidate in candidates:
+            if (candidate.matched_criteria or {}).get(_CANDIDATE_UNAVAILABLE_RULE_IDS):
+                blocked_count += 1
+                continue
             if (candidate.matched_criteria or {}).get("scheduled_deletion_id"):
                 blocked_count += 1
                 continue
@@ -725,6 +733,74 @@ def _record_target_key(record: MatchedCandidateRecord) -> tuple[str, int] | None
     if record.series_id is not None:
         return TARGET_SERIES, record.series_id
     return None
+
+
+def _hold_candidate_for_unavailable_rules(
+    candidate: ReclaimCandidate, rule_ids: Collection[int]
+) -> None:
+    candidate.matched_criteria = {
+        **(candidate.matched_criteria or {}),
+        _CANDIDATE_UNAVAILABLE_RULE_IDS: sorted(rule_ids),
+    }
+
+
+def _preserve_unavailable_candidates(
+    candidates: Iterable[ReclaimCandidate],
+    availability: RulePreviewMatchMetadata | None,
+    preserve_candidate_ids: Collection[int],
+) -> set[int]:
+    preserved = set(preserve_candidate_ids)
+    if availability is not None:
+        for candidate in candidates:
+            key = _candidate_target_key(candidate)
+            unknown = set(candidate.matched_rule_ids or []) & (
+                availability.unavailable_rule_ids_by_target.get(key, set())
+                if key is not None
+                else set()
+            )
+            if unknown:
+                _hold_candidate_for_unavailable_rules(candidate, unknown)
+                preserved.add(candidate.id)
+    return preserved
+
+
+async def _preserve_skipped_rule_candidates(
+    db: AsyncSession, skipped_rule_ids: set[int]
+) -> set[int]:
+    if not skipped_rule_ids:
+        return set()
+    candidates = (
+        await db.scalars(
+            select(ReclaimCandidate).where(ReclaimCandidate.delete_request_id.is_(None))
+        )
+    ).all()
+    preserved: set[int] = set()
+    for candidate in candidates:
+        unknown = set(candidate.matched_rule_ids or []) & skipped_rule_ids
+        if unknown:
+            _hold_candidate_for_unavailable_rules(candidate, unknown)
+            preserved.add(candidate.id)
+    return preserved
+
+
+def _record_unavailable_candidate_rule(
+    metadata: RulePreviewMatchMetadata | None,
+    rule: ReclaimRule,
+    *,
+    target_scope: str,
+    target_id: int,
+    **context: Any,
+) -> bool:
+    if (
+        metadata is None
+        or evaluate_advanced_rule_state(rule, target_scope=target_scope, **context)
+        is not None
+    ):
+        return False
+    metadata.unavailable_rule_ids_by_target.setdefault(
+        (target_scope, target_id), set()
+    ).add(rule.id)
+    return True
 
 
 async def _revalidate_auto_delete_candidate_ids(
@@ -6004,6 +6080,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         await _activate_collection_sibling_rule_data_for_rules(db, list(rules))
 
         preserved_protection_rule_ids: set[int] = set()
+        skipped_candidate_rule_ids: set[int] = set()
         seerr_skipped_rules = 0
         seerr_skip_reason: str | None = None
         seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
@@ -6015,6 +6092,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         if not seerr_ready:
             seerr_dependent_rules = [r for r in rules if _rule_uses_seerr_fields(r)]
             if seerr_dependent_rules:
+                skipped_candidate_rule_ids.update(
+                    rule.id
+                    for rule in seerr_dependent_rules
+                    if normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE
+                )
                 preserved_protection_rule_ids = {
                     rule.id
                     for rule in seerr_dependent_rules
@@ -6060,6 +6142,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         # data resolve as unknown, so they fail playback conditions on their
         # own while other branches of the rule still evaluate normally
         if playback_rule_result.blocking:
+            skipped_candidate_rule_ids.update(
+                rule.id
+                for rule in playback_dependent_rules
+                if normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE
+            )
             preserved_protection_rule_ids.update(
                 rule.id
                 for rule in playback_dependent_rules
@@ -6148,6 +6235,10 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
             f"{protected_removed} removed"
         )
 
+        preserve_candidate_ids = await _preserve_skipped_rule_candidates(
+            db, skipped_candidate_rule_ids
+        )
+
         # Separate candidate rules by explicit advanced target. Rules without a
         # valid advanced definition are skipped by the evaluator and will not match.
         movie_rules = [
@@ -6172,7 +6263,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         # process movies
         if movie_rules:
             created, updated, removed = await _process_media(
-                db, movie_rules, MediaType.MOVIE, commit=False
+                db,
+                movie_rules,
+                MediaType.MOVIE,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += created
             candidates_updated += updated
@@ -6185,6 +6280,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                     delete(ReclaimCandidate)
                     .where(ReclaimCandidate.delete_request_id.is_(None))
                     .where(ReclaimCandidate.media_type == MediaType.MOVIE)
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
@@ -6192,7 +6288,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         # process series
         if series_rules:
             created, updated, removed = await _process_media(
-                db, series_rules, MediaType.SERIES, commit=False
+                db,
+                series_rules,
+                MediaType.SERIES,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += created
             candidates_updated += updated
@@ -6207,13 +6307,17 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                         ReclaimCandidate.media_type == MediaType.SERIES,
                         _is_series_scope(ReclaimCandidate),
                     )
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
 
         if season_rules:
             s_cr, s_up, s_rm = await _process_series_seasons(
-                db, season_rules, commit=False
+                db,
+                season_rules,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += s_cr
             candidates_updated += s_up
@@ -6228,13 +6332,17 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                         ReclaimCandidate.media_type == MediaType.SERIES,
                         _is_season_scope(ReclaimCandidate),
                     )
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
 
         if episode_rules:
             e_cr, e_up, e_rm = await _process_series_episodes(
-                db, episode_rules, commit=False
+                db,
+                episode_rules,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += e_cr
             candidates_updated += e_up
@@ -6249,6 +6357,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                         ReclaimCandidate.media_type == MediaType.SERIES,
                         _is_episode_scope(ReclaimCandidate),
                     )
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
@@ -6323,6 +6432,7 @@ async def _process_media(
     media_type: MediaType,
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """
     Process movies or series against cleanup rules.
@@ -6330,10 +6440,21 @@ async def _process_media(
     Returns (created_count, updated_count, removed_count)
     """
     if media_type is MediaType.MOVIE:
-        return await _process_movie_versions(db, rules, commit=commit)
+        return await _process_movie_versions(
+            db, rules, commit=commit, preserve_candidate_ids=preserve_candidate_ids
+        )
 
-    records = await _collect_series_candidate_records(db, rules)
-    return await _sync_series_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_series_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_series_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _collect_series_candidate_records(
@@ -6448,19 +6569,22 @@ async def _collect_series_candidate_records(
         reasons: list[dict[str, Any]] = []
 
         for rule in rules:
-            if (
-                preview_metadata is not None
-                and _rule_uses_season_episode_watch_fields(rule)
-                and evaluate_advanced_rule_state(
-                    rule,
-                    target_scope=TARGET_SERIES,
-                    series=item,
-                )
-                is None
-            ):
-                _record_unavailable_series_inventory(preview_metadata, item)
             if _evaluate_movie_rule(item, rule, matched_criteria, reasons):
                 matched_rules.append(rule.id)
+                continue
+            unknown = _record_unavailable_candidate_rule(
+                preview_metadata,
+                rule,
+                target_scope=TARGET_SERIES,
+                target_id=item.id,
+                series=item,
+            )
+            if (
+                unknown
+                and preview_metadata is not None
+                and _rule_uses_season_episode_watch_fields(rule)
+            ):
+                _record_unavailable_series_inventory(preview_metadata, item)
 
         if not matched_rules:
             continue
@@ -6557,6 +6681,8 @@ async def _sync_series_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize series candidates with the database."""
     result = await db.execute(
@@ -6568,6 +6694,9 @@ async def _sync_series_candidates(
         )
     )
     existing_candidates = result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     candidate_lookup = {
         candidate.series_id: candidate
         for candidate in existing_candidates
@@ -6584,6 +6713,8 @@ async def _sync_series_candidates(
         if record.series_id is None:
             continue
         existing = candidate_lookup.get(record.series_id)
+        if existing and existing.id in preserved:
+            continue
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
             existing.matched_criteria = record.matched_criteria
@@ -6611,13 +6742,18 @@ async def _sync_series_candidates(
     stale_candidates = [
         candidate
         for series_id, candidate in candidate_lookup.items()
-        if series_id not in matched_item_ids
+        if series_id not in matched_item_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -6633,10 +6769,20 @@ async def _process_movie_versions(
     rules: list[ReclaimRule],
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Evaluate movie rules at movie-version granularity."""
-    records = await _collect_movie_version_candidate_records(db, rules)
-    return await _sync_movie_version_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_movie_version_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_movie_version_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _collect_movie_version_candidate_records(
@@ -6743,6 +6889,15 @@ async def _collect_movie_version_candidate_records(
                     movie, version, rule, matched_criteria, reasons
                 ):
                     matched_rules.append(rule.id)
+                elif version.size or movie.size:
+                    _record_unavailable_candidate_rule(
+                        preview_metadata,
+                        rule,
+                        target_scope=TARGET_MOVIE_VERSION,
+                        target_id=version.id,
+                        movie=movie,
+                        version=version,
+                    )
 
             if not matched_rules:
                 continue
@@ -6771,6 +6926,8 @@ async def _sync_movie_version_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize movie version candidates with the database."""
     pending = (await db.scalars(select(CandidateResyncIdentity))).all()
@@ -6785,6 +6942,9 @@ async def _sync_movie_version_candidates(
         )
     )
     existing_candidates = existing_result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     version_candidate_lookup: dict[int, ReclaimCandidate] = {
         candidate.movie_version_id: candidate
         for candidate in existing_candidates
@@ -6793,7 +6953,7 @@ async def _sync_movie_version_candidates(
     legacy_movie_candidates = [
         candidate
         for candidate in existing_candidates
-        if candidate.movie_version_id is None
+        if candidate.movie_version_id is None and candidate.id not in preserved
     ]
 
     matched_version_ids = {
@@ -6809,6 +6969,8 @@ async def _sync_movie_version_candidates(
         if record.movie_version_id is None or record.movie_id is None:
             continue
         existing = version_candidate_lookup.get(record.movie_version_id)
+        if existing and existing.id in preserved:
+            continue
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
             existing.matched_criteria = record.matched_criteria
@@ -6838,7 +7000,7 @@ async def _sync_movie_version_candidates(
     stale_version_candidates = [
         candidate
         for version_id, candidate in version_candidate_lookup.items()
-        if version_id not in matched_version_ids
+        if version_id not in matched_version_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_version_candidates) + len(legacy_movie_candidates)
     for candidate in stale_version_candidates:
@@ -6846,7 +7008,12 @@ async def _sync_movie_version_candidates(
     for candidate in legacy_movie_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -6862,13 +7029,23 @@ async def _process_series_seasons(
     rules: list[ReclaimRule],
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Evaluate each series' seasons against rules and create/update season-level candidates.
 
     Returns (created_count, updated_count, removed_count).
     """
-    records = await _collect_season_candidate_records(db, rules)
-    return await _sync_season_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_season_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_season_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _process_series_episodes(
@@ -6876,13 +7053,23 @@ async def _process_series_episodes(
     rules: list[ReclaimRule],
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Evaluate each series' episodes against rules and create/update episode-level candidates.
 
     Returns (created_count, updated_count, removed_count).
     """
-    records = await _collect_episode_candidate_records(db, rules)
-    return await _sync_episode_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_episode_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_episode_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _collect_season_candidate_records(
@@ -7003,25 +7190,27 @@ async def _collect_season_candidate_records(
             reasons: list[dict[str, Any]] = []
 
             for rule in rules:
-                if (
-                    preview_metadata is not None
-                    and season.size
-                    and _rule_uses_season_episode_watch_fields(rule)
-                    and evaluate_advanced_rule_state(
-                        rule,
-                        target_scope=TARGET_SEASON,
-                        series=series,
-                        season=season,
-                    )
-                    is None
-                ):
-                    _record_unavailable_season_inventory(
-                        preview_metadata, series, season
-                    )
                 if _evaluate_rule_for_season(
                     series, season, rule, matched_criteria, reasons
                 ):
                     matched_rules.append(rule.id)
+                    continue
+                unknown = bool(season.size) and _record_unavailable_candidate_rule(
+                    preview_metadata,
+                    rule,
+                    target_scope=TARGET_SEASON,
+                    target_id=season.id,
+                    series=series,
+                    season=season,
+                )
+                if (
+                    unknown
+                    and preview_metadata is not None
+                    and _rule_uses_season_episode_watch_fields(rule)
+                ):
+                    _record_unavailable_season_inventory(
+                        preview_metadata, series, season
+                    )
 
             if not matched_rules:
                 continue
@@ -7047,6 +7236,8 @@ async def _sync_season_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize season candidates with the database."""
     existing_result = await db.execute(
@@ -7057,9 +7248,13 @@ async def _sync_season_candidates(
             _is_season_scope(ReclaimCandidate),
         )
     )
+    existing_candidates = existing_result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     season_candidate_lookup: dict[int, ReclaimCandidate] = {
         candidate.season_id: candidate
-        for candidate in existing_result.scalars().all()
+        for candidate in existing_candidates
         if candidate.season_id is not None
     }
 
@@ -7074,6 +7269,8 @@ async def _sync_season_candidates(
         if record.season_id is None or record.series_id is None:
             continue
         existing = season_candidate_lookup.get(record.season_id)
+        if existing and existing.id in preserved:
+            continue
 
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
@@ -7103,13 +7300,18 @@ async def _sync_season_candidates(
     stale_candidates = [
         candidate
         for season_id, candidate in season_candidate_lookup.items()
-        if season_id not in matched_season_ids
+        if season_id not in matched_season_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -7266,25 +7468,28 @@ async def _collect_episode_candidate_records(
                 reasons: list[dict[str, Any]] = []
 
                 for rule in rules:
-                    if (
-                        preview_metadata is not None
-                        and _rule_uses_season_episode_watch_fields(rule)
-                        and evaluate_advanced_rule_state(
-                            rule,
-                            target_scope=TARGET_EPISODE,
-                            series=series,
-                            season=season,
-                            episode=episode,
-                        )
-                        is None
-                    ):
-                        _record_unavailable_season_inventory(
-                            preview_metadata, series, season
-                        )
                     if _evaluate_rule_for_episode(
                         series, season, episode, rule, matched_criteria, reasons
                     ):
                         matched_rules.append(rule.id)
+                        continue
+                    unknown = _record_unavailable_candidate_rule(
+                        preview_metadata,
+                        rule,
+                        target_scope=TARGET_EPISODE,
+                        target_id=episode.id,
+                        series=series,
+                        season=season,
+                        episode=episode,
+                    )
+                    if (
+                        unknown
+                        and preview_metadata is not None
+                        and _rule_uses_season_episode_watch_fields(rule)
+                    ):
+                        _record_unavailable_season_inventory(
+                            preview_metadata, series, season
+                        )
 
                 if not matched_rules:
                     continue
@@ -7311,6 +7516,8 @@ async def _sync_episode_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize episode candidates with the database."""
     existing_result = await db.execute(
@@ -7321,9 +7528,13 @@ async def _sync_episode_candidates(
             _is_episode_scope(ReclaimCandidate),
         )
     )
+    existing_candidates = existing_result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     episode_candidate_lookup: dict[int, ReclaimCandidate] = {
         candidate.episode_id: candidate
-        for candidate in existing_result.scalars().all()
+        for candidate in existing_candidates
         if candidate.episode_id is not None
     }
 
@@ -7338,6 +7549,8 @@ async def _sync_episode_candidates(
         if record.episode_id is None or record.series_id is None:
             continue
         existing = episode_candidate_lookup.get(record.episode_id)
+        if existing and existing.id in preserved:
+            continue
 
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
@@ -7368,13 +7581,18 @@ async def _sync_episode_candidates(
     stale_candidates = [
         candidate
         for episode_id, candidate in episode_candidate_lookup.items()
-        if episode_id not in matched_episode_ids
+        if episode_id not in matched_episode_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:

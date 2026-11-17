@@ -110,6 +110,10 @@ class RulePreviewMatchMetadata:
     requester_watch_unavailable_count: int = 0
     watch_completion_unavailable_count: int = 0
     matched_count: int = 0
+    # Scan reconciliation retains existing matches when their rule is unknown.
+    unavailable_rule_ids_by_target: dict[tuple[str, int], set[int]] = field(
+        default_factory=dict, repr=False
+    )
 
 
 @dataclass(slots=True)
