@@ -271,10 +271,19 @@ async def persist_auto_delete_history(
 
 
 async def persist_operation_details(
-    snapshots: list[dict], correlation_id: str, recorder: OperationRecorder
+    snapshots: list[dict],
+    correlation_id: str,
+    recorder: OperationRecorder,
+    *,
+    session_factory=None,
 ) -> None:
     """Flush observations only after the operation's own transactions finish."""
-    targets = {row["candidate_id"]: row for row in snapshots}
+    targets = {
+        row.get("observation_key", row["candidate_id"]): {
+            k: v for k, v in row.items() if k != "observation_key"
+        }
+        for row in snapshots
+    }
     try:
         dropped = recorder.dropped + max(
             0,
@@ -285,7 +294,7 @@ async def persist_operation_details(
             )
             - 4000,
         )
-        async with async_db() as db:
+        async with (session_factory or async_db)() as db:
             count = 0
             # Reserve capacity for final per-candidate outcomes even in large batches.
             for event, values in (
@@ -314,6 +323,7 @@ async def persist_operation_details(
                         }
                         detail["shared_request"] = len(value["candidate_ids"]) > 1
                         detail["dropped_observations"] = dropped
+                        detail["kind"] = recorder.kind
                         db.add(
                             SupportOperationEvent(
                                 correlation_id=correlation_id,

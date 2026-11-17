@@ -127,15 +127,27 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
                         "SELECT t.target_scope,t.target_id FROM support_decision_traces t JOIN support_scan_runs s ON s.id=t.scan_id WHERE s.job_id=? UNION SELECT target_scope,target_id FROM support_operation_events WHERE job_id=? ORDER BY target_scope,target_id",
                         (int(identifier), int(identifier)),
                     )
-                    if not selected:
-                        payload = object_json(rows[0]["payload"])
-                        if (
-                            isinstance(payload, dict)
-                            and rows[0]["job_type"] == "DUPLICATE_DELETE"
-                        ):
-                            selected, truncated = duplicate_targets(
+                    payload = object_json(rows[0]["payload"])
+                    if (
+                        isinstance(payload, dict)
+                        and rows[0]["job_type"] == "DUPLICATE_DELETE"
+                    ):
+                        try:
+                            queued, queued_truncated = duplicate_targets(
                                 payload, collector.query
                             )
+                            truncated |= queued_truncated
+                            for target in queued:
+                                if target not in selected:
+                                    if len(selected) < 100:
+                                        selected.append(target)
+                                    else:
+                                        truncated = True
+                        except (sqlite3.Error, TimeoutError):
+                            result.limitations.append(
+                                "Some queued duplicate target associations are unavailable."
+                            )
+                    if not selected:
                         ids = (
                             payload.get("candidate_ids")
                             if isinstance(payload, dict)

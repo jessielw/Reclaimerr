@@ -72,6 +72,8 @@ Lookup reads stored history only. It does not rescan, retry, contact providers, 
 
 Duplicate jobs resolve movie-version and episode targets from their stored inputs without requiring operation history. Upgrade-leftover jobs resolve their associated movie while the leftover row or recorded operation still exists. Older successful leftover jobs whose row was removed before recording may have no recoverable association. Job labels and other payload text remain excluded.
 
+New duplicate/upgrade-leftover operations snapshot their media associations before file rows are removed. Their recorded validation/playback checks, provider/filesystem steps and terminal outcomes use the same bounded history as candidate operations, with an explicit operation kind and no invented candidate ID. Partial movie-version results remain separate; interrupted or unprocessed targets remain unknown. Leftovers require a stored movie association to appear in a media timeline. Recording is best effort after operational transactions and never retries deletion. These observations require schema revision `b4d9f2a6c831`.
+
 No match can mean expired history or work from before recording was introduced. Unavailable history is shown separately. Matching bundles use a 30-day window; retention can leave less evidence. Detailed operation observations require the `d5f0b2c7e439` schema revision; older batch records contain no invented file steps.
 
 ## Run an explicit check

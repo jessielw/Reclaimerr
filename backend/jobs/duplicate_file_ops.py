@@ -19,13 +19,24 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 
+from backend.core.diagnostic_trace import current_job_id, current_operation_id
 from backend.core.logger import LOG
+from backend.core.operation_diagnostics import (
+    OperationRecorder,
+    current_candidates,
+    current_group,
+    current_operation_recorder,
+    observe_step,
+    operation_step,
+    record_outcome,
+)
 from backend.core.protection_scope import detach_movie_version_references
 from backend.core.service_manager import service_manager
 from backend.core.utils.filesystem import (
@@ -80,6 +91,7 @@ from backend.services.playback_guard import (
 from backend.services.radarr import RadarrClient
 from backend.services.scheduled_deletions import blocking_file_paths
 from backend.services.sonarr import SonarrClient
+from backend.services.support_history import persist_operation_details
 from backend.services.upgrade_leftovers import (
     check_before_delete,
     load_leftovers,
@@ -124,8 +136,12 @@ async def run_duplicate_delete_job(
     job_id: int, payload: DuplicateDeleteJobPayload
 ) -> dict[str, Any]:
     """Serialized with candidate scans and file ops, which touch the same rows."""
-    async with candidate_workflow_lock:
-        return await _run_unlocked(job_id, payload)
+    token = current_job_id.set(job_id)
+    try:
+        async with candidate_workflow_lock:
+            return await _run_unlocked(job_id, payload)
+    finally:
+        current_job_id.reset(token)
 
 
 async def _run_unlocked(
@@ -233,8 +249,15 @@ async def _delete_duplicate_files_impl(
     await asyncio.to_thread(_require_kept_on_disk, group.files, kept, mappings)
     freed = 0
     for f in selected:
+        keys = (
+            tuple(f.version_ids)
+            if group.media_type is MediaType.MOVIE
+            else (item.item_id,)
+        )
+        current_candidates.set(keys)
         try:
-            await playback_checkpoint()
+            with operation_step("playback_guard", path=f.path, subject="file"):
+                await playback_checkpoint()
             if group.media_type is MediaType.MOVIE:
                 await _delete_movie_file(
                     group,
@@ -256,10 +279,14 @@ async def _delete_duplicate_files_impl(
         except PlaybackDeferred as exc:
             exc.freed_bytes = freed
             raise
+        if group.media_type is MediaType.MOVIE:
+            for key in keys:
+                record_outcome(key, "succeeded", stage="completed", path=f.path)
         freed += f.size
     return freed
 
 
+@observe_step("validation")
 def _require_kept_on_disk(
     files: Sequence[DuplicateFile],
     kept: Sequence[DuplicateFile],
@@ -336,6 +363,7 @@ def _kept_in_arr_folder(
     )
 
 
+@observe_step("validation")
 def _require_kept_in_arr_folder(
     kept: Sequence[DuplicateFile],
     folder: str | None,
@@ -703,7 +731,8 @@ async def _delete_leftover_impl(
     mappings: list[dict[str, Any]] = (
         list(settings.path_mappings or []) if settings else []
     )
-    st = check_before_delete(row, movie, mappings)
+    with operation_step("validation", path=row.local_path, subject="file"):
+        st = check_before_delete(row, movie, mappings)
 
     local = Path(row.local_path)
     await playback_checkpoint(path=str(local))
@@ -713,7 +742,8 @@ async def _delete_leftover_impl(
             raise DuplicateActionError(
                 "Title is protected or leftover no longer exists"
             )
-    local.unlink()
+    with operation_step("remove_source", path=local, subject="file"):
+        local.unlink()
     playback_step_completed("Removed file " + str(local))
     remove_release_folder(local.parent, [row.source_title or "", local.stem])
     freed = st.st_size if st.st_nlink <= 1 else 0
@@ -746,6 +776,124 @@ async def _delete_leftover_impl(
     return freed
 
 
+def _observe_duplicate(
+    function: Callable[..., Awaitable[int]],
+) -> Callable[..., Awaitable[int]]:
+    @wraps(function)
+    async def wrapper(item, *, approved_by, playback_guard=None):
+        correlation = str(uuid4())
+        recorder = OperationRecorder(
+            "delete",
+            kind="duplicate"
+            if isinstance(item, DuplicateDeleteJobItem)
+            else "upgrade_leftover",
+        )
+        snapshots = []
+        try:
+            if (
+                isinstance(item, DuplicateDeleteJobItem)
+                and item.media_type is MediaType.MOVIE
+            ):
+                snapshots = [
+                    {
+                        "observation_key": key,
+                        "candidate_id": None,
+                        "target_scope": "movie_version",
+                        "target_id": key,
+                        "movie_id": item.item_id,
+                    }
+                    for key in dict.fromkeys(item.version_ids[:1000])
+                ]
+                recorder.dropped += max(0, len(item.version_ids) - 1000)
+            else:
+                async with async_db() as db:
+                    if isinstance(item, DuplicateDeleteJobItem):
+                        episode = await db.get(Episode, item.item_id)
+                        season = (
+                            await db.get(Season, episode.season_id) if episode else None
+                        )
+                        snapshots = [
+                            {
+                                "observation_key": item.item_id,
+                                "candidate_id": None,
+                                "target_scope": "episode",
+                                "target_id": item.item_id,
+                                "season_id": season.id if season else None,
+                                "series_id": season.series_id if season else None,
+                            }
+                        ]
+                    else:
+                        leftover = await db.get(UpgradeLeftover, item.id)
+                        if leftover and leftover.movie_id:
+                            snapshots = [
+                                {
+                                    "observation_key": item.id,
+                                    "candidate_id": None,
+                                    "target_scope": "movie",
+                                    "target_id": leftover.movie_id,
+                                    "movie_id": leftover.movie_id,
+                                }
+                            ]
+        except Exception:
+            LOG.warning("Duplicate operation targets could not be captured")
+        keys = tuple(row["observation_key"] for row in snapshots)
+        tokens = (
+            current_operation_recorder.set(recorder),
+            current_candidates.set(keys),
+            current_group.set(keys),
+            current_operation_id.set(correlation),
+        )
+        try:
+            try:
+                result = await function(
+                    item, approved_by=approved_by, playback_guard=playback_guard
+                )
+            except Exception as exc:
+                for key in current_candidates.get():
+                    if key not in recorder.outcomes:
+                        record_outcome(
+                            key,
+                            "deferred"
+                            if isinstance(exc, PlaybackDeferred)
+                            else "failed",
+                            error=exc,
+                            deferral_code=exc.detail.code
+                            if isinstance(exc, PlaybackDeferred)
+                            else None,
+                            stage="playback_guard"
+                            if isinstance(exc, PlaybackDeferred)
+                            else "unknown",
+                        )
+                raise
+            else:
+                for key in keys:
+                    if key not in recorder.outcomes:
+                        record_outcome(key, "succeeded", stage="completed")
+                return result
+        finally:
+            try:
+                for key in keys:
+                    if key not in recorder.outcomes:
+                        record_outcome(key, "unknown")
+                for outcome in recorder.outcomes.values():
+                    outcome["subject"] = "file"
+                await persist_operation_details(
+                    snapshots, correlation, recorder, session_factory=async_db
+                )
+            except Exception:
+                LOG.warning(
+                    "Duplicate operation evidence could not be recorded; result is unchanged"
+                )
+            finally:
+                current_operation_id.reset(tokens[3])
+                current_group.reset(tokens[2])
+                current_candidates.reset(tokens[1])
+                current_operation_recorder.reset(tokens[0])
+
+    return wrapper
+
+
+@_observe_duplicate
 async def delete_duplicate_files(
     item: DuplicateDeleteJobItem,
     *,
@@ -809,7 +957,8 @@ async def delete_duplicate_files(
                 target.identities.update(
                     (main, r.service_item_id, r.service_media_id) for r in rows
                 )
-    await guard.check(target)
+    with operation_step("playback_guard"):
+        await guard.check(target)
     token = current_playback_operation.set(PlaybackOperation(guard, target))
     try:
         return await _delete_duplicate_files_impl(item, approved_by=approved_by)
@@ -817,6 +966,7 @@ async def delete_duplicate_files(
         current_playback_operation.reset(token)
 
 
+@_observe_duplicate
 async def delete_leftover(
     item: LeftoverDeleteJobItem,
     *,
@@ -851,7 +1001,8 @@ async def delete_leftover(
                 ),
             )
             target.relevant_configs.update(associated.relevant_configs)
-    await guard.check(target)
+    with operation_step("playback_guard"):
+        await guard.check(target)
     token = current_playback_operation.set(PlaybackOperation(guard, target))
     try:
         return await _delete_leftover_impl(item, approved_by=approved_by)

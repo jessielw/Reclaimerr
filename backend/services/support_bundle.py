@@ -492,6 +492,11 @@ class BundleCollector(Collector):
                     "item_outcome",
                 ):
                     operation = m.OperationDetail(
+                        kind="duplicate"
+                        if detail.get("kind") == "duplicate"
+                        else "upgrade_leftover"
+                        if detail.get("kind") == "upgrade_leftover"
+                        else "candidate",
                         action=detail["action"]
                         if detail.get("action") in ("move", "delete")
                         else "unknown",

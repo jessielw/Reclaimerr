@@ -20,7 +20,7 @@ from backend.core.auto_delete_diagnostics import SUMMARY_FIELDS
 from backend.core.operation_diagnostics import DEFERRAL_CODES
 from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
-from backend.core.utils.filesystem import mapped_path_variants
+from backend.core.utils.filesystem import mapped_path_variants, normalize_fpath
 from backend.database.models import ServiceConfig
 from backend.enums import (
     BackgroundJobStatus,
@@ -1527,7 +1527,7 @@ class Collector:
         }
         if parent == "series" and target.scope != "episode":
             roots = {
-                r["path"]
+                normalize_fpath(r["path"], strip_ending_slash=True)
                 for r in self.rows(
                     "schedule_inventory",
                     "series_service_refs",
@@ -1546,11 +1546,22 @@ class Collector:
             )
             for season in seasons:
                 saved_paths = object_json(season["episode_paths"])
+                if isinstance(saved_paths, list) and len(saved_paths) > 100:
+                    self.report.collection.truncated.append(
+                        m.Limit(
+                            section="schedule_inventory",
+                            returned=100,
+                            total=len(saved_paths),
+                            reason="stored_episode_path_sample",
+                        )
+                    )
                 for path in saved_paths[:100] if isinstance(saved_paths, list) else []:
                     if isinstance(path, str) and path:
                         inventory["files"][path] = None
                 if season["path"] and (
-                    target.scope == "series" or season["path"] not in roots
+                    target.scope == "series"
+                    or normalize_fpath(season["path"], strip_ending_slash=True)
+                    not in roots
                 ):
                     inventory["directories"].append(season["path"])
             if target.scope == "series":
@@ -1620,7 +1631,7 @@ class Collector:
                     completed_at=timestamp(row["completed_at"]),
                     state=row["state"],
                     job_id=row["job_id"],
-                    actor=self.export.alias("user", row["created_by_username"]),
+                    actor=self.export.user(row["created_by_username"]),
                     error_category=error_category(row["error"]),
                     holds_selected_scope=scope_hold,
                     stored_path_overlap=overlap,

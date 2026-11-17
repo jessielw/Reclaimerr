@@ -45,6 +45,7 @@ DEFERRAL_CODES = {
 @dataclass
 class OperationRecorder:
     action: str
+    kind: str = "candidate"
     steps: list[dict[str, Any]] = field(default_factory=list)
     outcomes: dict[int, dict[str, Any]] = field(default_factory=dict)
     dropped: int = 0

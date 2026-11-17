@@ -572,6 +572,7 @@ class DecisionTrace(ExportModel):
 
 
 class OperationDetail(ExportModel):
+    kind: Literal["candidate", "duplicate", "upgrade_leftover"] = "candidate"
     action: Literal["move", "delete", "unknown"]
     stage: str
     outcome: Literal["succeeded", "failed", "deferred", "unknown"]
