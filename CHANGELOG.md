@@ -8,11 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Support bundles retain the latest run of every task, so frequent playback refreshes cannot hide cleanup task runs. Stored playback deferrals and recorded automatic-deletion decisions explain why a completed task left a candidate in place.
 - Cleanup scans preserve candidates' original flag dates and deletion timers when a previously matched rule is skipped or its data is temporarily unavailable. Automatic deletion stays on hold until a successful scan verifies the candidate; confirmed non-matches are still removed. #526
 - Cron task schedules now use standard weekday numbering: `0` and `7` are Sunday, and `1-5` is Monday through Friday. Weekly defaults and presets now use weekday names. Invalid cron expressions are rejected before saving, including for disabled tasks. #525
 
 ### Changed
 
+- Candidate and deletion support bundles select all diagnostic sections by default and show automatic-deletion run totals, revalidation evidence and missing-history limitations. Preparing a bundle does not rerun rules or retry deletion.
 - **Upgrade note:** Existing cron schedules with numeric weekdays now run on the corrected days. Review custom task schedules after upgrading, especially automatic deletion schedules. Saved expressions are preserved; untouched weekly defaults switch to named weekdays.
 
 ## [0.6.12] - 2026-11-14

@@ -77,13 +77,25 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
             if kind in ("scan", "correlation"):
                 try:
                     rows = collector.query(
-                        "SELECT started_at FROM support_scan_runs WHERE id=? LIMIT 1",
+                        "SELECT started_at,substr(context,1,65536) AS context FROM support_scan_runs WHERE id=? LIMIT 1",
                         (identifier,),
                     )
                     if rows:
-                        selected, truncated = targets(
-                            "SELECT DISTINCT target_scope,target_id FROM support_decision_traces WHERE scan_id=? ORDER BY target_scope,target_id",
-                            (identifier,),
+                        context = object_json(rows[0]["context"])
+                        automatic = (
+                            isinstance(context, dict)
+                            and context.get("purpose") == "auto_delete"
+                        )
+                        selected, truncated = (
+                            targets(
+                                "SELECT target_scope,target_id FROM support_decision_traces WHERE scan_id=? UNION SELECT target_scope,target_id FROM support_operation_events WHERE correlation_id=? AND event_type='auto_delete_decision' ORDER BY target_scope,target_id",
+                                (identifier, identifier),
+                            )
+                            if automatic
+                            else targets(
+                                "SELECT DISTINCT target_scope,target_id FROM support_decision_traces WHERE scan_id=? ORDER BY target_scope,target_id",
+                                (identifier,),
+                            )
                         )
                         add("scan", rows[0]["started_at"], selected, truncated)
                 except (sqlite3.Error, TimeoutError):

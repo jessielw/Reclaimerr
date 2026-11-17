@@ -186,6 +186,18 @@ class RunInfo(ExportModel):
     error: Literal["recorded_error_text_omitted"] | None = None
 
 
+class AutoDeleteRunInfo(ExportModel):
+    correlation_id: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    job_id: int | None = None
+    status: Literal["completed", "failed", "interrupted", "unknown"]
+    summary: dict[str, int] | None = None
+    error_category: str | None = None
+    dropped_decisions: int = 0
+    dropped_traces: int = 0
+
+
 class JobInfo(ExportModel):
     id: int
     job_type: str
@@ -288,6 +300,22 @@ class Condition(ExportModel):
     actual: JsonValue = None
 
 
+DeferralCode = Literal[
+    "currently_playing",
+    "playback_unavailable",
+    "resync_pending",
+    "manual_deletion_scheduled",
+    "unknown",
+]
+
+
+class DeferralInfo(ExportModel):
+    code: DeferralCode
+    checked_at: datetime | None = None
+    server_config_ids: list[int] = Field(default_factory=list)
+    completed_step_count: int | None = None
+
+
 class CandidateInfo(ExportModel):
     id: int
     target: Target
@@ -305,6 +333,7 @@ class CandidateInfo(ExportModel):
     auto_delete_postponed_until: datetime | None = None
     auto_delete_timer_started_at: datetime | None = None
     delete_request_id: int | None = None
+    playback_deferral: DeferralInfo | None = None
 
 
 class RuleAction(ExportModel):
@@ -372,6 +401,7 @@ class Sections(ExportModel):
     configuration: Configuration | None = None
     schedules: list[ScheduleInfo] | None = None
     recent_runs: list[RunInfo] | None = None
+    auto_delete_runs: list[AutoDeleteRunInfo] | None = None
     active_jobs: list[JobInfo] | None = None
     identity: Identity | None = None
     children: list[Identity] | None = None
@@ -424,14 +454,17 @@ class BundleOptions(DiagnosticsOptions):
                 "candidate": [
                     "services",
                     "configuration",
+                    "storage",
                     "playback",
                     "decisions",
+                    "tasks",
                     "timeline",
                 ],
                 "deletion": [
                     "services",
                     "configuration",
                     "storage",
+                    "playback",
                     "decisions",
                     "tasks",
                     "timeline",
@@ -478,6 +511,20 @@ class OperationDetail(ExportModel):
     reference: str | None = None
     shared_request: bool = False
     dropped_observations: int = 0
+    deferral_code: str | None = None
+
+
+class AutoDeleteDecisionDetail(ExportModel):
+    stage: Literal["selection", "revalidation", "dispatch"]
+    outcome: Literal["eligible", "waiting", "skipped", "authorized"]
+    reason: str
+    rule_ids: list[int] = Field(default_factory=list)
+    matched_rule_ids: list[int] = Field(default_factory=list)
+    unavailable_rule_ids: list[int] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    eligible_at: datetime | None = None
+    coverage: dict[str, int | bool] = Field(default_factory=dict)
+    note: str = "Observed during automatic deletion. Authorization is not proof of deletion. Coverage counters describe the revalidation batch; condition traces describe individual rule inputs."
 
 
 class TimelineEntry(ExportModel):
@@ -490,6 +537,7 @@ class TimelineEntry(ExportModel):
     error_category: str | None = None
     note: str | None = None
     operation: OperationDetail | None = None
+    auto_delete: AutoDeleteDecisionDetail | None = None
 
 
 class LogExcerpt(ExportModel):

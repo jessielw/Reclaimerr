@@ -25,6 +25,18 @@
 
 <details class="rounded-md border p-3 text-sm space-y-3">
   <summary class="cursor-pointer font-medium">Why this candidate?</summary>
+  {#each decisions?.candidates ?? [] as candidate}
+    {#if candidate.playback_deferral}
+      <p>
+        Candidate #{candidate.id} has a stored deferral: {candidate.playback_deferral.code.replaceAll(
+          "_",
+          " ",
+        )}{candidate.playback_deferral.checked_at
+          ? ` (checked ${new Date(candidate.playback_deferral.checked_at).toLocaleString()})`
+          : ""}.
+      </p>
+    {/if}
+  {/each}
   {#if traces.length}
     <p class="text-muted-foreground">
       Recorded evaluations, newest first. Values are from the scan, with private

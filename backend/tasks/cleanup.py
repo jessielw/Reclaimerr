@@ -21,6 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
+from backend.core.auto_delete_diagnostics import (
+    COVERAGE_FIELDS,
+    AutoDeleteRecorder,
+    capture_auto_delete,
+    current_auto_delete,
+)
 from backend.core.diagnostic_trace import (
     ScanRecorder,
     current_operation_id,
@@ -206,6 +212,8 @@ from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_ca
 from backend.services.selected_playback_history import load_selected_history_snapshot
 from backend.services.sonarr import SonarrClient
 from backend.services.support_history import (
+    error_category,
+    persist_auto_delete_history,
     persist_operation_details,
     persist_scan,
     record_operations,
@@ -501,22 +509,26 @@ async def _load_auto_delete_context(
 
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
     async with async_db() as db:
-        candidates = (
-            (
-                await db.execute(
-                    select(ReclaimCandidate).where(
-                        ReclaimCandidate.delete_request_id.is_(None),
-                        ReclaimCandidate.id.notin_(
-                            select(CandidateResyncIdentity.candidate_id)
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+        candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
         if not candidates:
             return [], 0, 0
+
+        resync_ids = set(await db.scalars(select(CandidateResyncIdentity.candidate_id)))
+        available_candidates = []
+        for candidate in candidates:
+            if candidate.delete_request_id is not None or candidate.id in resync_ids:
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "skipped",
+                    "pending_delete_request"
+                    if candidate.delete_request_id is not None
+                    else "resync_pending",
+                )
+            else:
+                available_candidates.append(candidate)
+        excluded_count = len(candidates) - len(available_candidates)
+        candidates = available_candidates
 
         (
             rule_actions_by_id,
@@ -529,6 +541,12 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
         now = datetime.now(UTC)
         blocked_movie_ids: set[int] = set()
         blocked_movie_version_ids: set[int] = set()
+        block_reasons: dict[tuple[str, int], set[str]] = defaultdict(set)
+        block_types = (
+            "active_protection",
+            "pending_protection_request",
+            "pending_delete_request",
+        )
 
         movie_overlap_queries = (
             select(ProtectedMedia.movie_id, ProtectedMedia.movie_version_id).where(
@@ -550,12 +568,14 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 DeleteRequest.status == ProtectionRequestStatus.PENDING,
             ),
         )
-        for query in movie_overlap_queries:
+        for reason, query in zip(block_types, movie_overlap_queries, strict=True):
             for movie_id, movie_version_id in (await db.execute(query)).all():
                 if movie_id is not None:
                     blocked_movie_ids.add(movie_id)
+                    block_reasons[("movie", movie_id)].add(reason)
                 if movie_version_id is not None:
                     blocked_movie_version_ids.add(movie_version_id)
+                    block_reasons[("movie_version", movie_version_id)].add(reason)
 
         if blocked_movie_version_ids:
             version_rows = (
@@ -568,6 +588,11 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             blocked_movie_ids.update(
                 movie_id for _, movie_id in version_rows if movie_id is not None
             )
+            for version_id, movie_id in version_rows:
+                if movie_id is not None:
+                    block_reasons[("movie", movie_id)].update(
+                        block_reasons[("movie_version", version_id)]
+                    )
 
         blocked_series_ids: set[int] = set()
         blocked_season_ids: set[int] = set()
@@ -603,14 +628,17 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 DeleteRequest.status == ProtectionRequestStatus.PENDING,
             ),
         )
-        for query in series_overlap_queries:
+        for reason, query in zip(block_types, series_overlap_queries, strict=True):
             for series_id, season_id, episode_id in (await db.execute(query)).all():
                 if series_id is not None:
                     blocked_series_ids.add(series_id)
+                    block_reasons[("series", series_id)].add(reason)
                 if season_id is not None:
                     blocked_season_ids.add(season_id)
+                    block_reasons[("season", season_id)].add(reason)
                 if episode_id is not None:
                     blocked_episode_ids.add(episode_id)
+                    block_reasons[("episode", episode_id)].add(reason)
 
         if blocked_episode_ids:
             episode_rows = (
@@ -623,6 +651,11 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             blocked_season_ids.update(
                 season_id for _, season_id in episode_rows if season_id is not None
             )
+            for episode_id, season_id in episode_rows:
+                if season_id is not None:
+                    block_reasons[("season", season_id)].update(
+                        block_reasons[("episode", episode_id)]
+                    )
 
         if blocked_season_ids:
             season_rows = (
@@ -635,21 +668,35 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             blocked_series_ids.update(
                 series_id for _, series_id in season_rows if series_id is not None
             )
+            for season_id, series_id in season_rows:
+                if series_id is not None:
+                    block_reasons[("series", series_id)].update(
+                        block_reasons[("season", season_id)]
+                    )
 
         eligible_ids: list[int] = []
-        blocked_count = 0
+        blocked_count = excluded_count
         waiting_count = 0
         manual_schedules = await active_schedules(db)
         manual_cache = await inventory_cache(db, candidates, manual_schedules)
         for candidate in candidates:
             if (candidate.matched_criteria or {}).get(_CANDIDATE_UNAVAILABLE_RULE_IDS):
                 blocked_count += 1
+                capture_auto_delete(
+                    candidate, "selection", "skipped", "rule_data_unavailable"
+                )
                 continue
             if (candidate.matched_criteria or {}).get("scheduled_deletion_id"):
                 blocked_count += 1
+                capture_auto_delete(
+                    candidate, "selection", "skipped", "scheduled_deletion"
+                )
                 continue
             if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
                 waiting_count += 1
+                capture_auto_delete(
+                    candidate, "selection", "waiting", "manual_schedule"
+                )
                 continue
             blocked = False
             if candidate.media_type is MediaType.MOVIE:
@@ -678,6 +725,28 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
 
             if blocked:
                 blocked_count += 1
+                reasons = sorted(
+                    {
+                        reason
+                        for scope in (
+                            "movie",
+                            "movie_version",
+                            "series",
+                            "season",
+                            "episode",
+                        )
+                        for reason in block_reasons.get(
+                            (scope, getattr(candidate, scope + "_id")), ()
+                        )
+                    }
+                )
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "skipped",
+                    reasons[0],
+                    blocking_reasons=reasons,
+                )
                 continue
 
             policy = resolve_auto_delete_policy(
@@ -694,11 +763,33 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             )
             if not policy.is_enabled:
                 blocked_count += 1
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "skipped",
+                    "canceled"
+                    if policy.state == "canceled"
+                    else "auto_delete_disabled",
+                )
                 continue
             if policy.is_eligible:
                 eligible_ids.append(candidate.id)
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "eligible",
+                    "eligible",
+                    eligible_at=policy.eligible_at.isoformat(),
+                )
             else:
                 waiting_count += 1
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "waiting",
+                    "postponed" if policy.state == "postponed" else "review_period",
+                    eligible_at=policy.eligible_at.isoformat(),
+                )
 
         return eligible_ids, blocked_count, waiting_count
 
@@ -873,6 +964,7 @@ async def _revalidate_auto_delete_candidate_ids(
                 affected.append(candidate)
             else:
                 passthrough_ids.add(candidate.id)
+                capture_auto_delete(candidate, "dispatch", "authorized", "authorized")
 
         if not affected:
             existing_ids = {candidate.id for candidate in candidates}
@@ -895,6 +987,8 @@ async def _revalidate_auto_delete_candidate_ids(
             if target_key is not None:
                 target_ids_by_scope[target_key[0]].add(target_key[1])
 
+        auto_recorder = current_auto_delete.get()
+        trace_token = current_scan.set(auto_recorder.scan) if auto_recorder else None
         try:
             preview = await collect_rule_preview_matches_with_metadata(
                 db,
@@ -908,6 +1002,14 @@ async def _revalidate_auto_delete_candidate_ids(
                 f"will be skipped: {exc}",
                 exc_info=True,
             )
+            for candidate in affected:
+                capture_auto_delete(
+                    candidate,
+                    "revalidation",
+                    "skipped",
+                    "revalidation_failed",
+                    error_category=error_category(exc),
+                )
             return _AutoDeleteRevalidationResult(
                 candidate_ids=[
                     candidate_id
@@ -917,12 +1019,30 @@ async def _revalidate_auto_delete_candidate_ids(
                 revalidated_out=len(affected),
                 playback_unavailable=len(affected),
             )
+        finally:
+            if trace_token is not None:
+                current_scan.reset(trace_token)
+
+        coverage = {name: getattr(preview.metadata, name) for name in COVERAGE_FIELDS}
+        coverage["seerr_unavailable"] = preview.metadata.seerr_unavailable
+        coverage["playback_error"] = bool(preview.metadata.playback_error)
+        coverage["sonarr_error"] = bool(preview.metadata.sonarr_error)
+        coverage["seerr_error"] = bool(preview.metadata.seerr_error)
 
         if preview.metadata.playback_error:
             LOG.warning(
                 "Auto-delete playback revalidation could not establish complete "
                 f"provider coverage: {preview.metadata.playback_error}"
             )
+            for candidate in affected:
+                capture_auto_delete(
+                    candidate,
+                    "revalidation",
+                    "skipped",
+                    "playback_data_unavailable",
+                    coverage=coverage,
+                    error_category=error_category(preview.metadata.playback_error),
+                )
             return _AutoDeleteRevalidationResult(
                 candidate_ids=[
                     candidate_id
@@ -950,8 +1070,33 @@ async def _revalidate_auto_delete_candidate_ids(
             )
             if matched_rule_ids & applicable_by_candidate[candidate.id]:
                 retained_ids.add(candidate.id)
+                capture_auto_delete(
+                    candidate,
+                    "dispatch",
+                    "authorized",
+                    "authorized",
+                    matched_rule_ids=sorted(matched_rule_ids),
+                    coverage=coverage,
+                )
             else:
                 revalidated_out += 1
+                unavailable_rules = (
+                    preview.metadata.unavailable_rule_ids_by_target.get(
+                        target_key, set()
+                    )
+                    if target_key
+                    else set()
+                )
+                capture_auto_delete(
+                    candidate,
+                    "revalidation",
+                    "skipped",
+                    "revalidation_data_unavailable"
+                    if unavailable_rules
+                    else "revalidation_not_matched",
+                    unavailable_rule_ids=sorted(unavailable_rules),
+                    coverage=coverage,
+                )
 
         return _AutoDeleteRevalidationResult(
             candidate_ids=[
@@ -8471,7 +8616,22 @@ async def _sync_expected_arr_tags(
 async def delete_cleanup_candidates() -> dict[str, int]:
     """Serialize automatic deletion with other candidate workflows."""
     async with candidate_workflow_lock:
-        return await _delete_cleanup_candidates_unlocked()
+        recorder = AutoDeleteRecorder()
+        token = current_auto_delete.set(recorder)
+        try:
+            result = await _delete_cleanup_candidates_unlocked()
+            recorder.scan.context.update(status="completed", summary=result)
+            return result
+        except Exception as exc:
+            recorder.scan.context.update(
+                status="failed", error_category=error_category(exc)
+            )
+            raise
+        finally:
+            try:
+                await persist_auto_delete_history(recorder, session_factory=async_db)
+            finally:
+                current_auto_delete.reset(token)
 
 
 async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
@@ -15088,8 +15248,16 @@ async def _run_playback_guarded_candidates(
             else "_batch_completed"
         )
         await record_operations(snapshots, correlation, event)
-        for candidate_id in result.deferrals:
-            record_outcome(candidate_id, "deferred", stage="playback_guard")
+        for candidate_id, detail in result.deferrals.items():
+            code = detail.get("code")
+            record_outcome(
+                candidate_id,
+                "deferred",
+                deferral_code=code,
+                stage="validation"
+                if code in ("resync_pending", "manual_deletion_scheduled")
+                else "playback_guard",
+            )
         LOG.info("Support file operation finished")
         return result
     finally:

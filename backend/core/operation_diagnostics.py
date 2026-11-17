@@ -34,6 +34,12 @@ STAGES = {
 }
 OUTCOMES = {"succeeded", "failed", "deferred", "unknown"}
 SUBJECTS = {"file", "directory", "path", "candidate", "provider_request"}
+DEFERRAL_CODES = {
+    "currently_playing",
+    "playback_unavailable",
+    "resync_pending",
+    "manual_deletion_scheduled",
+}
 
 
 @dataclass
@@ -243,6 +249,7 @@ def record_outcome(
     path=None,
     destination=None,
     action=None,
+    deferral_code=None,
 ) -> None:
     recorder = current_operation_recorder.get()
     if recorder is None or candidate_id is None or outcome not in OUTCOMES:
@@ -269,5 +276,8 @@ def record_outcome(
         "destination": _path(destination),
         "provider": None,
         "reference": None,
+        "deferral_code": deferral_code
+        if isinstance(deferral_code, str) and deferral_code in DEFERRAL_CODES
+        else None,
         "occurred_at": datetime.now(UTC),
     }

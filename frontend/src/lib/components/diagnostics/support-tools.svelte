@@ -41,17 +41,20 @@
       sections: [
         "services",
         "configuration",
+        "storage",
         "playback",
         "decisions",
+        "tasks",
         "timeline",
       ],
     },
     deletion: {
-      label: "Deletion or move failure",
+      label: "Deletion, skips or moves",
       sections: [
         "services",
         "configuration",
         "storage",
+        "playback",
         "decisions",
         "tasks",
         "timeline",
@@ -73,7 +76,7 @@
     playback: "Playback evidence",
     decisions: "Candidate decisions and traces",
     tasks: "Schedules and tasks",
-    timeline: "Failure timeline",
+    timeline: "Cleanup timeline",
   };
   let preset = $state<BundlePreset>(
     untrack(() => (target ? "candidate" : "system")),
@@ -508,6 +511,57 @@
             onlookup={lookup}
           />{/if}
         <OperationEvidence entries={preview.timeline} onlookup={lookup} />
+        {#if sections.includes("tasks")}
+          <details>
+            <summary class="cursor-pointer font-medium"
+              >Automatic deletion runs</summary
+            >
+            <p class="mt-2 text-muted-foreground">
+              A completed task can skip candidates. The run totals and candidate
+              decisions explain what happened.
+            </p>
+            {#each (preview.report.sections.recent_runs ?? [])
+              .filter((run) => run.task === "delete_cleanup_candidates")
+              .slice(0, 1) as run}
+              <p class="mt-2">
+                Latest task run: {run.started_at
+                  ? new Date(run.started_at).toLocaleString()
+                  : "Time unavailable"} — {run.status}.
+              </p>
+            {/each}
+            <ol class="mt-2 space-y-2">
+              {#each preview.report.sections.auto_delete_runs ?? [] as run}
+                <li>
+                  <p>
+                    {new Date(run.started_at).toLocaleString()} — {run.status}
+                  </p>
+                  {#if run.summary}
+                    <p>
+                      {Object.entries(run.summary)
+                        .map(
+                          ([key, value]) =>
+                            `${key.replaceAll("_", " ")}: ${value}`,
+                        )
+                        .join(" · ")}
+                    </p>
+                  {:else}<p>Run totals were not recorded.</p>{/if}
+                  {#if run.dropped_decisions || run.dropped_traces}<p>
+                      Recording limit reached: {run.dropped_decisions} decisions and
+                      {run.dropped_traces} traces omitted.
+                    </p>{/if}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => lookup(`scan-${run.correlation_id}`)}
+                    >Look up run</Button
+                  >
+                </li>
+              {:else}<li>
+                  No automatic-deletion run totals were recorded in this window.
+                </li>{/each}
+            </ol>
+          </details>
+        {/if}
         {#if sections.includes("decisions") && !preview.traces.length}<p
             class="text-muted-foreground"
           >
@@ -529,6 +583,17 @@
                     : ""}<span class="block break-all font-mono text-xs"
                     >{event.correlation_id}</span
                   >
+                  {#if event.auto_delete}
+                    <p>
+                      Candidate {event.candidate_id}: {event.auto_delete
+                        .outcome}
+                      — {event.auto_delete.reason.replaceAll("_", " ")}
+                      ({event.auto_delete.stage}).
+                    </p>
+                    <p class="text-xs text-muted-foreground">
+                      {event.auto_delete.note}
+                    </p>
+                  {/if}
                   <Button
                     variant="outline"
                     size="sm"
@@ -536,7 +601,8 @@
                       lookup(
                         event.job_id && event.correlation_id.startsWith("job-")
                           ? `job-${event.job_id}`
-                          : event.event.startsWith("rule_")
+                          : event.event.startsWith("rule_") ||
+                              event.event.startsWith("auto_delete_run_")
                             ? `scan-${event.correlation_id}`
                             : `operation-${event.correlation_id}`,
                       )}

@@ -12,10 +12,12 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
-from uuid import uuid4
+from typing import Any, Literal, cast
+from uuid import UUID, uuid4
 
 from backend.core.__version__ import __version__
+from backend.core.auto_delete_diagnostics import SUMMARY_FIELDS
+from backend.core.operation_diagnostics import DEFERRAL_CODES
 from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
 from backend.core.utils.filesystem import mapped_path_variants
@@ -446,7 +448,37 @@ class Collector:
             )
         ]
 
-    def runs(self) -> list[m.RunInfo]:
+    def runs(self, since: datetime | None = None) -> list[m.RunInfo]:
+        where = "started_at>=? AND started_at<=?" if since else "1"
+        params = (
+            (
+                since.replace(tzinfo=None).isoformat(" "),
+                self.report.generated_at.replace(tzinfo=None).isoformat(" "),
+            )
+            if since
+            else ()
+        )
+        # Keep the latest run of every task as well as the newest 20 overall.
+        # Frequent refresh jobs must not hide the daily cleanup job.
+        rows = self.rows(
+            "recent_runs",
+            "(SELECT *, row_number() OVER (PARTITION BY task ORDER BY id DESC) AS task_rank, row_number() OVER (ORDER BY id DESC) AS recent_rank, count(*) OVER () AS total_runs FROM task_runs WHERE "
+            + where
+            + ")",
+            "id,task,status,started_at,completed_at,items_processed,error_message IS NOT NULL AS has_error,total_runs",
+            "task_rank=1 OR recent_rank<=20",
+            params,
+            order="task_rank=1 DESC,id DESC",
+        )
+        if rows and rows[0]["total_runs"] > len(rows):
+            self.report.collection.truncated.append(
+                m.Limit(
+                    section="recent_runs",
+                    returned=len(rows),
+                    total=rows[0]["total_runs"],
+                    reason="latest_per_task_and_recent_sample",
+                )
+            )
         return [
             m.RunInfo(
                 id=r["id"],
@@ -457,14 +489,92 @@ class Collector:
                 items_processed=r["items_processed"],
                 error="recorded_error_text_omitted" if r["has_error"] else None,
             )
-            for r in self.rows(
-                "recent_runs",
-                "task_runs",
-                "id,task,status,started_at,completed_at,items_processed,error_message IS NOT NULL AS has_error",
-                limit=20,
-                order="id DESC",
-            )
+            for r in rows
         ]
+
+    def auto_delete_runs(
+        self, *, correlation_id: str | None = None, job_id: int | None = None
+    ) -> list[m.AutoDeleteRunInfo]:
+        since = self.report.generated_at - timedelta(days=self.history_days)
+        result = []
+        where = "started_at>=? AND started_at<=? AND json_valid(context) AND json_extract(context,'$.purpose')='auto_delete'"
+        params: tuple = (
+            since.replace(tzinfo=None).isoformat(" "),
+            self.report.generated_at.replace(tzinfo=None).isoformat(" "),
+        )
+        if correlation_id is not None:
+            where += " AND id=?"
+            params += (correlation_id,)
+        if job_id is not None:
+            where += " AND job_id=?"
+            params += (job_id,)
+        for row in self.rows(
+            "auto_delete_runs",
+            "support_scan_runs",
+            "id,started_at,completed_at,job_id,dropped_traces,"
+            + self.json_column("context"),
+            where,
+            params,
+            limit=20,
+            order="started_at DESC",
+        ):
+            context = object_json(row["context"])
+            started_at = timestamp(row["started_at"])
+            if not isinstance(context, dict) or started_at is None:
+                continue
+            try:
+                run_id = str(UUID(row["id"]))
+            except (TypeError, ValueError):
+                continue
+            raw_summary = context.get("summary")
+            summary = (
+                {
+                    key: value
+                    for key, value in raw_summary.items()
+                    if key in SUMMARY_FIELDS
+                    and integer(value) is not None
+                    and value >= 0
+                }
+                if isinstance(raw_summary, dict)
+                else None
+            )
+            result.append(
+                m.AutoDeleteRunInfo(
+                    correlation_id=run_id,
+                    started_at=started_at,
+                    completed_at=timestamp(row["completed_at"]),
+                    job_id=integer(row["job_id"]),
+                    status="completed"
+                    if context.get("status") == "completed"
+                    else "failed"
+                    if context.get("status") == "failed"
+                    else "interrupted"
+                    if context.get("status") == "interrupted"
+                    else "unknown",
+                    summary=summary,
+                    error_category=context.get("error_category")
+                    if isinstance(context.get("error_category"), str)
+                    and context.get("error_category")
+                    in {
+                        "database_busy",
+                        "timeout",
+                        "permission_denied",
+                        "authentication_failed",
+                        "not_found",
+                        "connection_failed",
+                        "playback_active",
+                        "recorded_error",
+                        "destination_collision",
+                        "verification_failed",
+                    }
+                    else None,
+                    dropped_decisions=max(
+                        0, integer(context.get("dropped_decisions")) or 0
+                    ),
+                    dropped_traces=max(0, integer(row["dropped_traces"]) or 0),
+                )
+            )
+        return result
 
     def jobs(self) -> list[m.JobInfo]:
         result = []
@@ -931,6 +1041,8 @@ class Collector:
             + self.json_column("reason_data")
             + ","
             + self.json_column("matched_rule_ids")
+            + ","
+            + self.json_column("playback_deferral")
         )
         for r in self.rows("candidates", "reclaim_candidates", columns, where, params):
             matched = object_json(r["matched_rule_ids"])
@@ -998,6 +1110,9 @@ class Collector:
                         r["auto_delete_timer_started_at"]
                     ),
                     delete_request_id=r["delete_request_id"],
+                    playback_deferral=self.deferral(
+                        object_json(r["playback_deferral"])
+                    ),
                 )
             )
         for r in self.rows(
@@ -1115,6 +1230,24 @@ class Collector:
                 )
         return result
 
+    def deferral(self, value: object) -> m.DeferralInfo | None:
+        if not isinstance(value, dict):
+            return None
+        code = value.get("code")
+        ids = value.get("server_config_ids")
+        steps = value.get("completed_steps")
+        return m.DeferralInfo(
+            code=cast(
+                m.DeferralCode,
+                code if isinstance(code, str) and code in DEFERRAL_CODES else "unknown",
+            ),
+            checked_at=timestamp(value.get("checked_at")),
+            server_config_ids=[v for v in ids[:100] if integer(v) is not None and v > 0]
+            if isinstance(ids, list)
+            else [],
+            completed_step_count=len(steps) if isinstance(steps, list) else None,
+        )
+
     def finish(self) -> m.DiagnosticsReport:
         report = self.report
         report.collection.completed_at = now()
@@ -1215,6 +1348,7 @@ class Collector:
                 self.section("schedules", self.schedules)
                 self.section("active_jobs", self.jobs)
                 self.section("recent_runs", self.runs)
+                self.section("auto_delete_runs", self.auto_delete_runs)
                 self.section("playback", self.playback)
         finally:
             if self.db is not None:

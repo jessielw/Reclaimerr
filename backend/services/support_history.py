@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import delete, or_, select
 
+from backend.core.auto_delete_diagnostics import AutoDeleteRecorder
 from backend.core.diagnostic_trace import ScanRecorder, job_id
 from backend.core.logger import LOG
 from backend.core.operation_diagnostics import OperationRecorder
@@ -242,6 +243,33 @@ async def record_operations(
         LOG.warning("Support operation history could not be recorded")
 
 
+async def persist_auto_delete_history(
+    recorder: AutoDeleteRecorder, *, session_factory=None
+) -> None:
+    """Record skips as well as authorizations after operational sessions close."""
+    recorder.scan.context["dropped_decisions"] = recorder.dropped
+    try:
+        async with (session_factory or async_db)() as db:
+            await persist_scan(db, recorder.scan)
+            for values in recorder.decisions.values():
+                db.add(
+                    SupportOperationEvent(
+                        correlation_id=recorder.scan.scan_id,
+                        event_type="auto_delete_decision",
+                        job_id=job_id(),
+                        error_category=values["detail"].get("error_category"),
+                        **values,
+                    )
+                )
+            await db.flush()
+            await trim_history(db)
+            await db.commit()
+    except Exception:
+        LOG.warning(
+            "Automatic deletion history could not be recorded; task result is unchanged"
+        )
+
+
 async def persist_operation_details(
     snapshots: list[dict], correlation_id: str, recorder: OperationRecorder
 ) -> None:
@@ -281,6 +309,7 @@ async def persist_operation_details(
                                 "destination",
                                 "provider",
                                 "reference",
+                                "deferral_code",
                             )
                         }
                         detail["shared_request"] = len(value["candidate_ids"]) > 1
