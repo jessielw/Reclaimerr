@@ -209,6 +209,16 @@ class JobInfo(ExportModel):
     completed_at: datetime | None = None
     queue_age_seconds: float | None = None
     error: Literal["recorded_error_text_omitted"] | None = None
+    error_category: str | None = None
+    task: str | None = None
+    trigger: Literal["manual", "scheduled", "system"] | None = None
+    service_config_id: int | None = None
+    candidate_ids: list[int] = Field(default_factory=list)
+    candidate_ids_truncated: bool = False
+    progress: dict[str, int] | None = None
+    result: dict[str, int] | None = None
+    scope: Literal["app_wide"] = "app_wide"
+    note: str = "Stored job context; task totals do not establish an individual target's outcome. Missing counters are unknown."
 
 
 class Identity(ExportModel):
@@ -403,6 +413,7 @@ class Sections(ExportModel):
     recent_runs: list[RunInfo] | None = None
     auto_delete_runs: list[AutoDeleteRunInfo] | None = None
     active_jobs: list[JobInfo] | None = None
+    recent_jobs: list[JobInfo] | None = None
     identity: Identity | None = None
     children: list[Identity] | None = None
     storage: list[StorageIdentity] | None = None
@@ -538,6 +549,7 @@ class TimelineEntry(ExportModel):
     note: str | None = None
     operation: OperationDetail | None = None
     auto_delete: AutoDeleteDecisionDetail | None = None
+    job: JobInfo | None = None
 
 
 class LogExcerpt(ExportModel):

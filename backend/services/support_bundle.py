@@ -28,11 +28,9 @@ from backend.core.operation_diagnostics import (
 )
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
 from backend.core.support_codes import parse_support_code
-from backend.enums import BackgroundJobStatus, BackgroundJobType
 from backend.models import diagnostics as m
 from backend.services.diagnostics import (
     Collector,
-    enum_value,
     integer,
     now,
     object_json,
@@ -47,7 +45,13 @@ GROUPS = {
     "storage": ("storage", "children"),
     "playback": ("playback",),
     "decisions": ("decisions",),
-    "tasks": ("schedules", "recent_runs", "active_jobs", "auto_delete_runs"),
+    "tasks": (
+        "schedules",
+        "recent_runs",
+        "recent_jobs",
+        "active_jobs",
+        "auto_delete_runs",
+    ),
     "timeline": (),
 }
 RETENTION_NOTE = "Decision traces start with this release: up to 1,000 evaluations / 4 MiB per scan, 5,000 retained traces, 50 scans and 14 days. SQL-filtered targets may have no trace."
@@ -560,25 +564,30 @@ class BundleCollector(Collector):
                 clauses.append("id IN (" + ",".join("?" for _ in job_ids) + ")")
                 params += tuple(job_ids)
             job_where += " AND (" + (" OR ".join(clauses) or "0") + ")"
-        for r in self.rows(
-            "timeline_jobs",
-            "background_jobs",
-            "id,job_type,status,created_at,started_at,completed_at,substr(error_message,1,4096) AS error",
-            job_where,
-            params,
-            limit=20,
-            order="id DESC",
-        ):
-            key = f"job-{r['id']}"
-            kind = enum_value(BackgroundJobType, r["job_type"])
-            add(timestamp(r["created_at"]), kind + "_queued", key, job_id=r["id"])
-            add(timestamp(r["started_at"]), kind + "_started", key, job_id=r["id"])
+        for job in self.recent_jobs(job_where, params, section="timeline_jobs"):
+            key = f"job-{job.id}"
+            kind = job.job_type
             add(
-                timestamp(r["completed_at"]),
-                kind + "_" + enum_value(BackgroundJobStatus, r["status"]),
+                job.created_at,
+                kind + "_queued",
                 key,
-                job_id=r["id"],
-                error_category=error_category(r["error"]),
+                job_id=job.id,
+                job=job if not job.started_at and not job.completed_at else None,
+            )
+            add(
+                job.started_at,
+                kind + "_started",
+                key,
+                job_id=job.id,
+                job=job if not job.completed_at else None,
+            )
+            add(
+                job.completed_at,
+                kind + "_" + job.status,
+                key,
+                job_id=job.id,
+                error_category=job.error_category,
+                job=job,
             )
         if len(entries) > 200:
             self.limitations.append("Timeline limited to the newest 200 events.")
@@ -678,6 +687,7 @@ class BundleCollector(Collector):
             if self.options.target and "tasks" in self.options.sections:
                 self.section("schedules", self.schedules)
                 self.section("recent_runs", self.runs)
+                self.section("recent_jobs", self.recent_jobs)
                 self.section("active_jobs", self.jobs)
                 self.section("auto_delete_runs", self.auto_delete_runs)
             if (
@@ -736,6 +746,8 @@ class BundleCollector(Collector):
         if "timeline" in selected:
             allowed.update({"operation_events", "timeline_jobs"})
         allowed.update(name for group in selected for name in GROUPS[group])
+        if "tasks" in selected or "timeline" in selected:
+            allowed.add("payload")
         if "configuration" in selected:
             allowed.add("path_mappings")
         if "services" in selected:
@@ -808,6 +820,7 @@ def support_tables(
         "storage",
         "schedules",
         "recent_runs",
+        "recent_jobs",
         "auto_delete_runs",
         "active_jobs",
         "database",

@@ -36,6 +36,7 @@ from backend.models import diagnostics as m
 from backend.services.diagnostics_export import Exporter, timestamp
 from backend.services.media_identity import MediaIdentityOwnership
 from backend.services.playback_selection import HistorySource, resolve_history_sources
+from backend.services.support_history import error_category
 
 MAX_BYTES = 512 * 1024
 BUDGET_SECONDS = 5.0
@@ -49,6 +50,21 @@ TABLES = {
     "series": "series",
     "season": "seasons",
     "episode": "episodes",
+}
+JOB_RESULT_COUNTERS = SUMMARY_FIELDS | {
+    "processed",
+    "succeeded",
+    "freed_bytes",
+    "moved",
+    "updated",
+    "synced",
+}
+JOB_PROGRESS_COUNTERS = {
+    "total_items",
+    "completed_items",
+    "failed_items",
+    "deferred_items",
+    "percent",
 }
 
 
@@ -576,33 +592,99 @@ class Collector:
             )
         return result
 
+    def job_info(self, r: dict[str, Any]) -> m.JobInfo:
+        payload = object_json(r["payload"])
+        payload = payload if isinstance(payload, dict) else {}
+
+        def counters(name, fields):
+            values = payload.get(name)
+            if not isinstance(values, dict):
+                return None
+            return {
+                key: value
+                for key, value in values.items()
+                if key in fields and integer(value) is not None and 0 <= value < 2**63
+            }
+
+        task = (
+            enum_value(Task, payload.get("task"))
+            if isinstance(payload.get("task"), str)
+            else "unknown"
+        )
+        ids = payload.get("candidate_ids")
+        ids = ids if isinstance(ids, list) else []
+        created = timestamp(r["created_at"])
+        return m.JobInfo(
+            id=r["id"],
+            job_type=enum_value(BackgroundJobType, r["job_type"]),
+            status=enum_value(BackgroundJobStatus, r["status"]),
+            attempts=r["attempts"],
+            created_at=created,
+            scheduled_at=timestamp(r["scheduled_at"]),
+            started_at=timestamp(r["started_at"]),
+            completed_at=timestamp(r["completed_at"]),
+            queue_age_seconds=max(0, (now() - created).total_seconds())
+            if created and r["status"] == "PENDING"
+            else None,
+            error="recorded_error_text_omitted" if r["error"] else None,
+            error_category=error_category(r["error"]),
+            task=task if task != "unknown" else None,
+            trigger=payload.get("trigger")
+            if payload.get("trigger") in ("manual", "scheduled", "system")
+            else None,
+            service_config_id=integer(payload.get("service_config_id")),
+            candidate_ids=[
+                v for v in ids[:100] if integer(v) is not None and 0 < v < 2**63
+            ],
+            candidate_ids_truncated=len(ids) > 100,
+            progress=counters("progress", JOB_PROGRESS_COUNTERS),
+            result=counters("result", JOB_RESULT_COUNTERS),
+        )
+
+    def job_columns(self) -> str:
+        return (
+            "id,job_type,status,attempts,created_at,scheduled_at,started_at,completed_at,substr(error_message,1,4096) AS error,"
+            + self.json_column("payload")
+        )
+
     def jobs(self) -> list[m.JobInfo]:
-        result = []
-        for r in self.rows(
-            "active_jobs",
-            "background_jobs",
-            "id,job_type,status,attempts,created_at,scheduled_at,started_at,completed_at,error_message IS NOT NULL AS has_error",
-            "status IN ('PENDING','RUNNING')",
-            order="created_at,id",
-        ):
-            created = timestamp(r["created_at"])
-            result.append(
-                m.JobInfo(
-                    id=r["id"],
-                    job_type=enum_value(BackgroundJobType, r["job_type"]),
-                    status=enum_value(BackgroundJobStatus, r["status"]),
-                    attempts=r["attempts"],
-                    created_at=created,
-                    scheduled_at=timestamp(r["scheduled_at"]),
-                    started_at=timestamp(r["started_at"]),
-                    completed_at=timestamp(r["completed_at"]),
-                    queue_age_seconds=max(0, (now() - created).total_seconds())
-                    if created and r["status"] == "PENDING"
-                    else None,
-                    error="recorded_error_text_omitted" if r["has_error"] else None,
-                )
+        return [
+            self.job_info(r)
+            for r in self.rows(
+                "active_jobs",
+                "background_jobs",
+                self.job_columns(),
+                "status IN ('PENDING','RUNNING')",
+                order="created_at,id",
             )
-        return result
+        ]
+
+    def recent_jobs(
+        self, where: str = "1", params: tuple = (), section="recent_jobs"
+    ) -> list[m.JobInfo]:
+        start = (
+            (self.report.generated_at - timedelta(days=self.history_days))
+            .replace(tzinfo=None)
+            .isoformat(" ")
+        )
+        # Preserve each task's latest job and latest failure ahead of the general sample.
+        task_key = "CASE WHEN job_type='TASK_RUN' AND json_valid(payload) THEN json_extract(payload,'$.task') END"
+        rows = self.rows(
+            section,
+            "(SELECT *,row_number() OVER (PARTITION BY job_type,"
+            + task_key
+            + " ORDER BY id DESC) AS task_rank,"
+            "row_number() OVER (PARTITION BY job_type,"
+            + task_key
+            + ",status ORDER BY id DESC) AS status_rank "
+            "FROM background_jobs WHERE (created_at>=? OR started_at>=? OR completed_at>=?) AND ("
+            + where
+            + "))",
+            self.job_columns(),
+            params=(start, start, start, *params),
+            order="(status='FAILED' AND status_rank=1) DESC,task_rank=1 DESC,status='FAILED' DESC,id DESC",
+        )
+        return [self.job_info(r) for r in rows]
 
     def identity_row(self, scope: m.Scope, row: dict[str, Any]) -> m.Identity:
         fields = {
@@ -1302,6 +1384,7 @@ class Collector:
             "services",
             "configuration",
             "recent_runs",
+            "recent_jobs",
             "active_jobs",
             "schedules",
             "identity",
@@ -1348,6 +1431,7 @@ class Collector:
                 self.section("schedules", self.schedules)
                 self.section("active_jobs", self.jobs)
                 self.section("recent_runs", self.runs)
+                self.section("recent_jobs", self.recent_jobs)
                 self.section("auto_delete_runs", self.auto_delete_runs)
                 self.section("playback", self.playback)
         finally:

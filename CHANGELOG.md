@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Support bundles include stored background-job result counters, task identities and categorized failures, including failures before task tracking starts. Recent job samples preserve each task's latest job and failure.
 - Support bundles retain the latest run of every task, so frequent playback refreshes cannot hide cleanup task runs. Stored playback deferrals and recorded automatic-deletion decisions explain why a completed task left a candidate in place.
 - Cleanup scans preserve candidates' original flag dates and deletion timers when a previously matched rule is skipped or its data is temporarily unavailable. Automatic deletion stays on hold until a successful scan verifies the candidate; confirmed non-matches are still removed. #526
 - Cron task schedules now use standard weekday numbering: `0` and `7` are Sunday, and `1-5` is Monday through Friday. Weekly defaults and presets now use weekday names. Invalid cron expressions are rejected before saving, including for disabled tasks. #525
