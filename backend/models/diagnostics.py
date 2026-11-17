@@ -344,6 +344,9 @@ class CandidateInfo(ExportModel):
     auto_delete_timer_started_at: datetime | None = None
     delete_request_id: int | None = None
     playback_deferral: DeferralInfo | None = None
+    unavailable_rule_ids: list[int] = Field(default_factory=list)
+    resync_pending: bool | None = None
+    resync_path: str | None = None
 
 
 class RuleAction(ExportModel):
@@ -384,6 +387,8 @@ class ProtectionInfo(ExportModel):
     permanent: bool
     expires_at: datetime | None = None
     source_rule_id: int | None = None
+    relationship: Literal["selected", "ancestor", "descendant", "sibling"] = "selected"
+    active: bool = False
 
 
 class ReviewInfo(ExportModel):
@@ -393,6 +398,27 @@ class ReviewInfo(ExportModel):
     reviewed_at: datetime | None = None
     executed_at: datetime | None = None
     error: Literal["recorded_error_text_omitted"] | None = None
+    relationship: Literal["selected", "ancestor", "descendant", "sibling"] = "selected"
+    playback_deferral: DeferralInfo | None = None
+    resync_pending: bool | None = None
+    resync_path: str | None = None
+
+
+class ScheduledDeletionInfo(ExportModel):
+    id: int
+    media_target: Target
+    target: Target | None = None
+    scope: Literal["movie", "version", "series", "season", "episode"]
+    scheduled_at: datetime | None = None
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+    state: Literal["scheduled", "running", "blocked", "failed", "unknown"]
+    job_id: int | None = None
+    actor: str | None = None
+    error_category: str | None = None
+    holds_selected_scope: bool = False
+    stored_path_overlap: bool = False
+    note: str = "Active manual deletion intent from stored state. Scope/path overlap holds cleanup until resolved; same-parent context alone does not establish a hold. No inventory or permissions revalidated."
 
 
 class Decisions(ExportModel):
@@ -402,6 +428,7 @@ class Decisions(ExportModel):
     protections: list[ProtectionInfo] = Field(default_factory=list)
     deletion_requests: list[ReviewInfo] = Field(default_factory=list)
     protection_requests: list[ReviewInfo] = Field(default_factory=list)
+    scheduled_deletions: list[ScheduledDeletionInfo] = Field(default_factory=list)
 
 
 class Sections(ExportModel):

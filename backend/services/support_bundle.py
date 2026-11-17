@@ -782,6 +782,8 @@ class BundleCollector(Collector):
                     "protections",
                     "deletion_requests",
                     "protection_requests",
+                    "scheduled_deletions",
+                    "schedule_inventory",
                 }
             )
         if "timeline" in selected:
@@ -801,6 +803,9 @@ class BundleCollector(Collector):
                     "reason_data",
                     "matched_rule_ids",
                     "playback_deferral",
+                    "matched_criteria",
+                    "target",
+                    "episode_paths",
                 }
             )
         if "playback" in selected:
@@ -887,6 +892,7 @@ def support_tables(
             "protections",
             "deletion_requests",
             "protection_requests",
+            "scheduled_deletions",
         ):
             result[name] = [
                 v.model_dump(mode="json")

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Media diagnostics include sibling protections and requests that can block automatic cleanup, stored resync/unavailable-rule holds, manual deletion schedules and deletion-request playback deferrals.
 - Support timelines preserve the latest final outcome and automatic-deletion decision for each target/run before sampling intermediate failures, so older errors cannot hide a successful recovery.
 - Support bundles include stored background-job result counters, task identities and categorized failures, including failures before task tracking starts. Recent job samples preserve each task's latest job and failure.
 - Support bundles retain the latest run of every task, so frequent playback refreshes cannot hide cleanup task runs. Stored playback deferrals and recorded automatic-deletion decisions explain why a completed task left a candidate in place.

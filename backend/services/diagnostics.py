@@ -36,6 +36,7 @@ from backend.models import diagnostics as m
 from backend.services.diagnostics_export import Exporter, timestamp
 from backend.services.media_identity import MediaIdentityOwnership
 from backend.services.playback_selection import HistorySource, resolve_history_sources
+from backend.services.scheduled_deletions import schedule_inventory_overlap
 from backend.services.support_history import error_category
 
 MAX_BYTES = 512 * 1024
@@ -1114,6 +1115,11 @@ class Collector:
 
     def decisions(self) -> m.Decisions:
         where, params = self.decision_filter()
+        parent = "movie" if "movie_id" in self.context else "series"
+        blocker_where, blocker_params = (
+            parent + "_id=?",
+            (self.context[parent + "_id"],),
+        )
         ids = "id,movie_id,movie_version_id,series_id,season_id,episode_id"
         result = m.Decisions()
         rule_ids: set[int] = set()
@@ -1125,6 +1131,8 @@ class Collector:
             + self.json_column("matched_rule_ids")
             + ","
             + self.json_column("playback_deferral")
+            + ","
+            + self.json_column("matched_criteria")
         )
         for r in self.rows("candidates", "reclaim_candidates", columns, where, params):
             matched = object_json(r["matched_rule_ids"])
@@ -1134,6 +1142,22 @@ class Collector:
                 else []
             )
             rule_ids.update(matched)
+            criteria = object_json(r["matched_criteria"])
+            unavailable = (
+                criteria.get("_unavailable_rule_ids")
+                if isinstance(criteria, dict)
+                else None
+            )
+            unavailable = (
+                [v for v in unavailable[:100] if integer(v) is not None and v > 0]
+                if isinstance(unavailable, list)
+                else []
+            )
+            rule_ids.update(unavailable)
+            resync = self.query(
+                "SELECT path FROM candidate_resync_identities WHERE candidate_id=? LIMIT 1",
+                (r["id"],),
+            )
             conditions = []
             reasons = object_json(r["reason_data"])
             for reason in reasons[:100] if isinstance(reasons, list) else []:
@@ -1195,22 +1219,30 @@ class Collector:
                     playback_deferral=self.deferral(
                         object_json(r["playback_deferral"])
                     ),
+                    unavailable_rule_ids=unavailable,
+                    resync_pending=bool(resync),
+                    resync_path=self.export.path(resync[0]["path"]) if resync else None,
                 )
             )
         for r in self.rows(
             "protections",
             "protected_media",
             ids + ",permanent,expires_at,source_rule_id",
-            where,
-            params,
+            blocker_where,
+            blocker_params,
         ):
+            expires = timestamp(r["expires_at"])
             result.protections.append(
                 m.ProtectionInfo(
                     id=r["id"],
                     target=target_of(r),
                     permanent=bool(r["permanent"]),
-                    expires_at=timestamp(r["expires_at"]),
+                    expires_at=expires,
                     source_rule_id=r["source_rule_id"],
+                    relationship=self.relationship(r),
+                    active=bool(r["permanent"])
+                    or r["expires_at"] is None
+                    or (expires is not None and expires > self.report.generated_at),
                 )
             )
             if r["source_rule_id"]:
@@ -1219,10 +1251,15 @@ class Collector:
             "deletion_requests",
             "delete_requests",
             ids
-            + ",status,reviewed_at,executed_at,execution_error IS NOT NULL AS has_error",
-            where,
-            params,
+            + ",status,reviewed_at,executed_at,execution_error IS NOT NULL AS has_error,"
+            + self.json_column("playback_deferral"),
+            blocker_where,
+            blocker_params,
         ):
+            resync = self.query(
+                "SELECT path FROM delete_request_resync_identities WHERE delete_request_id=? LIMIT 1",
+                (r["id"],),
+            )
             result.deletion_requests.append(
                 m.ReviewInfo(
                     id=r["id"],
@@ -1231,14 +1268,20 @@ class Collector:
                     reviewed_at=timestamp(r["reviewed_at"]),
                     executed_at=timestamp(r["executed_at"]),
                     error="recorded_error_text_omitted" if r["has_error"] else None,
+                    relationship=self.relationship(r),
+                    playback_deferral=self.deferral(
+                        object_json(r["playback_deferral"])
+                    ),
+                    resync_pending=bool(resync),
+                    resync_path=self.export.path(resync[0]["path"]) if resync else None,
                 )
             )
         for r in self.rows(
             "protection_requests",
             "protection_requests",
             ids + ",status,reviewed_at",
-            where,
-            params,
+            blocker_where,
+            blocker_params,
         ):
             result.protection_requests.append(
                 m.ReviewInfo(
@@ -1246,6 +1289,7 @@ class Collector:
                     target=target_of(r),
                     status=enum_value(ProtectionRequestStatus, r["status"]),
                     reviewed_at=timestamp(r["reviewed_at"]),
+                    relationship=self.relationship(r),
                 )
             )
         if rule_ids:
@@ -1310,6 +1354,168 @@ class Collector:
                         action=safe_action,
                     )
                 )
+        result.scheduled_deletions = self.scheduled_deletions()
+        return result
+
+    def relationship(self, row: dict[str, Any]):
+        selected = self.report.target
+        assert selected is not None
+        actual = target_of(row)
+        if actual == selected:
+            return "selected"
+        if row.get(selected.scope + "_id") == selected.id:
+            return "descendant"
+        if self.context.get(actual.scope + "_id") == actual.id:
+            return "ancestor"
+        return "sibling"
+
+    def scheduled_deletions(self) -> list[m.ScheduledDeletionInfo]:
+        target = self.report.target
+        assert target is not None
+        parent = "movie" if "movie_id" in self.context else "series"
+        media_id = self.context[parent + "_id"]
+        # Collect bounded stored paths only. No filesystem/provider checks.
+        if parent == "movie":
+            paths = self.rows(
+                "schedule_inventory",
+                "movie_versions",
+                "path",
+                "movie_id=?" + (" AND id=?" if target.scope == "movie_version" else ""),
+                (media_id, target.id)
+                if target.scope == "movie_version"
+                else (media_id,),
+            )
+        else:
+            selected = "s.series_id=?" + (
+                " AND s.id=?"
+                if target.scope == "season"
+                else " AND e.id=?"
+                if target.scope == "episode"
+                else ""
+            )
+            args = (
+                (media_id, target.id)
+                if target.scope in ("season", "episode")
+                else (media_id,)
+            )
+            paths = self.rows(
+                "schedule_inventory",
+                "episodes e JOIN seasons s ON s.id=e.season_id LEFT JOIN episode_versions v ON v.episode_id=e.id",
+                "e.path AS episode_path,v.path",
+                selected,
+                args,
+                order="e.id,v.id",
+            )
+        inventory = {
+            "files": {
+                p: None
+                for row in paths
+                for p in (row.get("path"), row.get("episode_path"))
+                if isinstance(p, str) and p
+            },
+            "directories": [],
+        }
+        if parent == "series" and target.scope != "episode":
+            roots = {
+                r["path"]
+                for r in self.rows(
+                    "schedule_inventory",
+                    "series_service_refs",
+                    "path",
+                    "series_id=?",
+                    (media_id,),
+                )
+                if r["path"]
+            }
+            seasons = self.rows(
+                "schedule_inventory",
+                "seasons",
+                "id,path," + self.json_column("episode_paths"),
+                "series_id=?" + (" AND id=?" if target.scope == "season" else ""),
+                (media_id, target.id) if target.scope == "season" else (media_id,),
+            )
+            for season in seasons:
+                saved_paths = object_json(season["episode_paths"])
+                for path in saved_paths[:100] if isinstance(saved_paths, list) else []:
+                    if isinstance(path, str) and path:
+                        inventory["files"][path] = None
+                if season["path"] and (
+                    target.scope == "series" or season["path"] not in roots
+                ):
+                    inventory["directories"].append(season["path"])
+            if target.scope == "series":
+                inventory["directories"].extend(roots)
+        result = []
+        for row in self.rows(
+            "scheduled_deletions",
+            "(SELECT *,CASE WHEN json_valid(target) THEN json_extract(target,'$.media_type')=? AND json_extract(target,'$.media_id')=? ELSE 0 END AS same_parent FROM scheduled_deletions)",
+            "id,state,scheduled_at,created_at,completed_at,job_id,created_by_username,substr(last_error,1,4096) AS error,"
+            + self.json_column("target"),
+            "state IN ('scheduled','running','blocked','failed')",
+            order="same_parent DESC,scheduled_at,id",
+            params=(parent, media_id),
+        ):
+            saved = object_json(row["target"])
+            if (
+                not isinstance(saved, dict)
+                or saved.get("media_type") not in ("movie", "series")
+                or saved.get("scope")
+                not in ("movie", "version", "series", "season", "episode")
+                or integer(saved.get("media_id")) is None
+                or saved["media_id"] <= 0
+            ):
+                continue
+            same = saved["media_type"] == parent and saved["media_id"] == media_id
+            scope_hold = same and (
+                target.scope in ("movie", "series")
+                or saved["scope"] in ("movie", "series")
+                or target.scope == "movie_version"
+                and saved.get("movie_version_id") == target.id
+                or target.scope in ("season", "episode")
+                and saved.get("season_number") == self.context.get("season_number")
+                and (
+                    target.scope == "season"
+                    or saved["scope"] == "season"
+                    or saved.get("episode_number") == self.context.get("episode_number")
+                )
+            )
+            overlap = False
+            if isinstance(saved.get("inventory"), dict):
+                try:
+                    overlap = schedule_inventory_overlap(inventory, saved)
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    self.report.collection.omitted.append(
+                        "scheduled_deletions: malformed stored inventory omitted"
+                    )
+            if not same and not overlap:
+                continue
+            scope = "movie_version" if saved["scope"] == "version" else saved["scope"]
+            identifier = (
+                saved["media_id"]
+                if scope in ("movie", "series")
+                else integer(saved.get(scope + "_id"))
+            )
+            result.append(
+                m.ScheduledDeletionInfo(
+                    id=row["id"],
+                    media_target=m.Target(
+                        scope=saved["media_type"], id=saved["media_id"]
+                    ),
+                    target=m.Target(scope=scope, id=identifier)
+                    if identifier and identifier > 0
+                    else None,
+                    scope=saved["scope"],
+                    scheduled_at=timestamp(row["scheduled_at"]),
+                    created_at=timestamp(row["created_at"]),
+                    completed_at=timestamp(row["completed_at"]),
+                    state=row["state"],
+                    job_id=row["job_id"],
+                    actor=self.export.alias("user", row["created_by_username"]),
+                    error_category=error_category(row["error"]),
+                    holds_selected_scope=scope_hold,
+                    stored_path_overlap=overlap,
+                )
+            )
         return result
 
     def deferral(self, value: object) -> m.DeferralInfo | None:

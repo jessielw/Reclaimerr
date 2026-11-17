@@ -14,6 +14,16 @@ from test_support_diagnostics import database
 
 from backend.database.models import BackgroundJob
 from backend.database.models import SupportOperationEvent
+from backend.database.models import (
+    CandidateResyncIdentity,
+    DeleteRequest,
+    DeleteRequestResyncIdentity,
+    ProtectedMedia,
+    ReclaimCandidate,
+    ScheduledDeletion,
+    Season,
+)
+from backend.enums import MediaType, ProtectionRequestStatus
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
 from backend.models.diagnostics import BundleOptions, Target, TimelineEntry
 from backend.services.support_bundle import (
@@ -267,3 +277,154 @@ def test_timeline_limit_keeps_terminal_evidence_before_newer_noise():
     assert selected[0] is newer
     assert all(e is not final for e in selected)
     assert len(selected) == 200
+
+
+@pytest.mark.parametrize("scope", ["movie_version", "season"])
+def test_sibling_blockers_keep_their_actual_scope(database, scope):
+    with Session(database[2]) as db:
+        if scope == "season":
+            sibling = Season(series_id=database[1]["series"], season_number=2)
+            db.add(sibling)
+            db.flush()
+            ids = {"series_id": database[1]["series"], "season_id": sibling.id}
+            media_type = MediaType.SERIES
+        else:
+            ids = {
+                "movie_id": database[1]["movie"],
+                "movie_version_id": database[1]["movie_version"] + 1,
+            }
+            media_type = MediaType.MOVIE
+        protection = ProtectedMedia(
+            media_type=media_type, protected_by_user_id=1, **ids
+        )
+        request = DeleteRequest(media_type=media_type, requested_by_user_id=1, **ids)
+        db.add_all([protection, request])
+        db.commit()
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope=scope, id=database[1][scope]),
+            sections=["decisions"],
+        ),
+        1,
+    )
+    decisions = preview.report.sections.decisions
+    assert decisions is not None
+    assert decisions.protections[0].relationship == "sibling"
+    assert decisions.protections[0].active
+    assert decisions.deletion_requests[0].relationship == "sibling"
+    assert (
+        decisions.protections[0].target.id
+        == ids["season_id" if scope == "season" else "movie_version_id"]
+    )
+
+
+def test_stored_holds_schedules_and_request_deferrals_are_exported(database):
+    now = datetime.now(UTC)
+    with Session(database[2]) as db:
+        candidate = db.get(ReclaimCandidate, 1)
+        candidate.matched_criteria = {"_unavailable_rule_ids": [1, True, "HOLD_SECRET"]}
+        db.add(
+            CandidateResyncIdentity(
+                candidate_id=1,
+                movie_id=database[1]["movie"],
+                path="/private/RESYNC_SECRET.mkv",
+            )
+        )
+        request = DeleteRequest(
+            media_type=MediaType.MOVIE,
+            requested_by_user_id=1,
+            movie_id=database[1]["movie"],
+            movie_version_id=database[1]["movie_version"],
+            status=ProtectionRequestStatus.APPROVED,
+            playback_deferral={
+                "code": "currently_playing",
+                "checked_at": now.isoformat(),
+                "server_config_ids": [1],
+                "message": "DEFERRAL_SECRET",
+            },
+        )
+        db.add(request)
+        db.flush()
+        db.add(
+            DeleteRequestResyncIdentity(
+                delete_request_id=request.id,
+                movie_id=database[1]["movie"],
+                path="/private/REQUEST_SECRET.mkv",
+            )
+        )
+        db.add(
+            ScheduledDeletion(
+                scheduled_at=now + timedelta(days=2),
+                target={
+                    "media_type": "movie",
+                    "media_id": database[1]["movie"],
+                    "scope": "movie",
+                    "title": "TARGET_SECRET",
+                },
+                created_by_username="ACTOR_SECRET",
+                state="blocked",
+                last_error="permission denied ERROR_SECRET",
+            )
+        )
+        db.commit()
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope="movie_version", id=database[1]["movie_version"]),
+            sections=["decisions"],
+            include_sqlite=True,
+        ),
+        1,
+    )
+    decisions = preview.report.sections.decisions
+    assert decisions is not None
+    candidate = decisions.candidates[0]
+    assert candidate.unavailable_rule_ids == [1]
+    assert candidate.resync_pending and candidate.resync_path.startswith("path-")
+    request = decisions.deletion_requests[0]
+    assert request.playback_deferral.code == "currently_playing"
+    assert request.error is None and request.resync_pending
+    schedule = decisions.scheduled_deletions[0]
+    assert schedule.state == "blocked" and schedule.holds_selected_scope
+    assert schedule.scheduled_at == now + timedelta(days=2)
+    assert schedule.error_category == "permission_denied"
+    assert schedule.actor.startswith("user-")
+    assert any(
+        i.section == "scheduled_deletions" and i.records == 1
+        for i in preview.manifest.inventory
+    )
+    assert "SECRET" not in preview.model_dump_json()
+
+
+def test_manual_schedule_path_hold_can_cross_media_ids(database):
+    with Session(database[2]) as db:
+        db.add(
+            ScheduledDeletion(
+                scheduled_at=datetime.now(UTC) + timedelta(days=1),
+                target={
+                    "media_type": "movie",
+                    "media_id": 9999,
+                    "scope": "movie",
+                    "inventory": {
+                        "files": {"/remote/movie-0.mkv": 1},
+                        "directories": [],
+                    },
+                },
+                created_by_username="PRIVATE_ACTOR",
+                state="failed",
+            )
+        )
+        db.commit()
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope="movie_version", id=database[1]["movie_version"]),
+            sections=["decisions"],
+        ),
+        1,
+    )
+    schedule = preview.report.sections.decisions.scheduled_deletions[0]
+    assert schedule.stored_path_overlap and not schedule.holds_selected_scope
+    assert schedule.media_target.id == 9999
+    assert "PRIVATE_ACTOR" not in preview.model_dump_json()
