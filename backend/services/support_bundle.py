@@ -29,6 +29,7 @@ from backend.core.operation_diagnostics import (
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
 from backend.core.support_codes import parse_support_code
 from backend.models import diagnostics as m
+from backend.services.diagnostic_jobs import duplicate_target_filter
 from backend.services.diagnostics import (
     Collector,
     integer,
@@ -593,6 +594,12 @@ class BundleCollector(Collector):
                 job_where += " AND (" + " OR ".join(clauses) + ")"
         elif self.options.target:
             clauses = []
+            if self.context:
+                duplicate_where, duplicate_params = duplicate_target_filter(
+                    self.options.target, self.context
+                )
+                clauses.append(duplicate_where)
+                params += duplicate_params
             if candidate_ids:
                 placeholders = ",".join("?" for _ in candidate_ids)
                 clauses.append(
@@ -815,7 +822,14 @@ class BundleCollector(Collector):
                 }
             )
         if "playback" in selected:
-            allowed.update({"playback_events", "playback_native", "playback_imported"})
+            allowed.update(
+                {
+                    "playback_events",
+                    "playback_native",
+                    "playback_imported",
+                    "identity_evidence",
+                }
+            )
         if "storage" in selected:
             allowed.update({"linked_storage", "arr_storage"})
         for identity in [

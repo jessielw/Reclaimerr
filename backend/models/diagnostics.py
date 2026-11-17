@@ -234,6 +234,8 @@ class JobInfo(ExportModel):
     service_config_id: int | None = None
     candidate_ids: list[int] = Field(default_factory=list)
     candidate_ids_truncated: bool = False
+    targets: list[Target] = Field(default_factory=list)
+    targets_truncated: bool = False
     progress: dict[str, int] | None = None
     result: dict[str, int] | None = None
     scope: Literal["app_wide"] = "app_wide"
@@ -290,6 +292,11 @@ class Aggregate(ExportModel):
     last_activity_at: datetime | None = None
     refreshed_at: datetime | None = None
     total_duration_seconds: int | None = None
+    has_activity: bool | None = None
+    usernames_complete: bool | None = None
+    unavailable_fields: dict[
+        str, Literal["activity_date_unknown", "incomplete_usernames"]
+    ] = Field(default_factory=dict)
     note: str
 
 
@@ -306,6 +313,8 @@ class EventInfo(ExportModel):
     completed: bool | None = None
     selected_source: bool | None = None
     association: Literal["stored_target_link", "canonical_id_only"]
+    identity_conflict: bool | None = None
+    identity_unverified: bool | None = None
 
 
 class Playback(ExportModel):

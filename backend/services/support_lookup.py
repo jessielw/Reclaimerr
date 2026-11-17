@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.core.support_codes import parse_support_code
 from backend.models import diagnostics as m
+from backend.services.diagnostic_jobs import duplicate_targets
 from backend.services.diagnostics import TABLES, Collector, object_json
 from backend.services.diagnostics_export import timestamp
 
@@ -118,7 +119,7 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
                     )
             if kind == "job":
                 rows = collector.query(
-                    "SELECT created_at,substr(payload,1,65536) AS payload FROM background_jobs WHERE id=? LIMIT 1",
+                    "SELECT job_type,created_at,CASE WHEN length(payload)<=65536 THEN payload ELSE NULL END AS payload FROM background_jobs WHERE id=? LIMIT 1",
                     (int(identifier),),
                 )
                 if rows:
@@ -128,6 +129,13 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
                     )
                     if not selected:
                         payload = object_json(rows[0]["payload"])
+                        if (
+                            isinstance(payload, dict)
+                            and rows[0]["job_type"] == "DUPLICATE_DELETE"
+                        ):
+                            selected, truncated = duplicate_targets(
+                                payload, collector.query
+                            )
                         ids = (
                             payload.get("candidate_ids")
                             if isinstance(payload, dict)

@@ -33,6 +33,7 @@ from backend.enums import (
     TaskStatus,
 )
 from backend.models import diagnostics as m
+from backend.services.diagnostic_jobs import duplicate_targets
 from backend.services.diagnostics_export import Exporter, timestamp
 from backend.services.media_identity import MediaIdentityOwnership
 from backend.services.playback_selection import HistorySource, resolve_history_sources
@@ -671,6 +672,14 @@ class Collector:
         ids = payload.get("candidate_ids")
         ids = ids if isinstance(ids, list) else []
         created = timestamp(r["created_at"])
+        targets, targets_truncated = ([], False)
+        if r["job_type"] == "DUPLICATE_DELETE":
+            try:
+                targets, targets_truncated = duplicate_targets(payload, self.query)
+            except (sqlite3.Error, TimeoutError):
+                self.report.collection.omitted.append(
+                    "recent_jobs: some duplicate target associations unavailable"
+                )
         return m.JobInfo(
             id=r["id"],
             job_type=enum_value(BackgroundJobType, r["job_type"]),
@@ -694,6 +703,8 @@ class Collector:
                 v for v in ids[:100] if integer(v) is not None and 0 < v < 2**63
             ],
             candidate_ids_truncated=len(ids) > 100,
+            targets=targets,
+            targets_truncated=targets_truncated,
             progress=counters("progress", JOB_PROGRESS_COUNTERS),
             result=counters("result", JOB_RESULT_COUNTERS),
         )
@@ -1001,9 +1012,9 @@ class Collector:
         )
         for table, kind in aggregate_tables:
             columns = (
-                "target_scope,target_id,play_count,unique_user_count,last_activity_at,"
+                "target_scope,target_id,play_count,unique_user_count,last_activity_at,usernames_complete,"
                 + (
-                    "source_service_config_id,refreshed_at"
+                    "source_service_config_id,refreshed_at,has_activity"
                     if kind == "native"
                     else "total_duration_seconds,updated_at"
                 )
@@ -1028,6 +1039,27 @@ class Collector:
                         last_activity_at=timestamp(r["last_activity_at"]),
                         refreshed_at=refreshed,
                         total_duration_seconds=r.get("total_duration_seconds"),
+                        has_activity=bool(r["has_activity"])
+                        if kind == "native"
+                        else None,
+                        usernames_complete=bool(r["usernames_complete"]),
+                        unavailable_fields={
+                            **(
+                                {"playback.usernames": "incomplete_usernames"}
+                                if not r["usernames_complete"]
+                                else {}
+                            ),
+                            **(
+                                {
+                                    "playback.last_activity_at": "activity_date_unknown",
+                                    "playback.days_since_last_activity": "activity_date_unknown",
+                                }
+                                if kind == "native"
+                                and r["has_activity"]
+                                and r["last_activity_at"] is None
+                                else {}
+                            ),
+                        },
                         note="Stored native snapshot."
                         if kind == "native"
                         else "Legacy combined aggregate; not authoritative for current provider selection.",
@@ -1084,6 +1116,8 @@ class Collector:
             "id,source_service,source_service_config_id,source_event_key,source_item_id,observed_service_config_id,source_user_id,source_username,played_at,duration_seconds,completed,"
             + scope
             + "_id AS stored_id"
+            + ","
+            + self.json_column("identity_evidence")
         )
         for r in self.rows(
             "playback_events",
@@ -1110,6 +1144,7 @@ class Collector:
                     )
                 )
             user = r["source_user_id"] or r["source_username"]
+            identity = object_json(r["identity_evidence"])
             result.events.append(
                 m.EventInfo(
                     id=r["id"],
@@ -1135,6 +1170,12 @@ class Collector:
                     association="stored_target_link"
                     if r["stored_id"] == identifier
                     else "canonical_id_only",
+                    identity_conflict=bool(identity.get("conflict"))
+                    if isinstance(identity, dict)
+                    else None,
+                    identity_unverified=bool(identity.get("unverified"))
+                    if isinstance(identity, dict)
+                    else None,
                 )
             )
         result.stored_event_count = self.query(

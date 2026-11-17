@@ -24,6 +24,10 @@ from backend.database.models import (
     Season,
     GeneralSettings,
     ReclaimRule,
+    NativePlaybackAggregate,
+    PlaybackHistoryAggregate,
+    PlaybackHistoryEvent,
+    UpgradeLeftover,
 )
 from backend.enums import MediaType, ProtectionRequestStatus
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
@@ -505,3 +509,142 @@ def test_cleanup_settings_and_action_targets_keep_identity_relationships(databas
     assert rule.definition["root"]["conditions"][1]["value"] == [mapping.seerr_user_id]
     assert "SECRET" not in preview.model_dump_json()
     assert "privateuser" not in preview.model_dump_json().lower()
+
+
+@pytest.mark.parametrize("activity,complete", [(True, False), (False, True)])
+def test_playback_field_provenance_distinguishes_unknown_from_no_activity(
+    database, activity, complete
+):
+    with Session(database[2]) as db:
+        native = db.query(NativePlaybackAggregate).one()
+        native.has_activity = activity
+        native.usernames_complete = complete
+        native.last_activity_at = None
+        native.refreshed_at = datetime.now(UTC)
+        db.add(
+            PlaybackHistoryAggregate(
+                target_scope="movie_version",
+                target_id=database[1]["movie_version"],
+                media_type=MediaType.MOVIE,
+                play_count=1,
+                usernames_complete=False,
+            )
+        )
+        for event in db.query(PlaybackHistoryEvent).all():
+            event.identity_evidence = {
+                "conflict": True,
+                "unverified": False,
+                "raw": "IDENTITY_SECRET",
+            }
+        db.commit()
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope="movie_version", id=database[1]["movie_version"]),
+            sections=["playback"],
+        ),
+        1,
+    )
+    playback = preview.report.sections.playback
+    native = next(a for a in playback.aggregates if a.kind == "native")
+    assert native.has_activity is activity and native.usernames_complete is complete
+    if activity:
+        assert native.unavailable_fields == {
+            "playback.usernames": "incomplete_usernames",
+            "playback.last_activity_at": "activity_date_unknown",
+            "playback.days_since_last_activity": "activity_date_unknown",
+        }
+    else:
+        assert native.unavailable_fields == {}
+    imported = next(a for a in playback.aggregates if a.kind == "imported")
+    assert imported.has_activity is None
+    assert imported.unavailable_fields == {"playback.usernames": "incomplete_usernames"}
+    assert all(
+        e.identity_conflict is True and e.identity_unverified is False
+        for e in playback.events
+    )
+    assert "IDENTITY_SECRET" not in preview.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "scope", ["movie_version", "movie", "episode", "season", "series"]
+)
+def test_duplicate_job_lookup_and_target_timeline_without_operation_history(
+    database, scope
+):
+    with Session(database[2]) as db:
+        job = BackgroundJob(
+            job_type=BackgroundJobType.DUPLICATE_DELETE,
+            scheduled_at=datetime.now(UTC),
+            status=BackgroundJobStatus.FAILED,
+            payload={
+                "items": [
+                    {
+                        "media_type": "movie",
+                        "item_id": database[1]["movie"],
+                        "version_ids": [database[1]["movie_version"]],
+                        "display_label": "DUPLICATE_SECRET",
+                    },
+                    {
+                        "media_type": "series",
+                        "item_id": database[1]["episode"],
+                        "version_ids": [1],
+                    },
+                ]
+            },
+        )
+        job.completed_at = datetime.now(UTC)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    from backend.services.support_lookup import lookup_support
+
+    match = lookup_support(database[0], f"job-{job_id}").matches[0]
+    assert set((t.scope, t.id) for t in match.targets) == {
+        ("movie_version", database[1]["movie_version"]),
+        ("episode", database[1]["episode"]),
+    }
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope=scope, id=database[1][scope]), sections=["timeline"]
+        ),
+        1,
+    )
+    assert any(e.job_id == job_id and e.job for e in preview.timeline)
+    assert "DUPLICATE_SECRET" not in preview.model_dump_json()
+
+
+def test_leftover_job_resolves_existing_movie_target(database):
+    with Session(database[2]) as db:
+        leftover = UpgradeLeftover(
+            service_config_id=1,
+            arr_movie_id=20,
+            movie_id=database[1]["movie"],
+            title="LEFTOVER_SECRET",
+            dropped_path="/private/file.mkv",
+            local_path="/private/file.mkv",
+            size=1,
+            link_count=1,
+        )
+        db.add(leftover)
+        db.flush()
+        job = BackgroundJob(
+            job_type=BackgroundJobType.DUPLICATE_DELETE,
+            scheduled_at=datetime.now(UTC),
+            payload={
+                "leftovers": [{"id": leftover.id, "display_label": "LABEL_SECRET"}]
+            },
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    from backend.services.support_lookup import lookup_support
+
+    match = lookup_support(database[0], f"job-{job_id}").matches[0]
+    assert match.targets == [Target(scope="movie", id=database[1]["movie"])]
+    preview = prepare_bundle(
+        database[0], BundleOptions(target=match.targets[0], sections=["timeline"]), 1
+    )
+    assert any(e.job_id == job_id for e in preview.timeline)
+    assert "SECRET" not in preview.model_dump_json()

@@ -70,6 +70,8 @@ Raw errors and actor identities are excluded. Log summaries are opt-in: up to th
 
 Lookup reads stored history only. It does not rescan, retry, contact providers, or upload anything. The bundle filters historical traces, operation events, related jobs and optional logs by the exact code. Current settings, selected media and app-wide context remain separately labeled. At most 100 target choices are offered; choosing all targets still respects bundle collection limits. Logs, paths and the SQLite extract keep their existing explicit sharing controls.
 
+Duplicate jobs resolve movie-version and episode targets from their stored inputs without requiring operation history. Upgrade-leftover jobs resolve their associated movie while the leftover row or recorded operation still exists. Older successful leftover jobs whose row was removed before recording may have no recoverable association. Job labels and other payload text remain excluded.
+
 No match can mean expired history or work from before recording was introduced. Unavailable history is shown separately. Matching bundles use a 30-day window; retention can leave less evidence. Detailed operation observations require the `d5f0b2c7e439` schema revision; older batch records contain no invented file steps.
 
 ## Run an explicit check
@@ -100,6 +102,8 @@ Reports **include media titles, canonical IDs and playback information**. They a
 | `not_collected` | No stored observation is available, or the report deliberately did not perform the check. |
 
 Legacy combined imported aggregates are not necessarily what current provider selection would use. Event samples identify their provider/server and whether they have a stored target link or only a canonical-ID association. A movie event does not prove which file version was played. Missing matches do not establish zero playback. Unmatched totals describe saved links, not a new matching pass.
+
+Native aggregates include their stored `has_activity` and `usernames_complete` flags. Field-specific reasons distinguish an unknown activity date from confirmed no activity, and incomplete usernames from an empty complete list. An available aggregate does not prove every rule input is available. Legacy imported rows expose stored username completeness without inventing a native activity flag. Event identity evidence exports only conflict/unverified indicators, never the raw identity object.
 
 Candidate conditions are recorded evidence, not a newly evaluated rule. Their creation/update timestamps are not an exact historical scan trace. Saved rule definitions are current and may have changed since a match. Reports do not claim to reconstruct missing inputs or an unrecorded enqueue exception. Future historical observations are available in the bundle's separate traces and timeline sections; this does not fill gaps in older candidate records.
 
