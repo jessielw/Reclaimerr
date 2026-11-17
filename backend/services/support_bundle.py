@@ -85,6 +85,40 @@ def history_filter(target: m.Target | None, alias: str = "") -> tuple[str, tuple
     return f"{prefix}target_scope=? AND {prefix}target_id=?", (target.scope, target.id)
 
 
+def prioritize_timeline(entries: list[m.TimelineEntry]) -> list[m.TimelineEntry]:
+    """Keep terminal evidence through both count and byte limits."""
+    seen = set()
+    ranked = []
+    for entry in sorted(entries, key=lambda e: e.occurred_at, reverse=True):
+        key = None
+        if entry.event in ("item_outcome", "auto_delete_decision"):
+            key = (
+                entry.event,
+                entry.correlation_id,
+                entry.candidate_id,
+                entry.target.scope if entry.target else None,
+                entry.target.id if entry.target else None,
+            )
+        elif entry.job:
+            key = (
+                "job",
+                entry.job.job_type,
+                entry.job.task,
+                "failed" if entry.job.status == "failed" else "latest",
+            )
+        priority = (
+            0
+            if key is not None and key not in seen
+            else 1
+            if entry.error_category
+            else 2
+        )
+        if key is not None:
+            seen.add(key)
+        ranked.append((priority, entry))
+    return [entry for _, entry in sorted(ranked, key=lambda pair: pair[0])]
+
+
 class BundleCollector(Collector):
     def __init__(self, path: Path, options: m.BundleOptions):
         super().__init__(path, options, options.target)
@@ -353,11 +387,16 @@ class BundleCollector(Collector):
         try:
             events = self.rows(
                 "operation_events",
-                "support_operation_events",
+                "(SELECT *,row_number() OVER (PARTITION BY correlation_id,candidate_id,target_scope,target_id,event_type ORDER BY occurred_at DESC,id DESC) AS terminal_rank FROM support_operation_events WHERE "
+                + where
+                + " AND occurred_at>=? AND occurred_at<=?)",
                 "id,correlation_id,event_type,occurred_at,target_scope,target_id,candidate_id,job_id,error_category,substr(detail,1,65536) AS detail",
-                where + " AND occurred_at>=?",
-                (*args, self.start.replace(tzinfo=None).isoformat(" ")),
-                order="CASE WHEN error_category IS NOT NULL THEN 0 ELSE 1 END,id DESC",
+                params=(
+                    *args,
+                    self.start.replace(tzinfo=None).isoformat(" "),
+                    self.report.generated_at.replace(tzinfo=None).isoformat(" "),
+                ),
+                order="(event_type IN ('item_outcome','auto_delete_decision') AND terminal_rank=1) DESC,error_category IS NOT NULL DESC,occurred_at DESC,id DESC",
             )
             allowed = {
                 op + suffix
@@ -590,8 +629,10 @@ class BundleCollector(Collector):
                 job=job,
             )
         if len(entries) > 200:
-            self.limitations.append("Timeline limited to the newest 200 events.")
-        return sorted(entries, key=lambda e: e.occurred_at)[-200:]
+            self.limitations.append(
+                "Timeline limited to 200 events, prioritizing latest terminal outcomes and decisions per target/run, and latest job context per task before intermediate errors and recent events."
+            )
+        return sorted(prioritize_timeline(entries)[:200], key=lambda e: e.occurred_at)
 
     def logs(self, timeline: list[m.TimelineEntry]) -> list[m.LogExcerpt]:
         result = []
@@ -959,7 +1000,7 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         elif logs:
             logs.pop(0)
         else:
-            timeline.pop(0)
+            timeline.remove(prioritize_timeline(timeline)[-1])
         if (
             "Extra history truncated to the 1 MiB preview budget."
             not in collector.limitations

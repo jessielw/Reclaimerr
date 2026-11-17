@@ -5,15 +5,22 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime
+from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.orm import Session
 from test_support_diagnostics import database
 
 from backend.database.models import BackgroundJob
+from backend.database.models import SupportOperationEvent
 from backend.enums import BackgroundJobStatus, BackgroundJobType, Task
-from backend.models.diagnostics import BundleOptions, Target
-from backend.services.support_bundle import bundle_cache, prepare_bundle
+from backend.models.diagnostics import BundleOptions, Target, TimelineEntry
+from backend.services.support_bundle import (
+    bundle_cache,
+    prepare_bundle,
+    prioritize_timeline,
+)
 
 
 def test_existing_job_results_survive_all_bundle_formats(database):
@@ -75,9 +82,9 @@ def test_existing_job_results_survive_all_bundle_formats(database):
     data, _ = bundle_cache.get(1, preview.download_token)
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         assert b"SECRET" not in b"".join(archive.read(n) for n in archive.namelist())
-        assert (
-            json.loads(archive.read("evidence.json"))["timeline"][-1]["job"]["result"]
-            == exported.result
+        assert any(
+            e["job"] and e["job"]["result"] == exported.result
+            for e in json.loads(archive.read("evidence.json"))["timeline"]
         )
     assert hashlib.sha256(database[0].read_bytes()).hexdigest() == before
 
@@ -156,3 +163,107 @@ def test_untrusted_job_payloads_are_bounded(database, payload):
     assert "PRIVATE_TASK" not in preview.model_dump_json()
     if isinstance(payload, dict) and "secret" in payload:
         assert any("payload" in value for value in preview.report.collection.omitted)
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_final_recovery_and_decision_survive_error_flood(database, exact):
+    code = str(uuid4())
+    now = datetime.now(UTC) - timedelta(minutes=2)
+    with Session(database[2]) as db:
+        for index in range(101):
+            db.add(
+                SupportOperationEvent(
+                    correlation_id=code,
+                    event_type="operation_step",
+                    occurred_at=now + timedelta(seconds=index),
+                    target_scope="movie_version",
+                    target_id=database[1]["movie_version"],
+                    candidate_id=1,
+                    movie_id=database[1]["movie"],
+                    error_category="permission_denied",
+                    detail={
+                        "action": "delete",
+                        "stage": "provider_delete",
+                        "outcome": "failed",
+                        "subject": "provider_request",
+                    },
+                )
+            )
+        for event_type, detail in (
+            (
+                "item_outcome",
+                {
+                    "action": "delete",
+                    "stage": "completed",
+                    "outcome": "succeeded",
+                    "subject": "candidate",
+                },
+            ),
+            (
+                "auto_delete_decision",
+                {"stage": "dispatch", "outcome": "authorized", "reason": "authorized"},
+            ),
+        ):
+            db.add(
+                SupportOperationEvent(
+                    correlation_id=code,
+                    event_type=event_type,
+                    occurred_at=now,
+                    target_scope="movie_version",
+                    target_id=database[1]["movie_version"],
+                    candidate_id=1,
+                    movie_id=database[1]["movie"],
+                    detail=detail,
+                )
+            )
+        db.commit()
+    preview = prepare_bundle(
+        database[0],
+        BundleOptions(
+            target=Target(scope="movie_version", id=database[1]["movie_version"]),
+            support_code=f"operation-{code}" if exact else None,
+            sections=["timeline"],
+        ),
+        1,
+    )
+    assert any(
+        e.event == "item_outcome" and e.operation.outcome == "succeeded"
+        for e in preview.timeline
+    )
+    assert any(
+        e.auto_delete and e.auto_delete.reason == "authorized" for e in preview.timeline
+    )
+    assert any(
+        e.operation and e.operation.outcome == "failed" for e in preview.timeline
+    )
+    assert any(
+        t.section == "operation_events" and t.total == 103
+        for t in preview.report.collection.truncated
+    )
+
+
+def test_timeline_limit_keeps_terminal_evidence_before_newer_noise():
+    now = datetime.now(UTC)
+    code = str(uuid4())
+    target = Target(scope="movie_version", id=1)
+    final = TimelineEntry(
+        occurred_at=now - timedelta(days=1),
+        event="item_outcome",
+        correlation_id=code,
+        candidate_id=1,
+        target=target,
+    )
+    newer = final.model_copy(update={"occurred_at": now - timedelta(hours=1)})
+    noise = [
+        TimelineEntry(
+            occurred_at=now,
+            event="operation_step",
+            correlation_id=code,
+            error_category="permission_denied",
+        )
+        for _ in range(250)
+    ]
+    selected = prioritize_timeline([final, newer, *noise])[:200]
+    assert selected[0] is newer
+    assert all(e is not final for e in selected)
+    assert len(selected) == 200
