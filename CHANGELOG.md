@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.14] - 2026-11-17
+
+### Changed
+
+- Updated FastAPI.
+
+### Fixed
+
+- Automatic cleanup no longer skips a matching title because other library items have missing playback data. Missing required inputs and playback refresh failures still block deletion.
+- Support bundles preserve playback evidence captured during automatic deletion, including selected-item and library-wide gaps, provider status, missing rule inputs and the last revalidation stage. Later refreshes do not overwrite that history; older runs without recorded evidence remain unknown.
+
 ## [0.6.13] - 2026-11-17
 
 ### Fixed

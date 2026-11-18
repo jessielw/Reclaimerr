@@ -26,6 +26,7 @@ from backend.core.auto_delete_diagnostics import (
     AutoDeleteRecorder,
     capture_auto_delete,
     current_auto_delete,
+    revalidation_phase,
 )
 from backend.core.diagnostic_trace import (
     ScanRecorder,
@@ -167,6 +168,7 @@ from backend.services.admin_notices import (
     set_sonarr_rule_data_notice,
 )
 from backend.services.arr_disk import load_arr_disk_space
+from backend.services.auto_delete_evidence import record_playback_observation
 from backend.services.candidate_lifecycle import reconcile_candidate_schedule_events
 from backend.services.episode_ordering import EpisodeOrderingSnapshot
 from backend.services.lifecycle_webhooks import (
@@ -303,6 +305,7 @@ class _PlaybackRuleDataResult:
     # must not run; False when only some targets lack coverage, which the
     # evaluator already treats as unknown per target
     blocking: bool = False
+    native_refresh_error_category: str | None = None
 
 
 @dataclass(slots=True)
@@ -990,6 +993,7 @@ async def _revalidate_auto_delete_candidate_ids(
         auto_recorder = current_auto_delete.get()
         trace_token = current_scan.set(auto_recorder.scan) if auto_recorder else None
         try:
+            revalidation_phase("preparing_rule_inputs")
             preview = await collect_rule_preview_matches_with_metadata(
                 db,
                 [rules_by_id[rule_id] for rule_id in affected_rule_ids],
@@ -1026,10 +1030,18 @@ async def _revalidate_auto_delete_candidate_ids(
         coverage = {name: getattr(preview.metadata, name) for name in COVERAGE_FIELDS}
         coverage["seerr_unavailable"] = preview.metadata.seerr_unavailable
         coverage["playback_error"] = bool(preview.metadata.playback_error)
+        if preview.metadata.playback_blocking is not None:
+            coverage["playback_blocking"] = preview.metadata.playback_blocking
         coverage["sonarr_error"] = bool(preview.metadata.sonarr_error)
         coverage["seerr_error"] = bool(preview.metadata.seerr_error)
 
-        if preview.metadata.playback_error:
+        # Partial library coverage is a warning. The scoped matches below still
+        # reject candidates whose required data is unknown. Refresh failures
+        # and unclassified errors must continue to block the entire recheck.
+        if (
+            preview.metadata.playback_error
+            and preview.metadata.playback_blocking is not False
+        ):
             LOG.warning(
                 "Auto-delete playback revalidation could not establish complete "
                 f"provider coverage: {preview.metadata.playback_error}"
@@ -1606,11 +1618,35 @@ async def collect_rule_preview_matches_with_metadata(
     else:
         metadata.playback_unavailable_count = playback_result.unavailable_count
     metadata.playback_error = playback_result.error
+    metadata.playback_blocking = playback_result.blocking
+    if (auto_recorder := current_auto_delete.get()) is not None:
+        fields_by_scope: dict[str, set[str]] = defaultdict(set)
+        for rule in rules:
+            fields_by_scope[normalize_rule_target(rule)].update(
+                field
+                for field in ALL_PLAYBACK_RULE_FIELDS
+                if collect_rule_conditions(rule.definition, field=field)
+            )
+        record_playback_observation(
+            auto_recorder,
+            playback_result.snapshot,
+            fields_by_scope=dict(fields_by_scope),
+            target_ids={
+                scope: set(ids) for scope, ids in (target_ids_by_scope or {}).items()
+            },
+            library_unavailable_count=playback_result.unavailable_count,
+            selected_unavailable_count=metadata.playback_unavailable_count,
+            blocking=playback_result.blocking,
+            error=playback_result.error,
+            native_refresh_error_category=playback_result.native_refresh_error_category,
+            require_fresh=require_fresh,
+        )
     # favorites and protections only guard against deletion, so they hide items
     # from cleanup previews but not from protect or match-only rules
     has_candidate_rules = not rules or any(
         normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE for rule in rules
     )
+    revalidation_phase("rule_evaluation")
     matches = await _collect_rule_match_records(
         db,
         rules,
@@ -2393,6 +2429,7 @@ async def _activate_playback_history_for_rules(
     await db.commit()
     native_error: str | None = None
     if fields & NATIVE_PLAYBACK_FIELDS:
+        revalidation_phase("native_playback_refresh")
         (
             native_ok,
             native_error,
@@ -2411,7 +2448,9 @@ async def _activate_playback_history_for_rules(
                 f"{native_error}"
             )
 
+    revalidation_phase("history_refresh")
     refresh_result = await refresh_playback_history(force=require_fresh)
+    revalidation_phase("playback_snapshot")
     if fields and fields.issubset(HISTORY_RULE_FIELDS) and not user_scoped_fields:
         snapshot = await load_selected_history_snapshot(db, refresh_result, fields)
     else:
@@ -2483,6 +2522,7 @@ async def _activate_playback_history_for_rules(
         unavailable_count=unavailable_count,
         error=error,
         blocking=blocking,
+        native_refresh_error_category=error_category(native_error),
     )
 
 

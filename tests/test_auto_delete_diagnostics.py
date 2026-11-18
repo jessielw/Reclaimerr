@@ -277,6 +277,11 @@ def test_completed_delete_task_exports_why_the_season_remained(
         assert decision.auto_delete.unavailable_rule_ids
     if reason == "revalidation_failed":
         assert decision.error_category == "timeout"
+        assert (
+            preview.report.sections.auto_delete_runs[0].revalidation_phase
+            == "preparing_rule_inputs"
+        )
+        assert preview.report.sections.auto_delete_runs[0].playback is None
     assert "PRIVATE_ERROR_SECRET" not in preview.model_dump_json()
     assert not any(
         "No automatic-deletion decision" in note
@@ -340,6 +345,28 @@ def test_missing_history_is_explicit_and_auto_delete_exports_are_allowlisted(dat
                         "SECRET": "PRIVATE_SECRET",
                     },
                     "error_category": {"PRIVATE_SECRET": 1},
+                    "revalidation_phase": "PRIVATE_SECRET",
+                    "playback": {
+                        "observed_at": now.isoformat(),
+                        "blocking": False,
+                        "library_unavailable_count": True,
+                        "selected_unavailable_count": 0,
+                        "error_category": "PRIVATE_SECRET",
+                        "sources": [
+                            {
+                                "kind": "history",
+                                "config_id": True,
+                                "provider": "PRIVATE_SECRET",
+                                "available": False,
+                                "error_category": "timeout",
+                                "api_key": "PRIVATE_SECRET",
+                            }
+                        ],
+                        "unknown_target_samples": [
+                            {"scope": "season", "id": 2, "title": "PRIVATE_SECRET"},
+                            {"scope": "PRIVATE_SECRET", "id": 3},
+                        ],
+                    },
                 },
             )
         )
@@ -356,10 +383,23 @@ def test_missing_history_is_explicit_and_auto_delete_exports_are_allowlisted(dat
                 "rule_ids": [1, True, "PRIVATE_SECRET", {}],
                 "coverage": {
                     "playback_unavailable_count": 2,
+                    "playback_blocking": False,
                     "seerr_unavailable": True,
                     "SECRET": "PRIVATE_SECRET",
                 },
                 "blocking_reasons": ["active_protection", "PRIVATE_SECRET"],
+                "playback_fields": {
+                    "requested": [
+                        "playback.days_since_last_activity",
+                        "PRIVATE_SECRET",
+                        {},
+                    ],
+                    "available": [],
+                    "unavailable": [
+                        "playback.days_since_last_activity",
+                        "PRIVATE_SECRET",
+                    ],
+                },
             },
         ):
             db.add(
@@ -388,9 +428,23 @@ def test_missing_history_is_explicit_and_auto_delete_exports_are_allowlisted(dat
     assert decision.rule_ids == [1]
     assert decision.coverage == {
         "playback_unavailable_count": 2,
+        "playback_blocking": False,
         "seerr_unavailable": True,
     }
     assert decision.blocking_reasons == ["active_protection"]
+    assert decision.playback_fields.requested == ["playback.days_since_last_activity"]
+    observed = preview.report.sections.auto_delete_runs[0].playback
+    assert (
+        observed.library_unavailable_count is None
+        and observed.selected_unavailable_count == 0
+    )
+    assert (
+        observed.sources[0].provider == "unknown"
+        and observed.sources[0].config_id is None
+    )
+    assert observed.sources[0].error_category == "timeout"
+    assert len(observed.unknown_target_samples) == 1
+    assert preview.report.sections.auto_delete_runs[0].revalidation_phase is None
     assert "PRIVATE_SECRET" not in preview.model_dump_json()
 
 

@@ -30,6 +30,7 @@ from backend.core.operation_diagnostics import (
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
 from backend.core.support_codes import parse_support_code
 from backend.models import diagnostics as m
+from backend.services.auto_delete_evidence import playback_fields
 from backend.services.diagnostic_check_cache import check_cache
 from backend.services.diagnostic_jobs import duplicate_target_filter
 from backend.services.diagnostics import (
@@ -464,6 +465,7 @@ class BundleCollector(Collector):
                                 in {
                                     "seerr_unavailable",
                                     "playback_error",
+                                    "playback_blocking",
                                     "sonarr_error",
                                     "seerr_error",
                                 }
@@ -487,6 +489,7 @@ class BundleCollector(Collector):
                         else [],
                         eligible_at=timestamp(detail.get("eligible_at")),
                         coverage=coverage,
+                        playback_fields=playback_fields(detail.get("playback_fields")),
                     )
                     auto_candidate_ids.add(r["candidate_id"])
                 if isinstance(detail, dict) and r["event_type"] in (
