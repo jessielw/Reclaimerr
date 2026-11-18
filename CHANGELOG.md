@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.13] - 2026-11-17
 
 ### Fixed
 
@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Support bundles can optionally attach up to five already-completed diagnostic checks, preserving their timestamps and scope without rerunning them. Check snapshots are cached briefly for the requesting administrator and respect path-sharing controls.
 - Candidate and deletion support bundles select all diagnostic sections by default and show automatic-deletion run totals, revalidation evidence and missing-history limitations. Preparing a bundle does not rerun rules or retry deletion.
 - **Upgrade note:** Existing cron schedules with numeric weekdays now run on the corrected days. Review custom task schedules after upgrading, especially automatic deletion schedules. Saved expressions are preserved; untouched weekly defaults switch to named weekdays.
+- Updated fastapi and platformdirs.
 
 ## [0.6.12] - 2026-11-14
 
