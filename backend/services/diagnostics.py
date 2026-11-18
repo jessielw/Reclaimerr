@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from backend.core.__version__ import __version__
-from backend.core.auto_delete_diagnostics import SUMMARY_FIELDS
+from backend.core.auto_delete_diagnostics import REVALIDATION_PHASES, SUMMARY_FIELDS
 from backend.core.operation_diagnostics import DEFERRAL_CODES
 from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
@@ -33,6 +33,7 @@ from backend.enums import (
     TaskStatus,
 )
 from backend.models import diagnostics as m
+from backend.services.auto_delete_evidence import playback_observation
 from backend.services.diagnostic_jobs import duplicate_targets
 from backend.services.diagnostics_export import Exporter, timestamp
 from backend.services.media_identity import MediaIdentityOwnership
@@ -646,6 +647,11 @@ class Collector:
                         0, integer(context.get("dropped_decisions")) or 0
                     ),
                     dropped_traces=max(0, integer(row["dropped_traces"]) or 0),
+                    revalidation_phase=context.get("revalidation_phase")
+                    if isinstance(context.get("revalidation_phase"), str)
+                    and context["revalidation_phase"] in REVALIDATION_PHASES
+                    else None,
+                    playback=playback_observation(context.get("playback")),
                 )
             )
         return result

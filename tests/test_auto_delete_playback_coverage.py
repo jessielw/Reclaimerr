@@ -14,11 +14,14 @@ from backend.core.rule_engine import (
 from backend.database import Base
 from backend.database.models import ReclaimCandidate, ReclaimRule, Season, Series
 from backend.enums import MediaType, Service
+from backend.models.diagnostics import BundleOptions, Target
 from backend.services.playback_history import (
     PlaybackProviderStatus,
     PlaybackRefreshResult,
     PlaybackRuleSnapshot,
 )
+from backend.services.support_bundle import prepare_bundle
+from backend.services.support_history import persist_auto_delete_history
 from backend.tasks import cleanup
 
 
@@ -41,6 +44,7 @@ from backend.tasks import cleanup
 )
 def test_revalidation_uses_target_coverage_and_keeps_refresh_failures_blocked(
     monkeypatch,
+    tmp_path,
     selected_missing,
     mixed_batch,
     provider_failed,
@@ -48,7 +52,8 @@ def test_revalidation_uses_target_coverage_and_keeps_refresh_failures_blocked(
     expected_retained,
 ):
     async def exercise():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        database_path = tmp_path / "revalidation-history.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -215,6 +220,51 @@ def test_revalidation_uses_target_coverage_and_keeps_refresh_failures_blocked(
                 "authorized" if expected_retained else "skipped"
             )
             assert cleanup.refresh_playback_history.await_args.kwargs["force"] is True
+            observation = recorder.scan.context["playback"]
+            assert observation["library_unavailable_count"] == (
+                2 if selected_missing else 1
+            )
+            assert observation["selected_unavailable_count"] == (
+                len(requested) if selected_missing else 1 if mixed_batch else 0
+            )
+            assert observation["sources"][0]["config_id"] == 8
+            assert observation["sources"][0]["available"] is (not provider_failed)
+            assert observation["require_fresh"] is True
+            assert observation["native_refresh_error_category"] == (
+                "timeout" if native_failed else None
+            )
+            assert decision["playback_fields"]["requested"] == [field]
+            assert decision["playback_fields"]["unavailable"] == (
+                [field] if selected_missing else []
+            )
+            recorder.scan.context["status"] = "completed"
+            await persist_auto_delete_history(recorder, session_factory=sessions)
+            # Changing current provider/snapshot state must not rewrite the run.
+            status.available = not status.available
+            snapshot.values_by_target.clear()
+            previous_refreshes = cleanup.refresh_playback_history.await_count
+            exported = prepare_bundle(
+                database_path,
+                BundleOptions(
+                    preset="deletion",
+                    target=Target(scope="season", id=seasons[0].id),
+                    include_sqlite=True,
+                ),
+                1,
+            )
+            saved_run = exported.report.sections.auto_delete_runs[0]
+            assert saved_run.playback.model_dump(mode="json") == observation
+            assert saved_run.revalidation_phase == "rule_evaluation"
+            saved_decision = next(
+                event.auto_delete for event in exported.timeline if event.auto_delete
+            )
+            assert (
+                saved_decision.playback_fields.model_dump()
+                == decision["playback_fields"]
+            )
+            assert "PRIVATE_PROVIDER_SECRET" not in exported.model_dump_json()
+            assert "PRIVATE_NATIVE_SECRET" not in exported.model_dump_json()
+            assert cleanup.refresh_playback_history.await_count == previous_refreshes
         finally:
             current_auto_delete.reset(token)
             PlaybackHistoryResolver({}).activate()

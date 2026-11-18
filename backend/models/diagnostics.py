@@ -206,6 +206,37 @@ class RunInfo(ExportModel):
     error: Literal["recorded_error_text_omitted"] | None = None
 
 
+class PlaybackSourceObservation(ExportModel):
+    kind: Literal["history", "native"]
+    config_id: int | None = None
+    provider: str
+    observed_service: str | None = None
+    observed_config_id: int | None = None
+    available: bool | None = None
+    error_category: str | None = None
+
+
+class PlaybackCoverageObservation(ExportModel):
+    observed_at: datetime
+    require_fresh: bool | None = None
+    blocking: bool | None = None
+    library_unavailable_count: int | None = None
+    selected_unavailable_count: int | None = None
+    error_category: str | None = None
+    native_refresh_error_category: str | None = None
+    sources: list[PlaybackSourceObservation] = Field(default_factory=list)
+    unknown_target_samples: list[Target] = Field(default_factory=list)
+    sources_truncated: bool = False
+    targets_truncated: bool = False
+    note: str = "Captured during revalidation, not refreshed during export. Library counts and samples include unrelated media; selected counts describe the revalidation batch."
+
+
+class PlaybackFieldObservation(ExportModel):
+    requested: list[str] = Field(default_factory=list)
+    available: list[str] = Field(default_factory=list)
+    unavailable: list[str] = Field(default_factory=list)
+
+
 class AutoDeleteRunInfo(ExportModel):
     correlation_id: str
     started_at: datetime
@@ -216,6 +247,8 @@ class AutoDeleteRunInfo(ExportModel):
     error_category: str | None = None
     dropped_decisions: int = 0
     dropped_traces: int = 0
+    revalidation_phase: str | None = None
+    playback: PlaybackCoverageObservation | None = None
 
 
 class JobInfo(ExportModel):
@@ -599,6 +632,7 @@ class AutoDeleteDecisionDetail(ExportModel):
     blocking_reasons: list[str] = Field(default_factory=list)
     eligible_at: datetime | None = None
     coverage: dict[str, int | bool] = Field(default_factory=dict)
+    playback_fields: PlaybackFieldObservation | None = None
     note: str = "Observed during automatic deletion. Authorization is not proof of deletion. Coverage counters describe the revalidation batch; condition traces describe individual rule inputs."
 
 

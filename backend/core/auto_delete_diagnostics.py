@@ -47,6 +47,13 @@ COVERAGE_FIELDS = {
     "skipped_favorites_count",
     "skipped_protected_count",
 }
+REVALIDATION_PHASES = {
+    "preparing_rule_inputs",
+    "native_playback_refresh",
+    "history_refresh",
+    "playback_snapshot",
+    "rule_evaluation",
+}
 
 
 def decision_priority(stage: str, outcome: str, reason: str) -> int:
@@ -69,6 +76,9 @@ class AutoDeleteRecorder:
     decisions: dict[int, dict[str, Any]] = field(default_factory=dict)
     max_records: int = 1000
     dropped: int = 0
+    playback_fields: dict[tuple[str, int], dict[str, list[str]]] = field(
+        default_factory=dict
+    )
     _priority_ids: tuple[dict[int, None], ...] = field(
         default_factory=lambda: ({}, {}, {}, {}), init=False, repr=False
     )
@@ -121,6 +131,16 @@ class AutoDeleteRecorder:
                 "outcome": outcome,
                 "reason": reason,
                 "rule_ids": list(candidate.matched_rule_ids or [])[:100],
+                **(
+                    {
+                        "playback_fields": self.playback_fields[
+                            (scope, getattr(candidate, scope + "_id"))
+                        ]
+                    }
+                    if (scope, getattr(candidate, scope + "_id"))
+                    in self.playback_fields
+                    else {}
+                ),
                 **detail,
             },
         }
@@ -129,6 +149,12 @@ class AutoDeleteRecorder:
 current_auto_delete: ContextVar[AutoDeleteRecorder | None] = ContextVar(
     "support_auto_delete", default=None
 )
+
+
+def revalidation_phase(phase: str) -> None:
+    recorder = current_auto_delete.get()
+    if recorder is not None and phase in REVALIDATION_PHASES:
+        recorder.scan.context["revalidation_phase"] = phase
 
 
 def capture_auto_delete(

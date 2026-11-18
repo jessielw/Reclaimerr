@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Automatic cleanup no longer skips a matching title because other library items have missing playback data. Missing required inputs and playback refresh failures still block deletion.
+- Support bundles preserve playback evidence captured during automatic deletion, including selected-item and library-wide gaps, provider status, missing rule inputs and the last revalidation stage. Later refreshes do not overwrite that history; older runs without recorded evidence remain unknown.
 
 ## [0.6.13] - 2026-11-17
 
