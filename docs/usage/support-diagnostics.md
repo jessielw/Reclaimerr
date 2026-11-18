@@ -48,6 +48,8 @@ Candidate and deletion bundles include task context, storage identities and play
 
 Automatic decision recording is bounded to 1,000 candidates per run and shares the existing scan/operation retention limits. Run summaries report dropped decisions and traces. Missing history is explicit in the bundle limitations; a completed task status cannot reconstruct an older skip decision. These observations are written after operational sessions close, and recording failure does not change cleanup results. Preparing a bundle never retries deletion or reruns revalidation.
 
+At capacity, revalidation and dispatch observations take priority, followed by eligible candidates and rejected candidates, then waiting, disabled or canceled candidates. Higher-priority observations can replace lower-priority rows; every replacement or rejected capture increments the disclosed dropped count. Existing retained candidates still update to their latest observed stage.
+
 Open **Why this candidate?** in a media report to read saved match inputs and current protections. Choose **Load recorded scan evidence** to prepare the candidate bundle. Its readable view shows expected versus observed values, matched/unmatched/skipped conditions, captured ALL/ANY rule logic, and scan/job codes. Unknown inputs remain unknown; they are never displayed as zero.
 
 Future cleanup scans record bounded observations of actual rule evaluations: scan/job IDs, rule revision, observed values, condition outcomes, skipped or unknown inputs, and overall results. No rule is rerun to create a bundle. Current rule definitions and captured historical definitions are separate. Protection rows describe state **after scan reconciliation**, not an invented precheck.
@@ -61,6 +63,8 @@ Bounded operation samples reserve space for the newest final outcome and automat
 Late favorites and physical-sibling protection filters record `skipped` outcomes with safe reason codes. Generic fallback diagnoses preserve these observed guard outcomes. Cleanup result counters retain their existing meaning; a batch's failed count is not proof that every item attempted file removal.
 
 Recording is bounded to 1,000 steps and 1,000 candidate outcomes per operation, with at most 4,000 step associations plus 1,000 outcomes persisted. Limits are reported in the exported observations. Stored operation history is limited to 5,000 events and 14 days, pruned during subsequent recording. These observations are written after operational transactions; recording failure does not undo a completed operation. No operation is retried for diagnostics.
+
+Within the 14-day window, global operation retention reserves the latest final outcome and automatic decision per target before retaining intermediate events. Older runs or intermediate attempts can be removed. If terminal evidence alone exceeds 5,000 events, the newest terminal records survive; no target is retained indefinitely.
 
 Raw errors and actor identities are excluded. Log summaries are opt-in: up to three bounded 256 KiB log tails, at most 100 summaries, with times, levels, failure categories and correlation IDs. Media reports include only correlated log entries. Original message text, tracebacks, addresses and credentials are never copied. Older uncorrelated logs may contribute nothing to a media bundle.
 

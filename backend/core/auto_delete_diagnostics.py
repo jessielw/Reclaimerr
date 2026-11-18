@@ -49,6 +49,16 @@ COVERAGE_FIELDS = {
 }
 
 
+def decision_priority(stage: str, outcome: str, reason: str) -> int:
+    if stage in ("revalidation", "dispatch"):
+        return 0
+    if outcome == "eligible":
+        return 1
+    if outcome == "waiting" or reason in ("auto_delete_disabled", "canceled"):
+        return 3
+    return 2
+
+
 @dataclass
 class AutoDeleteRecorder:
     scan: ScanRecorder = field(
@@ -59,16 +69,13 @@ class AutoDeleteRecorder:
     decisions: dict[int, dict[str, Any]] = field(default_factory=dict)
     max_records: int = 1000
     dropped: int = 0
+    _priority_ids: tuple[dict[int, None], ...] = field(
+        default_factory=lambda: ({}, {}, {}, {}), init=False, repr=False
+    )
 
     def capture(
         self, candidate: Any, stage: str, outcome: str, reason: str, **detail
     ) -> None:
-        if (
-            candidate.id not in self.decisions
-            and len(self.decisions) >= self.max_records
-        ):
-            self.dropped += 1
-            return
         scope = next(
             (
                 name
@@ -80,6 +87,26 @@ class AutoDeleteRecorder:
         if scope is None:
             return
         previous = self.decisions.get(candidate.id, {})
+        priority = decision_priority(stage, outcome, reason)
+        if previous:
+            detail_before = previous["detail"]
+            old_priority = decision_priority(
+                detail_before["stage"],
+                detail_before["outcome"],
+                detail_before["reason"],
+            )
+            self._priority_ids[old_priority].pop(candidate.id, None)
+        elif len(self.decisions) >= self.max_records:
+            self.dropped += 1
+            worst = next(
+                (rank for rank in reversed(range(4)) if self._priority_ids[rank]), None
+            )
+            if worst is None or priority >= worst:
+                return
+            evicted = next(iter(self._priority_ids[worst]))
+            del self._priority_ids[worst][evicted]
+            del self.decisions[evicted]
+        self._priority_ids[priority][candidate.id] = None
         self.decisions[candidate.id] = {
             "target_scope": scope,
             "target_id": getattr(candidate, scope + "_id"),

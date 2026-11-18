@@ -56,7 +56,7 @@ GROUPS = {
     ),
     "timeline": (),
 }
-RETENTION_NOTE = "Decision traces start with this release: up to 1,000 evaluations / 4 MiB per scan, 5,000 retained traces, 50 scans and 14 days. SQL-filtered targets may have no trace."
+RETENTION_NOTE = "Decision traces: up to 1,000 evaluations / 4 MiB per scan, 5,000 retained traces, 50 scans and 14 days. SQL-filtered targets may have no trace. Automatic decision capacity favors revalidation/dispatch, then eligible and rejected candidates before waiting/disabled candidates; dropped counts include evictions. Operation history retains at most 5,000 events for 14 days, prioritizing the latest final outcome and automatic decision per target. Retention can remove earlier attempts and, when terminal records alone exceed the cap, older targets."
 ERROR_CATEGORIES = {
     "database_busy",
     "timeout",

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import case, delete, func, or_, select
 
 from backend.core.auto_delete_diagnostics import AutoDeleteRecorder
 from backend.core.diagnostic_trace import ScanRecorder, job_id
@@ -92,14 +92,41 @@ async def trim_history(db) -> None:
         )
     )
     await db.execute(
+        delete(SupportOperationEvent).where(SupportOperationEvent.occurred_at < cutoff)
+    )
+    ranked = select(
+        SupportOperationEvent.id,
+        SupportOperationEvent.event_type,
+        SupportOperationEvent.occurred_at,
+        func.row_number()
+        .over(
+            partition_by=(
+                SupportOperationEvent.event_type,
+                SupportOperationEvent.target_scope,
+                SupportOperationEvent.target_id,
+            ),
+            order_by=(
+                SupportOperationEvent.occurred_at.desc(),
+                SupportOperationEvent.id.desc(),
+            ),
+        )
+        .label("target_rank"),
+    ).subquery()
+    # Preserve each target's latest outcome and automatic decision before noisy steps.
+    priority = case(
+        (
+            ranked.c.event_type.in_(("item_outcome", "auto_delete_decision"))
+            & (ranked.c.target_rank == 1),
+            0,
+        ),
+        else_=1,
+    )
+    await db.execute(
         delete(SupportOperationEvent).where(
-            or_(
-                SupportOperationEvent.occurred_at < cutoff,
-                SupportOperationEvent.id.in_(
-                    select(SupportOperationEvent.id)
-                    .order_by(SupportOperationEvent.id.desc())
-                    .offset(5000)
-                ),
+            SupportOperationEvent.id.in_(
+                select(ranked.c.id)
+                .order_by(priority, ranked.c.occurred_at.desc(), ranked.c.id.desc())
+                .offset(5000)
             )
         )
     )

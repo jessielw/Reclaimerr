@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Bounded automatic-deletion recording favors actionable and rejected decisions over waiting/disabled candidates. Operation retention preserves each target's latest final outcome and automatic decision before intermediate events.
 - Operation diagnostics record late favorites and sibling-protection skips with explicit reasons. A generic failure diagnosis no longer replaces an already-recorded guard outcome.
 - Future duplicate and upgrade-leftover deletions retain operation checks, provider/file observations and final outcomes after their target rows disappear, without inventing cleanup candidate IDs. Recording failures leave the operation result unchanged.
 - Playback diagnostics include stored activity and username-completeness flags, field-specific unavailability reasons and safe event identity-conflict indicators.
