@@ -43,6 +43,8 @@ Reclaimerr skips anything with:
 
 The task summary reports opted-in candidates still in their review period as `waiting` and protected, non-opted, or otherwise blocked candidates as `skipped`.
 
+Before automatic deletion, watch-sensitive rules are checked again using fresh data. Missing playback coverage elsewhere in the library does not block candidates that still match their rules. Required values that remain unknown do not authorize a match, and playback refresh failures still stop the recheck.
+
 Manual delete and move actions bypass the automatic review period. If a cleanup scan removes a candidate because it no longer matches, a later match creates a new candidate with a new review-period clock.
 
 The deletion flow is:

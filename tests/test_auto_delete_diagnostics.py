@@ -356,6 +356,7 @@ def test_missing_history_is_explicit_and_auto_delete_exports_are_allowlisted(dat
                 "rule_ids": [1, True, "PRIVATE_SECRET", {}],
                 "coverage": {
                     "playback_unavailable_count": 2,
+                    "playback_blocking": False,
                     "seerr_unavailable": True,
                     "SECRET": "PRIVATE_SECRET",
                 },
@@ -388,6 +389,7 @@ def test_missing_history_is_explicit_and_auto_delete_exports_are_allowlisted(dat
     assert decision.rule_ids == [1]
     assert decision.coverage == {
         "playback_unavailable_count": 2,
+        "playback_blocking": False,
         "seerr_unavailable": True,
     }
     assert decision.blocking_reasons == ["active_protection"]

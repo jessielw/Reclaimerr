@@ -104,6 +104,9 @@ class RulePreviewMatchMetadata:
     )
     playback_unavailable_count: int = 0
     playback_error: str | None = None
+    # Missing fields on other library targets are diagnostic warnings. A failed
+    # refresh/provider is blocking. None preserves fail-closed older callers.
+    playback_blocking: bool | None = None
     seerr_unavailable: bool = False
     seerr_error: str | None = None
     seerr_unavailable_instances: list[str] = field(default_factory=list)

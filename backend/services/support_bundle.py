@@ -464,6 +464,7 @@ class BundleCollector(Collector):
                                 in {
                                     "seerr_unavailable",
                                     "playback_error",
+                                    "playback_blocking",
                                     "sonarr_error",
                                     "seerr_error",
                                 }

@@ -1026,10 +1026,18 @@ async def _revalidate_auto_delete_candidate_ids(
         coverage = {name: getattr(preview.metadata, name) for name in COVERAGE_FIELDS}
         coverage["seerr_unavailable"] = preview.metadata.seerr_unavailable
         coverage["playback_error"] = bool(preview.metadata.playback_error)
+        if preview.metadata.playback_blocking is not None:
+            coverage["playback_blocking"] = preview.metadata.playback_blocking
         coverage["sonarr_error"] = bool(preview.metadata.sonarr_error)
         coverage["seerr_error"] = bool(preview.metadata.seerr_error)
 
-        if preview.metadata.playback_error:
+        # Partial library coverage is a warning. The scoped matches below still
+        # reject candidates whose required data is unknown. Refresh failures
+        # and unclassified errors must continue to block the entire recheck.
+        if (
+            preview.metadata.playback_error
+            and preview.metadata.playback_blocking is not False
+        ):
             LOG.warning(
                 "Auto-delete playback revalidation could not establish complete "
                 f"provider coverage: {preview.metadata.playback_error}"
@@ -1606,6 +1614,7 @@ async def collect_rule_preview_matches_with_metadata(
     else:
         metadata.playback_unavailable_count = playback_result.unavailable_count
     metadata.playback_error = playback_result.error
+    metadata.playback_blocking = playback_result.blocking
     # favorites and protections only guard against deletion, so they hide items
     # from cleanup previews but not from protect or match-only rules
     has_candidate_rules = not rules or any(
