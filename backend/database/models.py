@@ -2449,7 +2449,7 @@ class SupportOperationEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     target_scope: Mapped[str] = mapped_column(String(24))
     target_id: Mapped[int] = mapped_column(Integer)
-    candidate_id: Mapped[int] = mapped_column(Integer, index=True)
+    candidate_id: Mapped[int | None] = mapped_column(Integer, index=True)
     movie_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     series_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
     season_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)

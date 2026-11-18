@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.core.support_codes import parse_support_code
 from backend.models import diagnostics as m
+from backend.services.diagnostic_jobs import duplicate_targets
 from backend.services.diagnostics import TABLES, Collector, object_json
 from backend.services.diagnostics_export import timestamp
 
@@ -77,13 +78,25 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
             if kind in ("scan", "correlation"):
                 try:
                     rows = collector.query(
-                        "SELECT started_at FROM support_scan_runs WHERE id=? LIMIT 1",
+                        "SELECT started_at,substr(context,1,65536) AS context FROM support_scan_runs WHERE id=? LIMIT 1",
                         (identifier,),
                     )
                     if rows:
-                        selected, truncated = targets(
-                            "SELECT DISTINCT target_scope,target_id FROM support_decision_traces WHERE scan_id=? ORDER BY target_scope,target_id",
-                            (identifier,),
+                        context = object_json(rows[0]["context"])
+                        automatic = (
+                            isinstance(context, dict)
+                            and context.get("purpose") == "auto_delete"
+                        )
+                        selected, truncated = (
+                            targets(
+                                "SELECT target_scope,target_id FROM support_decision_traces WHERE scan_id=? UNION SELECT target_scope,target_id FROM support_operation_events WHERE correlation_id=? AND event_type='auto_delete_decision' ORDER BY target_scope,target_id",
+                                (identifier, identifier),
+                            )
+                            if automatic
+                            else targets(
+                                "SELECT DISTINCT target_scope,target_id FROM support_decision_traces WHERE scan_id=? ORDER BY target_scope,target_id",
+                                (identifier,),
+                            )
                         )
                         add("scan", rows[0]["started_at"], selected, truncated)
                 except (sqlite3.Error, TimeoutError):
@@ -106,7 +119,7 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
                     )
             if kind == "job":
                 rows = collector.query(
-                    "SELECT created_at,substr(payload,1,65536) AS payload FROM background_jobs WHERE id=? LIMIT 1",
+                    "SELECT job_type,created_at,CASE WHEN length(payload)<=65536 THEN payload ELSE NULL END AS payload FROM background_jobs WHERE id=? LIMIT 1",
                     (int(identifier),),
                 )
                 if rows:
@@ -114,8 +127,27 @@ def lookup_support(path: Path, code: str) -> m.SupportLookupResult:
                         "SELECT t.target_scope,t.target_id FROM support_decision_traces t JOIN support_scan_runs s ON s.id=t.scan_id WHERE s.job_id=? UNION SELECT target_scope,target_id FROM support_operation_events WHERE job_id=? ORDER BY target_scope,target_id",
                         (int(identifier), int(identifier)),
                     )
+                    payload = object_json(rows[0]["payload"])
+                    if (
+                        isinstance(payload, dict)
+                        and rows[0]["job_type"] == "DUPLICATE_DELETE"
+                    ):
+                        try:
+                            queued, queued_truncated = duplicate_targets(
+                                payload, collector.query
+                            )
+                            truncated |= queued_truncated
+                            for target in queued:
+                                if target not in selected:
+                                    if len(selected) < 100:
+                                        selected.append(target)
+                                    else:
+                                        truncated = True
+                        except (sqlite3.Error, TimeoutError):
+                            result.limitations.append(
+                                "Some queued duplicate target associations are unavailable."
+                            )
                     if not selected:
-                        payload = object_json(rows[0]["payload"])
                         ids = (
                             payload.get("candidate_ids")
                             if isinstance(payload, dict)

@@ -19,6 +19,7 @@ from backend.models.diagnostics import (
     SupportLookupOptions,
     SupportLookupResult,
 )
+from backend.services.diagnostic_check_cache import CheckAttachmentError, check_cache
 from backend.services.diagnostic_checks import ChecksBusy, run_check
 from backend.services.diagnostics import collect_report, generation_slots
 from backend.services.support_bundle import bundle_cache, prepare_bundle
@@ -97,6 +98,8 @@ def preview_bundle(
         )
     try:
         return prepare_bundle(Path(settings.db_path), options, admin.id)
+    except CheckAttachmentError as exc:
+        raise HTTPException(422, str(exc)) from None
     except ValueError:
         raise HTTPException(
             422, "Choose a media target for an item preset, or reduce the bundle scope."
@@ -130,11 +133,13 @@ def download_bundle(
 async def diagnostic_check(
     options: DiagnosticCheckRequest,
     response: Response,
-    _admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_admin)],
 ) -> DiagnosticCheckResult:
     response.headers["Cache-Control"] = "no-store"
     try:
-        return await run_check(Path(settings.db_path), options)
+        path = Path(settings.db_path)
+        result = await run_check(path, options)
+        return check_cache.put(admin.id, path, options, result)
     except ChecksBusy:
         raise HTTPException(
             429, "Diagnostic checks are busy. Try again shortly."

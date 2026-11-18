@@ -17,7 +17,7 @@ Generating, copying and downloading do not upload the report, create an issue, c
 
 Media reports contain stored IDs and titles, storage identities and path-mapping relationships, selected playback providers, native and imported evidence, bounded event samples, recorded candidate conditions, current relevant rule definitions, protection and request state. Parent decisions are included with their actual scope. A series report summarizes children rather than exporting every episode.
 
-System reports contain app/runtime information, service aliases and provider bindings, stored refresh outcomes, library selections, relevant cleanup settings, task schedules, queued/running jobs and recent task runs. Database information includes migration revision, SQLite version, file sizes when readable, and PRAGMAs measured on a dedicated read-only diagnostics connection.
+System reports contain app/runtime information, service aliases and provider bindings, stored refresh outcomes, library selections, relevant cleanup settings, task schedules, queued/running jobs and recent task runs. Task sampling keeps the newest 20 runs plus the latest run of every task, so frequent playback refreshes cannot displace the daily deletion run. Bundle task runs are filtered to the selected history window before sampling. Database information includes migration revision, SQLite version, file sizes when readable, and PRAGMAs measured on a dedicated read-only diagnostics connection.
 
 ## Prepare a controlled support bundle
 
@@ -36,6 +36,20 @@ Prepared ZIPs are kept only in server memory for up to ten minutes, bound to the
 
 ## Historical decisions and failure timelines
 
+Stored background-job context includes allowlisted result/progress counters, task and trigger, candidate IDs, attempts, timestamps and categorized errors. These counters can explain older executions that predate detailed decision recording. Missing counters remain unknown. Recent job samples preserve each task's latest job and latest failure before filling the bounded general sample, including failures before task tracking starts. Task context is explicitly app-wide; it does not establish a selected target's outcome. Job payloads, free-text results and credentials are never copied wholesale.
+
+Stored candidate deferrals are included even when historical run recording is absent. Reports distinguish currently playing, unavailable live playback status, pending resync and manual deletion schedules, with their recorded check time and affected service IDs. Completed-step counts are shared without copying private step descriptions or paths. Future per-item operation outcomes retain these deferral codes as well.
+
+Current decision evidence includes sibling protections and requests under the same movie/series, matching automatic cleanup's blocker scope. Each row retains its actual scope and relationship to the selection; protection rows identify whether their stored expiry is active. Candidate/request resync holds include aliased paths, and candidates list stored unavailable-rule IDs. Approved deletion requests retain playback deferrals independently of execution errors. Active manual deletion schedules include due time, state, job ID, aliased actor and categorized error, with scope/path hold relationships. Schedule inventory matching reads stored paths only and shares the collection limits; a missing sampled schedule does not establish that no hold exists.
+
+Configuration includes favorites controls, requester-watch identity mappings and request-date behavior, ARR deletion fallback and import-exclusion settings. Private user keys share normalized aliases with rule literals and playback usernames. Seerr mappings preserve the instance ID and alias the qualified requester identity; identical numeric user IDs on different instances remain distinct. Saved action context includes quality-profile ID, search behavior, selected ARR instances and aliased tags.
+
+Candidate and deletion bundles include task context, storage identities and playback evidence by default. **Automatic deletion runs** separates task completion from candidate outcomes. New automatic runs record totals for eligible, waiting, skipped, revalidated-out, playback-unavailable, deleted, failed and deferred candidates. Each candidate records its latest selection or revalidation decision, including protection/request blocks, review periods, postponed/canceled timers, manual schedules, pending resyncs, unavailable rule data and authorization. Watch-sensitive revalidation captures the actual rule inputs and condition outcomes under the same run code. Coverage counters describe the revalidation batch, not inferred per-candidate failures. Authorization does not prove a file was deleted; subsequent operation outcomes provide that evidence.
+
+Automatic decision recording is bounded to 1,000 candidates per run and shares the existing scan/operation retention limits. Run summaries report dropped decisions and traces. Missing history is explicit in the bundle limitations; a completed task status cannot reconstruct an older skip decision. These observations are written after operational sessions close, and recording failure does not change cleanup results. Preparing a bundle never retries deletion or reruns revalidation.
+
+At capacity, revalidation and dispatch observations take priority, followed by eligible candidates and rejected candidates, then waiting, disabled or canceled candidates. Higher-priority observations can replace lower-priority rows; every replacement or rejected capture increments the disclosed dropped count. Existing retained candidates still update to their latest observed stage.
+
 Open **Why this candidate?** in a media report to read saved match inputs and current protections. Choose **Load recorded scan evidence** to prepare the candidate bundle. Its readable view shows expected versus observed values, matched/unmatched/skipped conditions, captured ALL/ANY rule logic, and scan/job codes. Unknown inputs remain unknown; they are never displayed as zero.
 
 Future cleanup scans record bounded observations of actual rule evaluations: scan/job IDs, rule revision, observed values, condition outcomes, skipped or unknown inputs, and overall results. No rule is rerun to create a bundle. Current rule definitions and captured historical definitions are separate. Protection rows describe state **after scan reconciliation**, not an invented precheck.
@@ -44,7 +58,13 @@ Older scans have no historical trace. Targets excluded by SQL filters before eva
 
 Timelines combine recorded candidate/review timestamps, correlated job events, scan results, and future move/delete operations. Batch completion/partial events do not claim that every individual item succeeded. **Per-item operation outcomes** show explicit candidate results and observed file/provider steps, including the stage and safe failure category. Earlier failures remain visible after a successful fallback. Exact failed child paths are included where the filesystem operation reports them; paths use aliases unless path sharing is enabled. A whole-directory move or a shared provider request is not presented as verified per-file success. Unrecorded final outcomes are marked unknown, including interrupted batches.
 
+Bounded operation samples reserve space for the newest final outcome and automatic-deletion decision per target/run, then intermediate failures and recent observations. Timeline count and byte limits retain those terminal records ahead of intermediate events. If terminal records alone exceed the limit, the newest are retained and truncation remains explicit.
+
+Late favorites and physical-sibling protection filters record `skipped` outcomes with safe reason codes. Generic fallback diagnoses preserve these observed guard outcomes. Cleanup result counters retain their existing meaning; a batch's failed count is not proof that every item attempted file removal.
+
 Recording is bounded to 1,000 steps and 1,000 candidate outcomes per operation, with at most 4,000 step associations plus 1,000 outcomes persisted. Limits are reported in the exported observations. Stored operation history is limited to 5,000 events and 14 days, pruned during subsequent recording. These observations are written after operational transactions; recording failure does not undo a completed operation. No operation is retried for diagnostics.
+
+Within the 14-day window, global operation retention reserves the latest final outcome and automatic decision per target before retaining intermediate events. Older runs or intermediate attempts can be removed. If terminal evidence alone exceeds 5,000 events, the newest terminal records survive; no target is retained indefinitely.
 
 Raw errors and actor identities are excluded. Log summaries are opt-in: up to three bounded 256 KiB log tails, at most 100 summaries, with times, levels, failure categories and correlation IDs. Media reports include only correlated log entries. Original message text, tracebacks, addresses and credentials are never copied. Older uncorrelated logs may contribute nothing to a media bundle.
 
@@ -56,6 +76,10 @@ Raw errors and actor identities are excluded. Log summaries are opt-in: up to th
 
 Lookup reads stored history only. It does not rescan, retry, contact providers, or upload anything. The bundle filters historical traces, operation events, related jobs and optional logs by the exact code. Current settings, selected media and app-wide context remain separately labeled. At most 100 target choices are offered; choosing all targets still respects bundle collection limits. Logs, paths and the SQLite extract keep their existing explicit sharing controls.
 
+Duplicate jobs resolve movie-version and episode targets from their stored inputs without requiring operation history. Upgrade-leftover jobs resolve their associated movie while the leftover row or recorded operation still exists. Older successful leftover jobs whose row was removed before recording may have no recoverable association. Job labels and other payload text remain excluded.
+
+New duplicate/upgrade-leftover operations snapshot their media associations before file rows are removed. Their recorded validation/playback checks, provider/filesystem steps and terminal outcomes use the same bounded history as candidate operations, with an explicit operation kind and no invented candidate ID. Partial movie-version results remain separate; interrupted or unprocessed targets remain unknown. Leftovers require a stored movie association to appear in a media timeline. Recording is best effort after operational transactions and never retries deletion. These observations require schema revision `b4d9f2a6c831`.
+
 No match can mean expired history or work from before recording was introduced. Unavailable history is shown separately. Matching bundles use a 30-day window; retention can leave less evidence. Detailed operation observations require the `d5f0b2c7e439` schema revision; older batch records contain no invented file steps.
 
 ## Run an explicit check
@@ -66,7 +90,17 @@ Expand **Run a diagnostic check**, choose a check, then **Run selected check**. 
 - **Stored relationships:** selected media parents and configured history-source bindings. This is not a whole-database integrity scan.
 - **Provider connection:** a read-only connection test against one saved service. It uses saved credentials internally and returns only a sanitized result. No arbitrary URL/path input, provider sync, library refresh or cleanup runs.
 
-Each check phase has a five-second timeout and at most two checks can occupy worker slots. A stuck filesystem lookup retains its slot until the OS returns; timeouts report **unknown**, never success. Results have timestamps and can be downloaded separately with **Download check result**. They are not silently added to an already prepared bundle.
+Each check phase has a five-second timeout and at most two checks can occupy worker slots. A stuck filesystem lookup retains its slot until the OS returns; timeouts report **unknown**, never success. Results have timestamps and can be downloaded separately with **Download check result**.
+
+To include completed results in one ZIP:
+
+1. Run the desired checks explicitly.
+2. Under **Attach completed checks (optional)** in the bundle options, select up to five results. None are selected automatically.
+3. Prepare a fresh preview, review the attached check data and inventory, then download that ZIP.
+
+Preparing a bundle reads the selected snapshots without rerunning any check. The results retain their original observation times, media target or app-wide provider ID, statuses and sharing mode. They appear in `evidence.json`, the full preview and optional `support_checks` SQLite table. They may predate the selected history window. Aliases are local to each check, so `path-1` or `server-1` in a check need not identify the same object as a report alias.
+
+Check snapshots remain in server memory for up to ten minutes, bound to their requesting administrator and database. The cache holds at most 32 results / 1 MiB per process, with at most 64 KiB per result and 256 KiB of selected attachments per bundle. A restart or capacity eviction can make a result unavailable earlier. Expired/unavailable selections require rerunning the check or deselecting it; preparation never silently replaces them. Media bundles accept target checks for that exact media item; system bundles can explicitly include checks for multiple targets, and provider checks are labeled app-wide. Checks made with actual file paths cannot be attached while bundle path sharing is off. Changing the dialog's path-sharing mode clears its prior check selections.
 
 ## Sharing and privacy
 
@@ -87,12 +121,14 @@ Reports **include media titles, canonical IDs and playback information**. They a
 
 Legacy combined imported aggregates are not necessarily what current provider selection would use. Event samples identify their provider/server and whether they have a stored target link or only a canonical-ID association. A movie event does not prove which file version was played. Missing matches do not establish zero playback. Unmatched totals describe saved links, not a new matching pass.
 
+Native aggregates include their stored `has_activity` and `usernames_complete` flags. Field-specific reasons distinguish an unknown activity date from confirmed no activity, and incomplete usernames from an empty complete list. An available aggregate does not prove every rule input is available. Legacy imported rows expose stored username completeness without inventing a native activity flag. Event identity evidence exports only conflict/unverified indicators, never the raw identity object.
+
 Candidate conditions are recorded evidence, not a newly evaluated rule. Their creation/update timestamps are not an exact historical scan trace. Saved rule definitions are current and may have changed since a match. Reports do not claim to reconstruct missing inputs or an unrecorded enqueue exception. Future historical observations are available in the bundle's separate traces and timeline sections; this does not fill gaps in older candidate records.
 
 Path mappings in ordinary reports describe configured relationships; file existence and mount reachability require the separate explicit check. SQLite settings describe the diagnostics connection, not every application connection. Reports cannot identify SQLite's write-lock owner and do not run checkpoints, integrity scans or write-lock probes.
 
 ## Partial reports and limits
 
-A partial report is still useful. Expand the partial-report details to see failed sections, sample counts and omissions. Collection has a five-second budget, with up to 50 event samples, 20 recent task runs and 100 rows per other query. Child lists can be paged. Oversized saved JSON values are omitted; exports retain valid JSON within a 512 KiB limit. Two reports can generate concurrently per server process; a busy response asks you to retry. Bundles add a separate five-second history collection budget and a 1 MiB evidence cap. Timeline output is limited to 200 entries, with at most 100 traces and 100 stored operations sampled.
+A partial report is still useful. Expand the partial-report details to see failed sections, sample counts and omissions. Collection has a five-second budget, with up to 50 event samples, the newest 20 task runs plus the latest per task (at most 100 total), 20 recorded automatic-deletion run summaries and 100 rows per other query. Child lists can be paged. Oversized saved JSON values are omitted; exports retain valid JSON within a 512 KiB limit. Two reports can generate concurrently per server process; a busy response asks you to retry. Bundles add a separate five-second history collection budget and a 1 MiB evidence cap. Timeline output is limited to 200 entries, with at most 100 traces and 100 stored operations sampled.
 
 Observations are collected separately and carry timestamps. They are not one atomic database snapshot. A busy or missing database can leave runtime details available with database sections unavailable, **after authorization succeeds**. If the app cannot validate the administrator's session, it cannot safely issue a report; use the logs and [troubleshooting guide](../reference/troubleshooting.md).

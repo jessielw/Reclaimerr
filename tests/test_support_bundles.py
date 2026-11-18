@@ -96,6 +96,7 @@ def test_bundle_preview_archive_and_sqlite_share_only_allowlisted_data(
             "traces": [],
             "timeline": [e.model_dump(mode="json") for e in preview.timeline],
             "logs": [],
+            "checks": [],
         }
         all_bytes = b"".join(archive.read(name) for name in archive.namelist())
         for value in (

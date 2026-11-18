@@ -12,13 +12,15 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
-from uuid import uuid4
+from typing import Any, Literal, cast
+from uuid import UUID, uuid4
 
 from backend.core.__version__ import __version__
+from backend.core.auto_delete_diagnostics import SUMMARY_FIELDS
+from backend.core.operation_diagnostics import DEFERRAL_CODES
 from backend.core.rule_actions import get_arr_service_config_ids
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
-from backend.core.utils.filesystem import mapped_path_variants
+from backend.core.utils.filesystem import mapped_path_variants, normalize_fpath
 from backend.database.models import ServiceConfig
 from backend.enums import (
     BackgroundJobStatus,
@@ -31,9 +33,12 @@ from backend.enums import (
     TaskStatus,
 )
 from backend.models import diagnostics as m
+from backend.services.diagnostic_jobs import duplicate_targets
 from backend.services.diagnostics_export import Exporter, timestamp
 from backend.services.media_identity import MediaIdentityOwnership
 from backend.services.playback_selection import HistorySource, resolve_history_sources
+from backend.services.scheduled_deletions import schedule_inventory_overlap
+from backend.services.support_history import error_category
 
 MAX_BYTES = 512 * 1024
 BUDGET_SECONDS = 5.0
@@ -47,6 +52,21 @@ TABLES = {
     "series": "series",
     "season": "seasons",
     "episode": "episodes",
+}
+JOB_RESULT_COUNTERS = SUMMARY_FIELDS | {
+    "processed",
+    "succeeded",
+    "freed_bytes",
+    "moved",
+    "updated",
+    "synced",
+}
+JOB_PROGRESS_COUNTERS = {
+    "total_items",
+    "completed_items",
+    "failed_items",
+    "deferred_items",
+    "percent",
 }
 
 
@@ -357,12 +377,20 @@ class Collector:
             "auto_delete_series_delay_days",
             "playback_movie_min_seconds",
             "playback_episode_min_seconds",
+            "add_arr_import_exclusions_on_delete",
+            "favorites_ignore_enabled",
+            "favorites_protect_all_users",
+            "requester_watch_ignore_request_date",
         ]
         rows = self.query(
             "SELECT "
             + ",".join(columns)
             + ",move_destination_movies,move_destination_series,"
             + self.json_column("path_mappings")
+            + ",default_arr_delete_behavior,"
+            + self.json_column("favorites_usernames")
+            + ","
+            + self.json_column("requester_watch_user_mappings")
             + " FROM general_settings LIMIT 1"
         )
         if not rows:
@@ -379,8 +407,56 @@ class Collector:
             self.report.collection.omitted.append(
                 "path_mappings: missing or oversized saved value"
             )
+
+        def saved_list(name):
+            values = object_json(row[name])
+            if not isinstance(values, list):
+                self.report.collection.omitted.append(
+                    name + ": missing, malformed or oversized saved value"
+                )
+                return []
+            if len(values) > 100:
+                self.report.collection.truncated.append(
+                    m.Limit(section=name, returned=100, total=len(values))
+                )
+            return values[:100]
+
+        favorites = [
+            alias
+            for v in saved_list("favorites_usernames")
+            if (alias := self.export.user(v))
+        ]
+        mappings = []
+        for v in saved_list("requester_watch_user_mappings"):
+            if not isinstance(v, dict):
+                continue
+            config_id, user_id = (
+                integer(v.get("seerr_service_config_id")),
+                integer(v.get("seerr_user_id")),
+            )
+            mappings.append(
+                m.RequesterWatchMapping(
+                    seerr_service_config_id=config_id,
+                    seerr_user_id=self.export.user(
+                        f"{config_id}:{user_id}" if config_id is not None else user_id
+                    )
+                    if user_id is not None
+                    else None,
+                    seerr_username=self.export.user(v.get("seerr_username")),
+                    media_user_key=self.export.user(v.get("media_user_key")),
+                    service_type=enum_value(Service, v.get("service_type"))
+                    if isinstance(v.get("service_type"), str)
+                    else None,
+                )
+            )
         return m.Configuration(
             **{k: row[k] for k in columns},
+            default_arr_delete_behavior=row["default_arr_delete_behavior"]
+            if row["default_arr_delete_behavior"]
+            in ("delete", "unmonitor", "unmonitor_only", "remove_if_empty")
+            else "unknown",
+            favorites_usernames=favorites,
+            requester_watch_user_mappings=mappings,
             move_destination_movies=self.export.path(row["move_destination_movies"]),
             move_destination_series=self.export.path(row["move_destination_series"]),
             path_mappings=[
@@ -446,7 +522,37 @@ class Collector:
             )
         ]
 
-    def runs(self) -> list[m.RunInfo]:
+    def runs(self, since: datetime | None = None) -> list[m.RunInfo]:
+        where = "started_at>=? AND started_at<=?" if since else "1"
+        params = (
+            (
+                since.replace(tzinfo=None).isoformat(" "),
+                self.report.generated_at.replace(tzinfo=None).isoformat(" "),
+            )
+            if since
+            else ()
+        )
+        # Keep the latest run of every task as well as the newest 20 overall.
+        # Frequent refresh jobs must not hide the daily cleanup job.
+        rows = self.rows(
+            "recent_runs",
+            "(SELECT *, row_number() OVER (PARTITION BY task ORDER BY id DESC) AS task_rank, row_number() OVER (ORDER BY id DESC) AS recent_rank, count(*) OVER () AS total_runs FROM task_runs WHERE "
+            + where
+            + ")",
+            "id,task,status,started_at,completed_at,items_processed,error_message IS NOT NULL AS has_error,total_runs",
+            "task_rank=1 OR recent_rank<=20",
+            params,
+            order="task_rank=1 DESC,id DESC",
+        )
+        if rows and rows[0]["total_runs"] > len(rows):
+            self.report.collection.truncated.append(
+                m.Limit(
+                    section="recent_runs",
+                    returned=len(rows),
+                    total=rows[0]["total_runs"],
+                    reason="latest_per_task_and_recent_sample",
+                )
+            )
         return [
             m.RunInfo(
                 id=r["id"],
@@ -457,42 +563,196 @@ class Collector:
                 items_processed=r["items_processed"],
                 error="recorded_error_text_omitted" if r["has_error"] else None,
             )
-            for r in self.rows(
-                "recent_runs",
-                "task_runs",
-                "id,task,status,started_at,completed_at,items_processed,error_message IS NOT NULL AS has_error",
-                limit=20,
-                order="id DESC",
-            )
+            for r in rows
         ]
 
-    def jobs(self) -> list[m.JobInfo]:
+    def auto_delete_runs(
+        self, *, correlation_id: str | None = None, job_id: int | None = None
+    ) -> list[m.AutoDeleteRunInfo]:
+        since = self.report.generated_at - timedelta(days=self.history_days)
         result = []
-        for r in self.rows(
-            "active_jobs",
-            "background_jobs",
-            "id,job_type,status,attempts,created_at,scheduled_at,started_at,completed_at,error_message IS NOT NULL AS has_error",
-            "status IN ('PENDING','RUNNING')",
-            order="created_at,id",
+        where = "started_at>=? AND started_at<=? AND json_valid(context) AND json_extract(context,'$.purpose')='auto_delete'"
+        params: tuple = (
+            since.replace(tzinfo=None).isoformat(" "),
+            self.report.generated_at.replace(tzinfo=None).isoformat(" "),
+        )
+        if correlation_id is not None:
+            where += " AND id=?"
+            params += (correlation_id,)
+        if job_id is not None:
+            where += " AND job_id=?"
+            params += (job_id,)
+        for row in self.rows(
+            "auto_delete_runs",
+            "support_scan_runs",
+            "id,started_at,completed_at,job_id,dropped_traces,"
+            + self.json_column("context"),
+            where,
+            params,
+            limit=20,
+            order="started_at DESC",
         ):
-            created = timestamp(r["created_at"])
+            context = object_json(row["context"])
+            started_at = timestamp(row["started_at"])
+            if not isinstance(context, dict) or started_at is None:
+                continue
+            try:
+                run_id = str(UUID(row["id"]))
+            except (TypeError, ValueError):
+                continue
+            raw_summary = context.get("summary")
+            summary = (
+                {
+                    key: value
+                    for key, value in raw_summary.items()
+                    if key in SUMMARY_FIELDS
+                    and integer(value) is not None
+                    and value >= 0
+                }
+                if isinstance(raw_summary, dict)
+                else None
+            )
             result.append(
-                m.JobInfo(
-                    id=r["id"],
-                    job_type=enum_value(BackgroundJobType, r["job_type"]),
-                    status=enum_value(BackgroundJobStatus, r["status"]),
-                    attempts=r["attempts"],
-                    created_at=created,
-                    scheduled_at=timestamp(r["scheduled_at"]),
-                    started_at=timestamp(r["started_at"]),
-                    completed_at=timestamp(r["completed_at"]),
-                    queue_age_seconds=max(0, (now() - created).total_seconds())
-                    if created and r["status"] == "PENDING"
+                m.AutoDeleteRunInfo(
+                    correlation_id=run_id,
+                    started_at=started_at,
+                    completed_at=timestamp(row["completed_at"]),
+                    job_id=integer(row["job_id"]),
+                    status="completed"
+                    if context.get("status") == "completed"
+                    else "failed"
+                    if context.get("status") == "failed"
+                    else "interrupted"
+                    if context.get("status") == "interrupted"
+                    else "unknown",
+                    summary=summary,
+                    error_category=context.get("error_category")
+                    if isinstance(context.get("error_category"), str)
+                    and context.get("error_category")
+                    in {
+                        "database_busy",
+                        "timeout",
+                        "permission_denied",
+                        "authentication_failed",
+                        "not_found",
+                        "connection_failed",
+                        "playback_active",
+                        "recorded_error",
+                        "destination_collision",
+                        "verification_failed",
+                    }
                     else None,
-                    error="recorded_error_text_omitted" if r["has_error"] else None,
+                    dropped_decisions=max(
+                        0, integer(context.get("dropped_decisions")) or 0
+                    ),
+                    dropped_traces=max(0, integer(row["dropped_traces"]) or 0),
                 )
             )
         return result
+
+    def job_info(self, r: dict[str, Any]) -> m.JobInfo:
+        payload = object_json(r["payload"])
+        payload = payload if isinstance(payload, dict) else {}
+
+        def counters(name, fields):
+            values = payload.get(name)
+            if not isinstance(values, dict):
+                return None
+            return {
+                key: value
+                for key, value in values.items()
+                if key in fields and integer(value) is not None and 0 <= value < 2**63
+            }
+
+        task = (
+            enum_value(Task, payload.get("task"))
+            if isinstance(payload.get("task"), str)
+            else "unknown"
+        )
+        ids = payload.get("candidate_ids")
+        ids = ids if isinstance(ids, list) else []
+        created = timestamp(r["created_at"])
+        targets, targets_truncated = ([], False)
+        if r["job_type"] == "DUPLICATE_DELETE":
+            try:
+                targets, targets_truncated = duplicate_targets(payload, self.query)
+            except (sqlite3.Error, TimeoutError):
+                self.report.collection.omitted.append(
+                    "recent_jobs: some duplicate target associations unavailable"
+                )
+        return m.JobInfo(
+            id=r["id"],
+            job_type=enum_value(BackgroundJobType, r["job_type"]),
+            status=enum_value(BackgroundJobStatus, r["status"]),
+            attempts=r["attempts"],
+            created_at=created,
+            scheduled_at=timestamp(r["scheduled_at"]),
+            started_at=timestamp(r["started_at"]),
+            completed_at=timestamp(r["completed_at"]),
+            queue_age_seconds=max(0, (now() - created).total_seconds())
+            if created and r["status"] == "PENDING"
+            else None,
+            error="recorded_error_text_omitted" if r["error"] else None,
+            error_category=error_category(r["error"]),
+            task=task if task != "unknown" else None,
+            trigger=payload.get("trigger")
+            if payload.get("trigger") in ("manual", "scheduled", "system")
+            else None,
+            service_config_id=integer(payload.get("service_config_id")),
+            candidate_ids=[
+                v for v in ids[:100] if integer(v) is not None and 0 < v < 2**63
+            ],
+            candidate_ids_truncated=len(ids) > 100,
+            targets=targets,
+            targets_truncated=targets_truncated,
+            progress=counters("progress", JOB_PROGRESS_COUNTERS),
+            result=counters("result", JOB_RESULT_COUNTERS),
+        )
+
+    def job_columns(self) -> str:
+        return (
+            "id,job_type,status,attempts,created_at,scheduled_at,started_at,completed_at,substr(error_message,1,4096) AS error,"
+            + self.json_column("payload")
+        )
+
+    def jobs(self) -> list[m.JobInfo]:
+        return [
+            self.job_info(r)
+            for r in self.rows(
+                "active_jobs",
+                "background_jobs",
+                self.job_columns(),
+                "status IN ('PENDING','RUNNING')",
+                order="created_at,id",
+            )
+        ]
+
+    def recent_jobs(
+        self, where: str = "1", params: tuple = (), section="recent_jobs"
+    ) -> list[m.JobInfo]:
+        start = (
+            (self.report.generated_at - timedelta(days=self.history_days))
+            .replace(tzinfo=None)
+            .isoformat(" ")
+        )
+        # Preserve each task's latest job and latest failure ahead of the general sample.
+        task_key = "CASE WHEN job_type='TASK_RUN' AND json_valid(payload) THEN json_extract(payload,'$.task') END"
+        rows = self.rows(
+            section,
+            "(SELECT *,row_number() OVER (PARTITION BY job_type,"
+            + task_key
+            + " ORDER BY id DESC) AS task_rank,"
+            "row_number() OVER (PARTITION BY job_type,"
+            + task_key
+            + ",status ORDER BY id DESC) AS status_rank "
+            "FROM background_jobs WHERE (created_at>=? OR started_at>=? OR completed_at>=?) AND ("
+            + where
+            + "))",
+            self.job_columns(),
+            params=(start, start, start, *params),
+            order="(status='FAILED' AND status_rank=1) DESC,task_rank=1 DESC,status='FAILED' DESC,id DESC",
+        )
+        return [self.job_info(r) for r in rows]
 
     def identity_row(self, scope: m.Scope, row: dict[str, Any]) -> m.Identity:
         fields = {
@@ -752,9 +1012,9 @@ class Collector:
         )
         for table, kind in aggregate_tables:
             columns = (
-                "target_scope,target_id,play_count,unique_user_count,last_activity_at,"
+                "target_scope,target_id,play_count,unique_user_count,last_activity_at,usernames_complete,"
                 + (
-                    "source_service_config_id,refreshed_at"
+                    "source_service_config_id,refreshed_at,has_activity"
                     if kind == "native"
                     else "total_duration_seconds,updated_at"
                 )
@@ -779,6 +1039,27 @@ class Collector:
                         last_activity_at=timestamp(r["last_activity_at"]),
                         refreshed_at=refreshed,
                         total_duration_seconds=r.get("total_duration_seconds"),
+                        has_activity=bool(r["has_activity"])
+                        if kind == "native"
+                        else None,
+                        usernames_complete=bool(r["usernames_complete"]),
+                        unavailable_fields={
+                            **(
+                                {"playback.usernames": "incomplete_usernames"}
+                                if not r["usernames_complete"]
+                                else {}
+                            ),
+                            **(
+                                {
+                                    "playback.last_activity_at": "activity_date_unknown",
+                                    "playback.days_since_last_activity": "activity_date_unknown",
+                                }
+                                if kind == "native"
+                                and r["has_activity"]
+                                and r["last_activity_at"] is None
+                                else {}
+                            ),
+                        },
                         note="Stored native snapshot."
                         if kind == "native"
                         else "Legacy combined aggregate; not authoritative for current provider selection.",
@@ -835,6 +1116,8 @@ class Collector:
             "id,source_service,source_service_config_id,source_event_key,source_item_id,observed_service_config_id,source_user_id,source_username,played_at,duration_seconds,completed,"
             + scope
             + "_id AS stored_id"
+            + ","
+            + self.json_column("identity_evidence")
         )
         for r in self.rows(
             "playback_events",
@@ -861,6 +1144,7 @@ class Collector:
                     )
                 )
             user = r["source_user_id"] or r["source_username"]
+            identity = object_json(r["identity_evidence"])
             result.events.append(
                 m.EventInfo(
                     id=r["id"],
@@ -878,7 +1162,7 @@ class Collector:
                     )
                     if user
                     else None,
-                    username=self.export.alias("user", r["source_username"]),
+                    username=self.export.user(r["source_username"]),
                     played_at=timestamp(r["played_at"]),
                     duration_seconds=r["duration_seconds"],
                     completed=r["completed"],
@@ -886,6 +1170,12 @@ class Collector:
                     association="stored_target_link"
                     if r["stored_id"] == identifier
                     else "canonical_id_only",
+                    identity_conflict=bool(identity.get("conflict"))
+                    if isinstance(identity, dict)
+                    else None,
+                    identity_unverified=bool(identity.get("unverified"))
+                    if isinstance(identity, dict)
+                    else None,
                 )
             )
         result.stored_event_count = self.query(
@@ -922,6 +1212,11 @@ class Collector:
 
     def decisions(self) -> m.Decisions:
         where, params = self.decision_filter()
+        parent = "movie" if "movie_id" in self.context else "series"
+        blocker_where, blocker_params = (
+            parent + "_id=?",
+            (self.context[parent + "_id"],),
+        )
         ids = "id,movie_id,movie_version_id,series_id,season_id,episode_id"
         result = m.Decisions()
         rule_ids: set[int] = set()
@@ -931,6 +1226,10 @@ class Collector:
             + self.json_column("reason_data")
             + ","
             + self.json_column("matched_rule_ids")
+            + ","
+            + self.json_column("playback_deferral")
+            + ","
+            + self.json_column("matched_criteria")
         )
         for r in self.rows("candidates", "reclaim_candidates", columns, where, params):
             matched = object_json(r["matched_rule_ids"])
@@ -940,6 +1239,22 @@ class Collector:
                 else []
             )
             rule_ids.update(matched)
+            criteria = object_json(r["matched_criteria"])
+            unavailable = (
+                criteria.get("_unavailable_rule_ids")
+                if isinstance(criteria, dict)
+                else None
+            )
+            unavailable = (
+                [v for v in unavailable[:100] if integer(v) is not None and v > 0]
+                if isinstance(unavailable, list)
+                else []
+            )
+            rule_ids.update(unavailable)
+            resync = self.query(
+                "SELECT path FROM candidate_resync_identities WHERE candidate_id=? LIMIT 1",
+                (r["id"],),
+            )
             conditions = []
             reasons = object_json(r["reason_data"])
             for reason in reasons[:100] if isinstance(reasons, list) else []:
@@ -998,22 +1313,33 @@ class Collector:
                         r["auto_delete_timer_started_at"]
                     ),
                     delete_request_id=r["delete_request_id"],
+                    playback_deferral=self.deferral(
+                        object_json(r["playback_deferral"])
+                    ),
+                    unavailable_rule_ids=unavailable,
+                    resync_pending=bool(resync),
+                    resync_path=self.export.path(resync[0]["path"]) if resync else None,
                 )
             )
         for r in self.rows(
             "protections",
             "protected_media",
             ids + ",permanent,expires_at,source_rule_id",
-            where,
-            params,
+            blocker_where,
+            blocker_params,
         ):
+            expires = timestamp(r["expires_at"])
             result.protections.append(
                 m.ProtectionInfo(
                     id=r["id"],
                     target=target_of(r),
                     permanent=bool(r["permanent"]),
-                    expires_at=timestamp(r["expires_at"]),
+                    expires_at=expires,
                     source_rule_id=r["source_rule_id"],
+                    relationship=self.relationship(r),
+                    active=bool(r["permanent"])
+                    or r["expires_at"] is None
+                    or (expires is not None and expires > self.report.generated_at),
                 )
             )
             if r["source_rule_id"]:
@@ -1022,10 +1348,15 @@ class Collector:
             "deletion_requests",
             "delete_requests",
             ids
-            + ",status,reviewed_at,executed_at,execution_error IS NOT NULL AS has_error",
-            where,
-            params,
+            + ",status,reviewed_at,executed_at,execution_error IS NOT NULL AS has_error,"
+            + self.json_column("playback_deferral"),
+            blocker_where,
+            blocker_params,
         ):
+            resync = self.query(
+                "SELECT path FROM delete_request_resync_identities WHERE delete_request_id=? LIMIT 1",
+                (r["id"],),
+            )
             result.deletion_requests.append(
                 m.ReviewInfo(
                     id=r["id"],
@@ -1034,14 +1365,20 @@ class Collector:
                     reviewed_at=timestamp(r["reviewed_at"]),
                     executed_at=timestamp(r["executed_at"]),
                     error="recorded_error_text_omitted" if r["has_error"] else None,
+                    relationship=self.relationship(r),
+                    playback_deferral=self.deferral(
+                        object_json(r["playback_deferral"])
+                    ),
+                    resync_pending=bool(resync),
+                    resync_path=self.export.path(resync[0]["path"]) if resync else None,
                 )
             )
         for r in self.rows(
             "protection_requests",
             "protection_requests",
             ids + ",status,reviewed_at",
-            where,
-            params,
+            blocker_where,
+            blocker_params,
         ):
             result.protection_requests.append(
                 m.ReviewInfo(
@@ -1049,6 +1386,7 @@ class Collector:
                     target=target_of(r),
                     status=enum_value(ProtectionRequestStatus, r["status"]),
                     reviewed_at=timestamp(r["reviewed_at"]),
+                    relationship=self.relationship(r),
                 )
             )
         if rule_ids:
@@ -1100,6 +1438,19 @@ class Collector:
                         sonarr_service_config_ids=get_arr_service_config_ids(
                             action, "sonarr"
                         )[:100],
+                        quality_profile_id=integer(action.get("quality_profile_id")),
+                        trigger_search=action.get("trigger_search")
+                        if isinstance(action.get("trigger_search"), bool)
+                        else None,
+                        candidate=action.get("candidate")
+                        if isinstance(action.get("candidate"), bool)
+                        else None,
+                        tag_enabled=action.get("tag_enabled")
+                        if isinstance(action.get("tag_enabled"), bool)
+                        else None,
+                        arr_tag=self.export.alias("tag", action.get("arr_tag"))
+                        if isinstance(action.get("arr_tag"), str)
+                        else None,
                     )
                 result.rules.append(
                     m.RuleInfo(
@@ -1113,7 +1464,198 @@ class Collector:
                         action=safe_action,
                     )
                 )
+        result.scheduled_deletions = self.scheduled_deletions()
         return result
+
+    def relationship(self, row: dict[str, Any]):
+        selected = self.report.target
+        assert selected is not None
+        actual = target_of(row)
+        if actual == selected:
+            return "selected"
+        if row.get(selected.scope + "_id") == selected.id:
+            return "descendant"
+        if self.context.get(actual.scope + "_id") == actual.id:
+            return "ancestor"
+        return "sibling"
+
+    def scheduled_deletions(self) -> list[m.ScheduledDeletionInfo]:
+        target = self.report.target
+        assert target is not None
+        parent = "movie" if "movie_id" in self.context else "series"
+        media_id = self.context[parent + "_id"]
+        # Collect bounded stored paths only. No filesystem/provider checks.
+        if parent == "movie":
+            paths = self.rows(
+                "schedule_inventory",
+                "movie_versions",
+                "path",
+                "movie_id=?" + (" AND id=?" if target.scope == "movie_version" else ""),
+                (media_id, target.id)
+                if target.scope == "movie_version"
+                else (media_id,),
+            )
+        else:
+            selected = "s.series_id=?" + (
+                " AND s.id=?"
+                if target.scope == "season"
+                else " AND e.id=?"
+                if target.scope == "episode"
+                else ""
+            )
+            args = (
+                (media_id, target.id)
+                if target.scope in ("season", "episode")
+                else (media_id,)
+            )
+            paths = self.rows(
+                "schedule_inventory",
+                "episodes e JOIN seasons s ON s.id=e.season_id LEFT JOIN episode_versions v ON v.episode_id=e.id",
+                "e.path AS episode_path,v.path",
+                selected,
+                args,
+                order="e.id,v.id",
+            )
+        inventory = {
+            "files": {
+                p: None
+                for row in paths
+                for p in (row.get("path"), row.get("episode_path"))
+                if isinstance(p, str) and p
+            },
+            "directories": [],
+        }
+        if parent == "series" and target.scope != "episode":
+            roots = {
+                normalize_fpath(r["path"], strip_ending_slash=True)
+                for r in self.rows(
+                    "schedule_inventory",
+                    "series_service_refs",
+                    "path",
+                    "series_id=?",
+                    (media_id,),
+                )
+                if r["path"]
+            }
+            seasons = self.rows(
+                "schedule_inventory",
+                "seasons",
+                "id,path," + self.json_column("episode_paths"),
+                "series_id=?" + (" AND id=?" if target.scope == "season" else ""),
+                (media_id, target.id) if target.scope == "season" else (media_id,),
+            )
+            for season in seasons:
+                saved_paths = object_json(season["episode_paths"])
+                if isinstance(saved_paths, list) and len(saved_paths) > 100:
+                    self.report.collection.truncated.append(
+                        m.Limit(
+                            section="schedule_inventory",
+                            returned=100,
+                            total=len(saved_paths),
+                            reason="stored_episode_path_sample",
+                        )
+                    )
+                for path in saved_paths[:100] if isinstance(saved_paths, list) else []:
+                    if isinstance(path, str) and path:
+                        inventory["files"][path] = None
+                if season["path"] and (
+                    target.scope == "series"
+                    or normalize_fpath(season["path"], strip_ending_slash=True)
+                    not in roots
+                ):
+                    inventory["directories"].append(season["path"])
+            if target.scope == "series":
+                inventory["directories"].extend(roots)
+        result = []
+        for row in self.rows(
+            "scheduled_deletions",
+            "(SELECT *,CASE WHEN json_valid(target) THEN json_extract(target,'$.media_type')=? AND json_extract(target,'$.media_id')=? ELSE 0 END AS same_parent FROM scheduled_deletions)",
+            "id,state,scheduled_at,created_at,completed_at,job_id,created_by_username,substr(last_error,1,4096) AS error,"
+            + self.json_column("target"),
+            "state IN ('scheduled','running','blocked','failed')",
+            order="same_parent DESC,scheduled_at,id",
+            params=(parent, media_id),
+        ):
+            saved = object_json(row["target"])
+            if (
+                not isinstance(saved, dict)
+                or saved.get("media_type") not in ("movie", "series")
+                or saved.get("scope")
+                not in ("movie", "version", "series", "season", "episode")
+                or integer(saved.get("media_id")) is None
+                or saved["media_id"] <= 0
+            ):
+                continue
+            same = saved["media_type"] == parent and saved["media_id"] == media_id
+            scope_hold = same and (
+                target.scope in ("movie", "series")
+                or saved["scope"] in ("movie", "series")
+                or target.scope == "movie_version"
+                and saved.get("movie_version_id") == target.id
+                or target.scope in ("season", "episode")
+                and saved.get("season_number") == self.context.get("season_number")
+                and (
+                    target.scope == "season"
+                    or saved["scope"] == "season"
+                    or saved.get("episode_number") == self.context.get("episode_number")
+                )
+            )
+            overlap = False
+            if isinstance(saved.get("inventory"), dict):
+                try:
+                    overlap = schedule_inventory_overlap(inventory, saved)
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    self.report.collection.omitted.append(
+                        "scheduled_deletions: malformed stored inventory omitted"
+                    )
+            if not same and not overlap:
+                continue
+            scope = "movie_version" if saved["scope"] == "version" else saved["scope"]
+            identifier = (
+                saved["media_id"]
+                if scope in ("movie", "series")
+                else integer(saved.get(scope + "_id"))
+            )
+            result.append(
+                m.ScheduledDeletionInfo(
+                    id=row["id"],
+                    media_target=m.Target(
+                        scope=saved["media_type"], id=saved["media_id"]
+                    ),
+                    target=m.Target(scope=scope, id=identifier)
+                    if identifier and identifier > 0
+                    else None,
+                    scope=saved["scope"],
+                    scheduled_at=timestamp(row["scheduled_at"]),
+                    created_at=timestamp(row["created_at"]),
+                    completed_at=timestamp(row["completed_at"]),
+                    state=row["state"],
+                    job_id=row["job_id"],
+                    actor=self.export.user(row["created_by_username"]),
+                    error_category=error_category(row["error"]),
+                    holds_selected_scope=scope_hold,
+                    stored_path_overlap=overlap,
+                )
+            )
+        return result
+
+    def deferral(self, value: object) -> m.DeferralInfo | None:
+        if not isinstance(value, dict):
+            return None
+        code = value.get("code")
+        ids = value.get("server_config_ids")
+        steps = value.get("completed_steps")
+        return m.DeferralInfo(
+            code=cast(
+                m.DeferralCode,
+                code if isinstance(code, str) and code in DEFERRAL_CODES else "unknown",
+            ),
+            checked_at=timestamp(value.get("checked_at")),
+            server_config_ids=[v for v in ids[:100] if integer(v) is not None and v > 0]
+            if isinstance(ids, list)
+            else [],
+            completed_step_count=len(steps) if isinstance(steps, list) else None,
+        )
 
     def finish(self) -> m.DiagnosticsReport:
         report = self.report
@@ -1169,6 +1711,7 @@ class Collector:
             "services",
             "configuration",
             "recent_runs",
+            "recent_jobs",
             "active_jobs",
             "schedules",
             "identity",
@@ -1215,6 +1758,8 @@ class Collector:
                 self.section("schedules", self.schedules)
                 self.section("active_jobs", self.jobs)
                 self.section("recent_runs", self.runs)
+                self.section("recent_jobs", self.recent_jobs)
+                self.section("auto_delete_runs", self.auto_delete_runs)
                 self.section("playback", self.playback)
         finally:
             if self.db is not None:

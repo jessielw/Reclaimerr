@@ -3,8 +3,9 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import case, delete, func, or_, select
 
+from backend.core.auto_delete_diagnostics import AutoDeleteRecorder
 from backend.core.diagnostic_trace import ScanRecorder, job_id
 from backend.core.logger import LOG
 from backend.core.operation_diagnostics import OperationRecorder
@@ -91,14 +92,41 @@ async def trim_history(db) -> None:
         )
     )
     await db.execute(
+        delete(SupportOperationEvent).where(SupportOperationEvent.occurred_at < cutoff)
+    )
+    ranked = select(
+        SupportOperationEvent.id,
+        SupportOperationEvent.event_type,
+        SupportOperationEvent.occurred_at,
+        func.row_number()
+        .over(
+            partition_by=(
+                SupportOperationEvent.event_type,
+                SupportOperationEvent.target_scope,
+                SupportOperationEvent.target_id,
+            ),
+            order_by=(
+                SupportOperationEvent.occurred_at.desc(),
+                SupportOperationEvent.id.desc(),
+            ),
+        )
+        .label("target_rank"),
+    ).subquery()
+    # Preserve each target's latest outcome and automatic decision before noisy steps.
+    priority = case(
+        (
+            ranked.c.event_type.in_(("item_outcome", "auto_delete_decision"))
+            & (ranked.c.target_rank == 1),
+            0,
+        ),
+        else_=1,
+    )
+    await db.execute(
         delete(SupportOperationEvent).where(
-            or_(
-                SupportOperationEvent.occurred_at < cutoff,
-                SupportOperationEvent.id.in_(
-                    select(SupportOperationEvent.id)
-                    .order_by(SupportOperationEvent.id.desc())
-                    .offset(5000)
-                ),
+            SupportOperationEvent.id.in_(
+                select(ranked.c.id)
+                .order_by(priority, ranked.c.occurred_at.desc(), ranked.c.id.desc())
+                .offset(5000)
             )
         )
     )
@@ -242,11 +270,47 @@ async def record_operations(
         LOG.warning("Support operation history could not be recorded")
 
 
+async def persist_auto_delete_history(
+    recorder: AutoDeleteRecorder, *, session_factory=None
+) -> None:
+    """Record skips as well as authorizations after operational sessions close."""
+    recorder.scan.context["dropped_decisions"] = recorder.dropped
+    try:
+        async with (session_factory or async_db)() as db:
+            await persist_scan(db, recorder.scan)
+            for values in recorder.decisions.values():
+                db.add(
+                    SupportOperationEvent(
+                        correlation_id=recorder.scan.scan_id,
+                        event_type="auto_delete_decision",
+                        job_id=job_id(),
+                        error_category=values["detail"].get("error_category"),
+                        **values,
+                    )
+                )
+            await db.flush()
+            await trim_history(db)
+            await db.commit()
+    except Exception:
+        LOG.warning(
+            "Automatic deletion history could not be recorded; task result is unchanged"
+        )
+
+
 async def persist_operation_details(
-    snapshots: list[dict], correlation_id: str, recorder: OperationRecorder
+    snapshots: list[dict],
+    correlation_id: str,
+    recorder: OperationRecorder,
+    *,
+    session_factory=None,
 ) -> None:
     """Flush observations only after the operation's own transactions finish."""
-    targets = {row["candidate_id"]: row for row in snapshots}
+    targets = {
+        row.get("observation_key", row["candidate_id"]): {
+            k: v for k, v in row.items() if k != "observation_key"
+        }
+        for row in snapshots
+    }
     try:
         dropped = recorder.dropped + max(
             0,
@@ -257,7 +321,7 @@ async def persist_operation_details(
             )
             - 4000,
         )
-        async with async_db() as db:
+        async with (session_factory or async_db)() as db:
             count = 0
             # Reserve capacity for final per-candidate outcomes even in large batches.
             for event, values in (
@@ -281,10 +345,13 @@ async def persist_operation_details(
                                 "destination",
                                 "provider",
                                 "reference",
+                                "deferral_code",
+                                "reason",
                             )
                         }
                         detail["shared_request"] = len(value["candidate_ids"]) > 1
                         detail["dropped_observations"] = dropped
+                        detail["kind"] = recorder.kind
                         db.add(
                             SupportOperationEvent(
                                 correlation_id=correlation_id,

@@ -24,6 +24,7 @@ from backend.database.models import (
     Series,
     SeriesArrRef,
     ServiceConfig,
+    SupportOperationEvent,
     User,
 )
 from backend.enums import MediaType, Permission, Service, UserRole
@@ -563,6 +564,24 @@ def test_job_deletes_only_the_picked_file_via_radarr(monkeypatch) -> None:
             )
 
             assert freed == 4_000
+            async with sm() as db:
+                observations = (await db.scalars(select(SupportOperationEvent))).all()
+                assert observations
+                assert all(
+                    row.candidate_id is None and row.target_id == ids[0]
+                    for row in observations
+                )
+                assert any(
+                    row.event_type == "item_outcome"
+                    and row.detail["kind"] == "duplicate"
+                    and row.detail["outcome"] == "succeeded"
+                    for row in observations
+                )
+                assert any(
+                    row.event_type == "operation_step"
+                    and row.detail["stage"] == "playback_guard"
+                    for row in observations
+                )
             assert radarr.deleted_file_ids == [[901]]
             # the entry keeps its better file: never unmonitored or removed
             assert radarr.unmonitored == []

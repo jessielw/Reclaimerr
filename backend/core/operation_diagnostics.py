@@ -32,13 +32,21 @@ STAGES = {
     "completed",
     "unknown",
 }
-OUTCOMES = {"succeeded", "failed", "deferred", "unknown"}
+OUTCOMES = {"succeeded", "failed", "deferred", "skipped", "unknown"}
+REASONS = {"favorites_protection", "sibling_protection"}
 SUBJECTS = {"file", "directory", "path", "candidate", "provider_request"}
+DEFERRAL_CODES = {
+    "currently_playing",
+    "playback_unavailable",
+    "resync_pending",
+    "manual_deletion_scheduled",
+}
 
 
 @dataclass
 class OperationRecorder:
     action: str
+    kind: str = "candidate"
     steps: list[dict[str, Any]] = field(default_factory=list)
     outcomes: dict[int, dict[str, Any]] = field(default_factory=dict)
     dropped: int = 0
@@ -243,9 +251,14 @@ def record_outcome(
     path=None,
     destination=None,
     action=None,
+    deferral_code=None,
+    reason=None,
+    fallback=False,
 ) -> None:
     recorder = current_operation_recorder.get()
     if recorder is None or candidate_id is None or outcome not in OUTCOMES:
+        return
+    if fallback and candidate_id in recorder.outcomes:
         return
     if len(recorder.outcomes) >= 1000 and candidate_id not in recorder.outcomes:
         recorder.dropped += 1
@@ -269,5 +282,9 @@ def record_outcome(
         "destination": _path(destination),
         "provider": None,
         "reference": None,
+        "deferral_code": deferral_code
+        if isinstance(deferral_code, str) and deferral_code in DEFERRAL_CODES
+        else None,
+        "reason": reason if isinstance(reason, str) and reason in REASONS else None,
         "occurred_at": datetime.now(UTC),
     }

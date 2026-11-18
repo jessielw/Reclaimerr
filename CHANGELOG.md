@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.13] - 2026-11-17
+
+### Fixed
+
+- Bounded automatic-deletion recording favors actionable and rejected decisions over waiting/disabled candidates. Operation retention preserves each target's latest final outcome and automatic decision before intermediate events.
+- Operation diagnostics record late favorites and sibling-protection skips with explicit reasons. A generic failure diagnosis no longer replaces an already-recorded guard outcome.
+- Future duplicate and upgrade-leftover deletions retain operation checks, provider/file observations and final outcomes after their target rows disappear, without inventing cleanup candidate IDs. Recording failures leave the operation result unchanged.
+- Playback diagnostics include stored activity and username-completeness flags, field-specific unavailability reasons and safe event identity-conflict indicators.
+- Duplicate and upgrade-leftover job lookup resolves stored target associations, and relevant jobs appear in media timelines even before operation tracking starts.
+- Diagnostics export favorites controls, aliased requester-watch mappings, ARR fallback settings and complete quality-profile action targets, preserving identity relationships across settings and rule evidence.
+- Media diagnostics include sibling protections and requests that can block automatic cleanup, stored resync/unavailable-rule holds, manual deletion schedules and deletion-request playback deferrals.
+- Support timelines preserve the latest final outcome and automatic-deletion decision for each target/run before sampling intermediate failures, so older errors cannot hide a successful recovery.
+- Support bundles include stored background-job result counters, task identities and categorized failures, including failures before task tracking starts. Recent job samples preserve each task's latest job and failure.
+- Support bundles retain the latest run of every task, so frequent playback refreshes cannot hide cleanup task runs. Stored playback deferrals and recorded automatic-deletion decisions explain why a completed task left a candidate in place.
+- Cleanup scans preserve candidates' original flag dates and deletion timers when a previously matched rule is skipped or its data is temporarily unavailable. Automatic deletion stays on hold until a successful scan verifies the candidate; confirmed non-matches are still removed. #526
+- Cron task schedules now use standard weekday numbering: `0` and `7` are Sunday, and `1-5` is Monday through Friday. Weekly defaults and presets now use weekday names. Invalid cron expressions are rejected before saving, including for disabled tasks. #525
+
+### Changed
+
+- Support bundles can optionally attach up to five already-completed diagnostic checks, preserving their timestamps and scope without rerunning them. Check snapshots are cached briefly for the requesting administrator and respect path-sharing controls.
+- Candidate and deletion support bundles select all diagnostic sections by default and show automatic-deletion run totals, revalidation evidence and missing-history limitations. Preparing a bundle does not rerun rules or retry deletion.
+- **Upgrade note:** Existing cron schedules with numeric weekdays now run on the corrected days. Review custom task schedules after upgrading, especially automatic deletion schedules. Saved expressions are preserved; untouched weekly defaults switch to named weekdays.
+- Updated fastapi and platformdirs.
+
 ## [0.6.12] - 2026-11-14
 
 ### Changed

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -142,6 +143,14 @@ class PathMapping(ExportModel):
     server_id: int | None = None
 
 
+class RequesterWatchMapping(ExportModel):
+    seerr_service_config_id: int | None = None
+    seerr_user_id: str | None = None
+    seerr_username: str | None = None
+    media_user_key: str | None = None
+    service_type: str | None = None
+
+
 class Configuration(ExportModel):
     path_mappings: list[PathMapping] = Field(default_factory=list)
     move_destination_movies: str | None = None
@@ -153,6 +162,17 @@ class Configuration(ExportModel):
     auto_delete_series_delay_days: int
     playback_movie_min_seconds: int
     playback_episode_min_seconds: int
+    default_arr_delete_behavior: Literal[
+        "delete", "unmonitor", "unmonitor_only", "remove_if_empty", "unknown"
+    ]
+    add_arr_import_exclusions_on_delete: bool
+    favorites_ignore_enabled: bool
+    favorites_protect_all_users: bool
+    favorites_usernames: list[str] = Field(default_factory=list)
+    requester_watch_ignore_request_date: bool
+    requester_watch_user_mappings: list[RequesterWatchMapping] = Field(
+        default_factory=list
+    )
 
 
 class DatabaseInfo(ExportModel):
@@ -186,6 +206,18 @@ class RunInfo(ExportModel):
     error: Literal["recorded_error_text_omitted"] | None = None
 
 
+class AutoDeleteRunInfo(ExportModel):
+    correlation_id: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    job_id: int | None = None
+    status: Literal["completed", "failed", "interrupted", "unknown"]
+    summary: dict[str, int] | None = None
+    error_category: str | None = None
+    dropped_decisions: int = 0
+    dropped_traces: int = 0
+
+
 class JobInfo(ExportModel):
     id: int
     job_type: str
@@ -197,6 +229,18 @@ class JobInfo(ExportModel):
     completed_at: datetime | None = None
     queue_age_seconds: float | None = None
     error: Literal["recorded_error_text_omitted"] | None = None
+    error_category: str | None = None
+    task: str | None = None
+    trigger: Literal["manual", "scheduled", "system"] | None = None
+    service_config_id: int | None = None
+    candidate_ids: list[int] = Field(default_factory=list)
+    candidate_ids_truncated: bool = False
+    targets: list[Target] = Field(default_factory=list)
+    targets_truncated: bool = False
+    progress: dict[str, int] | None = None
+    result: dict[str, int] | None = None
+    scope: Literal["app_wide"] = "app_wide"
+    note: str = "Stored job context; task totals do not establish an individual target's outcome. Missing counters are unknown."
 
 
 class Identity(ExportModel):
@@ -249,6 +293,11 @@ class Aggregate(ExportModel):
     last_activity_at: datetime | None = None
     refreshed_at: datetime | None = None
     total_duration_seconds: int | None = None
+    has_activity: bool | None = None
+    usernames_complete: bool | None = None
+    unavailable_fields: dict[
+        str, Literal["activity_date_unknown", "incomplete_usernames"]
+    ] = Field(default_factory=dict)
     note: str
 
 
@@ -265,6 +314,8 @@ class EventInfo(ExportModel):
     completed: bool | None = None
     selected_source: bool | None = None
     association: Literal["stored_target_link", "canonical_id_only"]
+    identity_conflict: bool | None = None
+    identity_unverified: bool | None = None
 
 
 class Playback(ExportModel):
@@ -288,6 +339,22 @@ class Condition(ExportModel):
     actual: JsonValue = None
 
 
+DeferralCode = Literal[
+    "currently_playing",
+    "playback_unavailable",
+    "resync_pending",
+    "manual_deletion_scheduled",
+    "unknown",
+]
+
+
+class DeferralInfo(ExportModel):
+    code: DeferralCode
+    checked_at: datetime | None = None
+    server_config_ids: list[int] = Field(default_factory=list)
+    completed_step_count: int | None = None
+
+
 class CandidateInfo(ExportModel):
     id: int
     target: Target
@@ -305,6 +372,10 @@ class CandidateInfo(ExportModel):
     auto_delete_postponed_until: datetime | None = None
     auto_delete_timer_started_at: datetime | None = None
     delete_request_id: int | None = None
+    playback_deferral: DeferralInfo | None = None
+    unavailable_rule_ids: list[int] = Field(default_factory=list)
+    resync_pending: bool | None = None
+    resync_path: str | None = None
 
 
 class RuleAction(ExportModel):
@@ -327,6 +398,11 @@ class RuleAction(ExportModel):
     move_instead_of_delete: bool | None = None
     radarr_service_config_ids: list[int] = Field(default_factory=list)
     sonarr_service_config_ids: list[int] = Field(default_factory=list)
+    quality_profile_id: int | None = None
+    trigger_search: bool | None = None
+    candidate: bool | None = None
+    tag_enabled: bool | None = None
+    arr_tag: str | None = None
 
 
 class RuleInfo(ExportModel):
@@ -345,6 +421,8 @@ class ProtectionInfo(ExportModel):
     permanent: bool
     expires_at: datetime | None = None
     source_rule_id: int | None = None
+    relationship: Literal["selected", "ancestor", "descendant", "sibling"] = "selected"
+    active: bool = False
 
 
 class ReviewInfo(ExportModel):
@@ -354,6 +432,27 @@ class ReviewInfo(ExportModel):
     reviewed_at: datetime | None = None
     executed_at: datetime | None = None
     error: Literal["recorded_error_text_omitted"] | None = None
+    relationship: Literal["selected", "ancestor", "descendant", "sibling"] = "selected"
+    playback_deferral: DeferralInfo | None = None
+    resync_pending: bool | None = None
+    resync_path: str | None = None
+
+
+class ScheduledDeletionInfo(ExportModel):
+    id: int
+    media_target: Target
+    target: Target | None = None
+    scope: Literal["movie", "version", "series", "season", "episode"]
+    scheduled_at: datetime | None = None
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+    state: Literal["scheduled", "running", "blocked", "failed", "unknown"]
+    job_id: int | None = None
+    actor: str | None = None
+    error_category: str | None = None
+    holds_selected_scope: bool = False
+    stored_path_overlap: bool = False
+    note: str = "Active manual deletion intent from stored state. Scope/path overlap holds cleanup until resolved; same-parent context alone does not establish a hold. No inventory or permissions revalidated."
 
 
 class Decisions(ExportModel):
@@ -363,6 +462,7 @@ class Decisions(ExportModel):
     protections: list[ProtectionInfo] = Field(default_factory=list)
     deletion_requests: list[ReviewInfo] = Field(default_factory=list)
     protection_requests: list[ReviewInfo] = Field(default_factory=list)
+    scheduled_deletions: list[ScheduledDeletionInfo] = Field(default_factory=list)
 
 
 class Sections(ExportModel):
@@ -372,7 +472,9 @@ class Sections(ExportModel):
     configuration: Configuration | None = None
     schedules: list[ScheduleInfo] | None = None
     recent_runs: list[RunInfo] | None = None
+    auto_delete_runs: list[AutoDeleteRunInfo] | None = None
     active_jobs: list[JobInfo] | None = None
+    recent_jobs: list[JobInfo] | None = None
     identity: Identity | None = None
     children: list[Identity] | None = None
     storage: list[StorageIdentity] | None = None
@@ -409,6 +511,7 @@ class BundleOptions(DiagnosticsOptions):
     include_sqlite: bool = False
     include_logs: bool = False
     support_code: str | None = Field(default=None, max_length=80)
+    check_ids: list[UUID] = Field(default_factory=list, max_length=5)
 
     @field_validator("support_code")
     @classmethod
@@ -424,14 +527,17 @@ class BundleOptions(DiagnosticsOptions):
                 "candidate": [
                     "services",
                     "configuration",
+                    "storage",
                     "playback",
                     "decisions",
+                    "tasks",
                     "timeline",
                 ],
                 "deletion": [
                     "services",
                     "configuration",
                     "storage",
+                    "playback",
                     "decisions",
                     "tasks",
                     "timeline",
@@ -468,9 +574,11 @@ class DecisionTrace(ExportModel):
 
 
 class OperationDetail(ExportModel):
+    kind: Literal["candidate", "duplicate", "upgrade_leftover"] = "candidate"
     action: Literal["move", "delete", "unknown"]
     stage: str
-    outcome: Literal["succeeded", "failed", "deferred", "unknown"]
+    outcome: Literal["succeeded", "failed", "deferred", "skipped", "unknown"]
+    reason: Literal["favorites_protection", "sibling_protection"] | None = None
     subject: Literal["file", "directory", "path", "candidate", "provider_request"]
     path: str | None = None
     destination: str | None = None
@@ -478,6 +586,20 @@ class OperationDetail(ExportModel):
     reference: str | None = None
     shared_request: bool = False
     dropped_observations: int = 0
+    deferral_code: str | None = None
+
+
+class AutoDeleteDecisionDetail(ExportModel):
+    stage: Literal["selection", "revalidation", "dispatch"]
+    outcome: Literal["eligible", "waiting", "skipped", "authorized"]
+    reason: str
+    rule_ids: list[int] = Field(default_factory=list)
+    matched_rule_ids: list[int] = Field(default_factory=list)
+    unavailable_rule_ids: list[int] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    eligible_at: datetime | None = None
+    coverage: dict[str, int | bool] = Field(default_factory=dict)
+    note: str = "Observed during automatic deletion. Authorization is not proof of deletion. Coverage counters describe the revalidation batch; condition traces describe individual rule inputs."
 
 
 class TimelineEntry(ExportModel):
@@ -490,6 +612,8 @@ class TimelineEntry(ExportModel):
     error_category: str | None = None
     note: str | None = None
     operation: OperationDetail | None = None
+    auto_delete: AutoDeleteDecisionDetail | None = None
+    job: JobInfo | None = None
 
 
 class LogExcerpt(ExportModel):
@@ -555,6 +679,7 @@ class BundlePreview(ExportModel):
     traces: list[DecisionTrace]
     timeline: list[TimelineEntry]
     logs: list[LogExcerpt]
+    checks: list["DiagnosticCheckResult"] = Field(default_factory=list)
 
 
 class DiagnosticCheckRequest(DiagnosticsOptions):
@@ -574,4 +699,8 @@ class DiagnosticCheckResult(ExportModel):
     kind: Literal["path", "provider", "relationships"]
     checked_at: datetime
     observations: list[CheckObservation]
-    note: str = "Explicit check only; no repairs, provider syncs or cleanup were run."
+    target: Target | None = None
+    service_config_id: int | None = None
+    file_paths_included: bool = False
+    attachment_expires_at: datetime | None = None
+    note: str = "Explicit check only; no repairs, provider syncs or cleanup were run. Aliases are local to this check and may differ from report aliases."

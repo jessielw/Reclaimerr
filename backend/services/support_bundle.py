@@ -19,14 +19,21 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-from backend.core.operation_diagnostics import OUTCOMES, STAGES, SUBJECTS
+from backend.core import auto_delete_diagnostics as auto_diag
+from backend.core.operation_diagnostics import (
+    DEFERRAL_CODES,
+    OUTCOMES,
+    REASONS,
+    STAGES,
+    SUBJECTS,
+)
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
 from backend.core.support_codes import parse_support_code
-from backend.enums import BackgroundJobStatus, BackgroundJobType
 from backend.models import diagnostics as m
+from backend.services.diagnostic_check_cache import check_cache
+from backend.services.diagnostic_jobs import duplicate_target_filter
 from backend.services.diagnostics import (
     Collector,
-    enum_value,
     integer,
     now,
     object_json,
@@ -41,10 +48,16 @@ GROUPS = {
     "storage": ("storage", "children"),
     "playback": ("playback",),
     "decisions": ("decisions",),
-    "tasks": ("schedules", "recent_runs", "active_jobs"),
+    "tasks": (
+        "schedules",
+        "recent_runs",
+        "recent_jobs",
+        "active_jobs",
+        "auto_delete_runs",
+    ),
     "timeline": (),
 }
-RETENTION_NOTE = "Decision traces start with this release: up to 1,000 evaluations / 4 MiB per scan, 5,000 retained traces, 50 scans and 14 days. SQL-filtered targets may have no trace."
+RETENTION_NOTE = "Decision traces: up to 1,000 evaluations / 4 MiB per scan, 5,000 retained traces, 50 scans and 14 days. SQL-filtered targets may have no trace. Automatic decision capacity favors revalidation/dispatch, then eligible and rejected candidates before waiting/disabled candidates; dropped counts include evictions. Operation history retains at most 5,000 events for 14 days, prioritizing the latest final outcome and automatic decision per target. Retention can remove earlier attempts and, when terminal records alone exceed the cap, older targets."
 ERROR_CATEGORIES = {
     "database_busy",
     "timeout",
@@ -73,6 +86,40 @@ def history_filter(target: m.Target | None, alias: str = "") -> tuple[str, tuple
     if target.scope in ("movie", "series", "season"):
         return prefix + target.scope + "_id=?", (target.id,)
     return f"{prefix}target_scope=? AND {prefix}target_id=?", (target.scope, target.id)
+
+
+def prioritize_timeline(entries: list[m.TimelineEntry]) -> list[m.TimelineEntry]:
+    """Keep terminal evidence through both count and byte limits."""
+    seen = set()
+    ranked = []
+    for entry in sorted(entries, key=lambda e: e.occurred_at, reverse=True):
+        key = None
+        if entry.event in ("item_outcome", "auto_delete_decision"):
+            key = (
+                entry.event,
+                entry.correlation_id,
+                entry.candidate_id,
+                entry.target.scope if entry.target else None,
+                entry.target.id if entry.target else None,
+            )
+        elif entry.job:
+            key = (
+                "job",
+                entry.job.job_type,
+                entry.job.task,
+                "failed" if entry.job.status == "failed" else "latest",
+            )
+        priority = (
+            0
+            if key is not None and key not in seen
+            else 1
+            if entry.error_category
+            else 2
+        )
+        if key is not None:
+            seen.add(key)
+        ranked.append((priority, entry))
+    return [entry for _, entry in sorted(ranked, key=lambda pair: pair[0])]
 
 
 class BundleCollector(Collector):
@@ -105,12 +152,11 @@ class BundleCollector(Collector):
             where += " AND " + (
                 "s.job_id=?"
                 if kind == "job"
-                else "0"
+                else "t.scan_id=? AND json_extract(s.context,'$.purpose')='auto_delete'"
                 if kind == "operation"
                 else "t.scan_id=?"
             )
-            if kind != "operation":
-                args += (int(identifier) if kind == "job" else identifier,)
+            args += (int(identifier) if kind == "job" else identifier,)
         rows = self.rows(
             "decision_traces",
             "support_decision_traces t JOIN support_scan_runs s ON s.id=t.scan_id",
@@ -227,6 +273,8 @@ class BundleCollector(Collector):
                 else "unknown"
             )
             safe_context["dropped_traces"] = r["dropped_traces"]
+            if context.get("purpose") == "auto_delete":
+                safe_context["purpose"] = "auto_delete_revalidation"
             result.append(
                 m.DecisionTrace(
                     id=r["id"],
@@ -255,12 +303,19 @@ class BundleCollector(Collector):
             )
         return result
 
-    def runs(self) -> list[m.RunInfo]:
-        return [
-            run
-            for run in super().runs()
-            if run.started_at and run.started_at >= self.start
-        ]
+    def runs(self, since: datetime | None = None) -> list[m.RunInfo]:
+        return super().runs(since=max(since, self.start) if since else self.start)
+
+    def auto_delete_runs(
+        self, *, correlation_id: str | None = None, job_id: int | None = None
+    ) -> list[m.AutoDeleteRunInfo]:
+        if self.code:
+            kind, identifier = self.code
+            if kind == "job":
+                job_id = int(identifier)
+            else:
+                correlation_id = identifier
+        return super().auto_delete_runs(correlation_id=correlation_id, job_id=job_id)
 
     def timeline(self, traces: list[m.DecisionTrace]) -> list[m.TimelineEntry]:
         entries = []
@@ -327,20 +382,24 @@ class BundleCollector(Collector):
             where += " AND " + (
                 "job_id=?"
                 if kind == "job"
-                else "0"
+                else "correlation_id=? AND event_type='auto_delete_decision'"
                 if kind == "scan"
                 else "correlation_id=?"
             )
-            if kind != "scan":
-                args += (int(identifier) if kind == "job" else identifier,)
+            args += (int(identifier) if kind == "job" else identifier,)
         try:
             events = self.rows(
                 "operation_events",
-                "support_operation_events",
+                "(SELECT *,row_number() OVER (PARTITION BY correlation_id,candidate_id,target_scope,target_id,event_type ORDER BY occurred_at DESC,id DESC) AS terminal_rank FROM support_operation_events WHERE "
+                + where
+                + " AND occurred_at>=? AND occurred_at<=?)",
                 "id,correlation_id,event_type,occurred_at,target_scope,target_id,candidate_id,job_id,error_category,substr(detail,1,65536) AS detail",
-                where + " AND occurred_at>=?",
-                (*args, self.start.replace(tzinfo=None).isoformat(" ")),
-                order="CASE WHEN error_category IS NOT NULL THEN 0 ELSE 1 END,id DESC",
+                params=(
+                    *args,
+                    self.start.replace(tzinfo=None).isoformat(" "),
+                    self.report.generated_at.replace(tzinfo=None).isoformat(" "),
+                ),
+                order="(event_type IN ('item_outcome','auto_delete_decision') AND terminal_rank=1) DESC,error_category IS NOT NULL DESC,occurred_at DESC,id DESC",
             )
             allowed = {
                 op + suffix
@@ -352,7 +411,8 @@ class BundleCollector(Collector):
                     "_batch_completed",
                 )
             }
-            allowed.update({"operation_step", "item_outcome"})
+            allowed.update({"operation_step", "item_outcome", "auto_delete_decision"})
+            auto_candidate_ids = set()
             for r in events:
                 key = correlation(r["correlation_id"])
                 if not key or r["event_type"] not in allowed:
@@ -360,11 +420,89 @@ class BundleCollector(Collector):
                 candidate_ids.add(r["candidate_id"])
                 detail = object_json(r["detail"])
                 operation = None
+                auto_delete = None
+                if (
+                    isinstance(detail, dict)
+                    and r["event_type"] == "auto_delete_decision"
+                ):
+                    if (
+                        not all(
+                            isinstance(detail.get(name), str)
+                            for name in ("stage", "outcome", "reason")
+                        )
+                        or detail.get("stage") not in auto_diag.STAGES
+                        or detail.get("outcome") not in auto_diag.OUTCOMES
+                        or detail.get("reason") not in auto_diag.REASONS
+                    ):
+                        continue
+
+                    def ids(name):
+                        values = detail.get(name)
+                        return (
+                            [
+                                v
+                                for v in values[:100]
+                                if integer(v) is not None and v > 0
+                            ]
+                            if isinstance(values, list)
+                            else []
+                        )
+
+                    raw_coverage = detail.get("coverage")
+                    coverage = {}
+                    if isinstance(raw_coverage, dict):
+                        coverage = {
+                            key: value
+                            for key, value in raw_coverage.items()
+                            if (
+                                key in auto_diag.COVERAGE_FIELDS
+                                and integer(value) is not None
+                                and value >= 0
+                            )
+                            or (
+                                key
+                                in {
+                                    "seerr_unavailable",
+                                    "playback_error",
+                                    "sonarr_error",
+                                    "seerr_error",
+                                }
+                                and isinstance(value, bool)
+                            )
+                        }
+                    raw_reasons = detail.get("blocking_reasons")
+                    auto_delete = m.AutoDeleteDecisionDetail(
+                        stage=detail["stage"],
+                        outcome=detail["outcome"],
+                        reason=detail["reason"],
+                        rule_ids=ids("rule_ids"),
+                        matched_rule_ids=ids("matched_rule_ids"),
+                        unavailable_rule_ids=ids("unavailable_rule_ids"),
+                        blocking_reasons=[
+                            v
+                            for v in raw_reasons[:10]
+                            if isinstance(v, str) and v in auto_diag.REASONS
+                        ]
+                        if isinstance(raw_reasons, list)
+                        else [],
+                        eligible_at=timestamp(detail.get("eligible_at")),
+                        coverage=coverage,
+                    )
+                    auto_candidate_ids.add(r["candidate_id"])
                 if isinstance(detail, dict) and r["event_type"] in (
                     "operation_step",
                     "item_outcome",
                 ):
                     operation = m.OperationDetail(
+                        reason=detail["reason"]
+                        if isinstance(detail.get("reason"), str)
+                        and detail["reason"] in REASONS
+                        else None,
+                        kind="duplicate"
+                        if detail.get("kind") == "duplicate"
+                        else "upgrade_leftover"
+                        if detail.get("kind") == "upgrade_leftover"
+                        else "candidate",
                         action=detail["action"]
                         if detail.get("action") in ("move", "delete")
                         else "unknown",
@@ -396,6 +534,10 @@ class BundleCollector(Collector):
                         dropped_observations=max(
                             0, integer(detail.get("dropped_observations")) or 0
                         ),
+                        deferral_code=detail.get("deferral_code")
+                        if isinstance(detail.get("deferral_code"), str)
+                        and detail["deferral_code"] in DEFERRAL_CODES
+                        else None,
                     )
                 add(
                     timestamp(r["occurred_at"]),
@@ -408,13 +550,37 @@ class BundleCollector(Collector):
                     if r["error_category"] in ERROR_CATEGORIES
                     else None,
                     operation=operation,
-                    note="Observed step or candidate outcome. Provider requests can cover multiple files; successful requests are not filesystem verification."
+                    auto_delete=auto_delete,
+                    note="Recorded automatic deletion decision; authorization does not assert individual item success."
+                    if auto_delete
+                    else "Observed step or candidate outcome. Provider requests can cover multiple files; successful requests are not filesystem verification."
                     if operation
                     else "Batch outcome; does not assert individual item success.",
+                )
+            missing = (
+                {candidate.id for candidate in decisions.candidates}
+                - auto_candidate_ids
+                if decisions
+                else set()
+            )
+            if missing:
+                self.limitations.append(
+                    "No automatic-deletion decision was returned for candidate IDs "
+                    + ", ".join(map(str, sorted(missing)))
+                    + ". History may predate recording, be expired or sampled out. A completed task does not establish whether these candidates were authorized, skipped or deleted."
                 )
         except (sqlite3.Error, TimeoutError):
             self.limitations.append(
                 "Operation history unavailable; older operations may not have been recorded."
+            )
+        for run in self.report.sections.auto_delete_runs or []:
+            add(
+                run.completed_at or run.started_at,
+                "auto_delete_run_" + run.status,
+                run.correlation_id,
+                job_id=run.job_id,
+                note="App-wide automatic deletion run; totals alone do not establish this target's outcome.",
+                error_category=run.error_category,
             )
         job_where = "(created_at>=? OR started_at>=? OR completed_at>=?)"
         params: tuple = (self.start.replace(tzinfo=None).isoformat(" "),) * 3
@@ -439,6 +605,12 @@ class BundleCollector(Collector):
                 job_where += " AND (" + " OR ".join(clauses) + ")"
         elif self.options.target:
             clauses = []
+            if self.context:
+                duplicate_where, duplicate_params = duplicate_target_filter(
+                    self.options.target, self.context
+                )
+                clauses.append(duplicate_where)
+                params += duplicate_params
             if candidate_ids:
                 placeholders = ",".join("?" for _ in candidate_ids)
                 clauses.append(
@@ -449,29 +621,36 @@ class BundleCollector(Collector):
                 clauses.append("id IN (" + ",".join("?" for _ in job_ids) + ")")
                 params += tuple(job_ids)
             job_where += " AND (" + (" OR ".join(clauses) or "0") + ")"
-        for r in self.rows(
-            "timeline_jobs",
-            "background_jobs",
-            "id,job_type,status,created_at,started_at,completed_at,substr(error_message,1,4096) AS error",
-            job_where,
-            params,
-            limit=20,
-            order="id DESC",
-        ):
-            key = f"job-{r['id']}"
-            kind = enum_value(BackgroundJobType, r["job_type"])
-            add(timestamp(r["created_at"]), kind + "_queued", key, job_id=r["id"])
-            add(timestamp(r["started_at"]), kind + "_started", key, job_id=r["id"])
+        for job in self.recent_jobs(job_where, params, section="timeline_jobs"):
+            key = f"job-{job.id}"
+            kind = job.job_type
             add(
-                timestamp(r["completed_at"]),
-                kind + "_" + enum_value(BackgroundJobStatus, r["status"]),
+                job.created_at,
+                kind + "_queued",
                 key,
-                job_id=r["id"],
-                error_category=error_category(r["error"]),
+                job_id=job.id,
+                job=job if not job.started_at and not job.completed_at else None,
+            )
+            add(
+                job.started_at,
+                kind + "_started",
+                key,
+                job_id=job.id,
+                job=job if not job.completed_at else None,
+            )
+            add(
+                job.completed_at,
+                kind + "_" + job.status,
+                key,
+                job_id=job.id,
+                error_category=job.error_category,
+                job=job,
             )
         if len(entries) > 200:
-            self.limitations.append("Timeline limited to the newest 200 events.")
-        return sorted(entries, key=lambda e: e.occurred_at)[-200:]
+            self.limitations.append(
+                "Timeline limited to 200 events, prioritizing latest terminal outcomes and decisions per target/run, and latest job context per task before intermediate errors and recent events."
+            )
+        return sorted(prioritize_timeline(entries)[:200], key=lambda e: e.occurred_at)
 
     def logs(self, timeline: list[m.TimelineEntry]) -> list[m.LogExcerpt]:
         result = []
@@ -567,6 +746,9 @@ class BundleCollector(Collector):
             if self.options.target and "tasks" in self.options.sections:
                 self.section("schedules", self.schedules)
                 self.section("recent_runs", self.runs)
+                self.section("recent_jobs", self.recent_jobs)
+                self.section("active_jobs", self.jobs)
+                self.section("auto_delete_runs", self.auto_delete_runs)
             if (
                 "decisions" in self.options.sections
                 or "timeline" in self.options.sections
@@ -600,6 +782,10 @@ class BundleCollector(Collector):
         if "decisions" not in self.options.sections:
             traces = []
         selected = set(self.options.sections)
+        if "tasks" in selected and self.report.sections.auto_delete_runs == []:
+            self.limitations.append(
+                "No automatic-deletion run summaries were recorded in this window. Task completion statuses alone do not explain candidate skips; older executions cannot be reconstructed."
+            )
         for group, names in GROUPS.items():
             if group not in selected:
                 for name in names:
@@ -614,19 +800,47 @@ class BundleCollector(Collector):
                     "protections",
                     "deletion_requests",
                     "protection_requests",
+                    "scheduled_deletions",
+                    "schedule_inventory",
                 }
             )
         if "timeline" in selected:
             allowed.update({"operation_events", "timeline_jobs"})
         allowed.update(name for group in selected for name in GROUPS[group])
+        if "tasks" in selected or "timeline" in selected:
+            allowed.add("payload")
         if "configuration" in selected:
-            allowed.add("path_mappings")
+            allowed.update(
+                {
+                    "path_mappings",
+                    "favorites_usernames",
+                    "requester_watch_user_mappings",
+                }
+            )
         if "services" in selected:
             allowed.add("extra_settings")
         if "decisions" in selected:
-            allowed.update({"definition", "action", "reason_data", "matched_rule_ids"})
+            allowed.update(
+                {
+                    "definition",
+                    "action",
+                    "reason_data",
+                    "matched_rule_ids",
+                    "playback_deferral",
+                    "matched_criteria",
+                    "target",
+                    "episode_paths",
+                }
+            )
         if "playback" in selected:
-            allowed.update({"playback_events", "playback_native", "playback_imported"})
+            allowed.update(
+                {
+                    "playback_events",
+                    "playback_native",
+                    "playback_imported",
+                    "identity_evidence",
+                }
+            )
         if "storage" in selected:
             allowed.update({"linked_storage", "arr_storage"})
         for identity in [
@@ -683,6 +897,8 @@ def support_tables(
         "storage",
         "schedules",
         "recent_runs",
+        "recent_jobs",
+        "auto_delete_runs",
         "active_jobs",
         "database",
     ):
@@ -707,6 +923,7 @@ def support_tables(
             "protections",
             "deletion_requests",
             "protection_requests",
+            "scheduled_deletions",
         ):
             result[name] = [
                 v.model_dump(mode="json")
@@ -800,6 +1017,9 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         and not options.support_code
     ):
         raise ValueError("Choose a media item for this support preset")
+    checks = check_cache.selected(
+        owner, path, options.check_ids, options.target, options.include_file_paths
+    )
     collector = BundleCollector(path, options)
     report, traces, timeline, logs = collector.prepare()
     # A hard cap applies to preview evidence, including optional history.
@@ -810,6 +1030,7 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
                     "traces": [t.model_dump(mode="json") for t in traces],
                     "timeline": [e.model_dump(mode="json") for e in timeline],
                     "logs": [e.model_dump(mode="json") for e in logs],
+                    "checks": [c.model_dump(mode="json") for c in checks],
                 }
             ).encode()
         )
@@ -820,7 +1041,7 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         elif logs:
             logs.pop(0)
         else:
-            timeline.pop(0)
+            timeline.remove(prioritize_timeline(timeline)[-1])
         if (
             "Extra history truncated to the 1 MiB preview budget."
             not in collector.limitations
@@ -829,6 +1050,11 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
                 "Extra history truncated to the 1 MiB preview budget."
             )
     tables = support_tables(report, traces, timeline, logs)
+    if checks:
+        tables["checks"] = [check.model_dump(mode="json") for check in checks]
+        collector.limitations.append(
+            "Attached checks are timestamped snapshots of explicitly selected completed checks; preparing this bundle did not rerun them. Check aliases are local to each check. Their observation times can predate this bundle's history window."
+        )
     files = {
         "report.json": report.model_dump_json(indent=2).encode(),
         "evidence.json": json.dumps(
@@ -836,6 +1062,7 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
                 "traces": [t.model_dump(mode="json") for t in traces],
                 "timeline": [e.model_dump(mode="json") for e in timeline],
                 "logs": [e.model_dump(mode="json") for e in logs],
+                "checks": [c.model_dump(mode="json") for c in checks],
             },
             indent=2,
             ensure_ascii=False,
@@ -851,6 +1078,8 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         excluded.append("logs")
     if not options.include_file_paths:
         excluded.append("actual_file_paths")
+    if not checks:
+        excluded.append("completed_checks")
     manifest = m.BundleManifest(
         support_code=options.support_code,
         report_id=report.report_id,
@@ -886,4 +1115,5 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         traces=traces,
         timeline=timeline,
         logs=logs,
+        checks=checks,
     )

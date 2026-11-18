@@ -21,6 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
+from backend.core.auto_delete_diagnostics import (
+    COVERAGE_FIELDS,
+    AutoDeleteRecorder,
+    capture_auto_delete,
+    current_auto_delete,
+)
 from backend.core.diagnostic_trace import (
     ScanRecorder,
     current_operation_id,
@@ -206,6 +212,8 @@ from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_ca
 from backend.services.selected_playback_history import load_selected_history_snapshot
 from backend.services.sonarr import SonarrClient
 from backend.services.support_history import (
+    error_category,
+    persist_auto_delete_history,
     persist_operation_details,
     persist_scan,
     record_operations,
@@ -272,6 +280,11 @@ SONARR_EPISODE_FETCH_CONCURRENCY = 8
 # server fetch) and its new candidates are postponed instead of auto-deleted.
 CANDIDATE_SPIKE_MIN_NEW = 25
 CANDIDATE_SPIKE_POSTPONE_DAYS = 3
+
+# Persist uncertainty alongside the saved rule snapshot, without resetting the
+# candidate's clock or lifecycle controls. A verified scan replaces the snapshot
+# and clears this hold. Automatic deletion must not use the stale verdict.
+_CANDIDATE_UNAVAILABLE_RULE_IDS = "_unavailable_rule_ids"
 
 
 @dataclass(slots=True)
@@ -496,22 +509,26 @@ async def _load_auto_delete_context(
 
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
     async with async_db() as db:
-        candidates = (
-            (
-                await db.execute(
-                    select(ReclaimCandidate).where(
-                        ReclaimCandidate.delete_request_id.is_(None),
-                        ReclaimCandidate.id.notin_(
-                            select(CandidateResyncIdentity.candidate_id)
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+        candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
         if not candidates:
             return [], 0, 0
+
+        resync_ids = set(await db.scalars(select(CandidateResyncIdentity.candidate_id)))
+        available_candidates = []
+        for candidate in candidates:
+            if candidate.delete_request_id is not None or candidate.id in resync_ids:
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "skipped",
+                    "pending_delete_request"
+                    if candidate.delete_request_id is not None
+                    else "resync_pending",
+                )
+            else:
+                available_candidates.append(candidate)
+        excluded_count = len(candidates) - len(available_candidates)
+        candidates = available_candidates
 
         (
             rule_actions_by_id,
@@ -524,6 +541,12 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
         now = datetime.now(UTC)
         blocked_movie_ids: set[int] = set()
         blocked_movie_version_ids: set[int] = set()
+        block_reasons: dict[tuple[str, int], set[str]] = defaultdict(set)
+        block_types = (
+            "active_protection",
+            "pending_protection_request",
+            "pending_delete_request",
+        )
 
         movie_overlap_queries = (
             select(ProtectedMedia.movie_id, ProtectedMedia.movie_version_id).where(
@@ -545,12 +568,14 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 DeleteRequest.status == ProtectionRequestStatus.PENDING,
             ),
         )
-        for query in movie_overlap_queries:
+        for reason, query in zip(block_types, movie_overlap_queries, strict=True):
             for movie_id, movie_version_id in (await db.execute(query)).all():
                 if movie_id is not None:
                     blocked_movie_ids.add(movie_id)
+                    block_reasons[("movie", movie_id)].add(reason)
                 if movie_version_id is not None:
                     blocked_movie_version_ids.add(movie_version_id)
+                    block_reasons[("movie_version", movie_version_id)].add(reason)
 
         if blocked_movie_version_ids:
             version_rows = (
@@ -563,6 +588,11 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             blocked_movie_ids.update(
                 movie_id for _, movie_id in version_rows if movie_id is not None
             )
+            for version_id, movie_id in version_rows:
+                if movie_id is not None:
+                    block_reasons[("movie", movie_id)].update(
+                        block_reasons[("movie_version", version_id)]
+                    )
 
         blocked_series_ids: set[int] = set()
         blocked_season_ids: set[int] = set()
@@ -598,14 +628,17 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                 DeleteRequest.status == ProtectionRequestStatus.PENDING,
             ),
         )
-        for query in series_overlap_queries:
+        for reason, query in zip(block_types, series_overlap_queries, strict=True):
             for series_id, season_id, episode_id in (await db.execute(query)).all():
                 if series_id is not None:
                     blocked_series_ids.add(series_id)
+                    block_reasons[("series", series_id)].add(reason)
                 if season_id is not None:
                     blocked_season_ids.add(season_id)
+                    block_reasons[("season", season_id)].add(reason)
                 if episode_id is not None:
                     blocked_episode_ids.add(episode_id)
+                    block_reasons[("episode", episode_id)].add(reason)
 
         if blocked_episode_ids:
             episode_rows = (
@@ -618,6 +651,11 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             blocked_season_ids.update(
                 season_id for _, season_id in episode_rows if season_id is not None
             )
+            for episode_id, season_id in episode_rows:
+                if season_id is not None:
+                    block_reasons[("season", season_id)].update(
+                        block_reasons[("episode", episode_id)]
+                    )
 
         if blocked_season_ids:
             season_rows = (
@@ -630,18 +668,35 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             blocked_series_ids.update(
                 series_id for _, series_id in season_rows if series_id is not None
             )
+            for season_id, series_id in season_rows:
+                if series_id is not None:
+                    block_reasons[("series", series_id)].update(
+                        block_reasons[("season", season_id)]
+                    )
 
         eligible_ids: list[int] = []
-        blocked_count = 0
+        blocked_count = excluded_count
         waiting_count = 0
         manual_schedules = await active_schedules(db)
         manual_cache = await inventory_cache(db, candidates, manual_schedules)
         for candidate in candidates:
+            if (candidate.matched_criteria or {}).get(_CANDIDATE_UNAVAILABLE_RULE_IDS):
+                blocked_count += 1
+                capture_auto_delete(
+                    candidate, "selection", "skipped", "rule_data_unavailable"
+                )
+                continue
             if (candidate.matched_criteria or {}).get("scheduled_deletion_id"):
                 blocked_count += 1
+                capture_auto_delete(
+                    candidate, "selection", "skipped", "scheduled_deletion"
+                )
                 continue
             if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
                 waiting_count += 1
+                capture_auto_delete(
+                    candidate, "selection", "waiting", "manual_schedule"
+                )
                 continue
             blocked = False
             if candidate.media_type is MediaType.MOVIE:
@@ -670,6 +725,28 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
 
             if blocked:
                 blocked_count += 1
+                reasons = sorted(
+                    {
+                        reason
+                        for scope in (
+                            "movie",
+                            "movie_version",
+                            "series",
+                            "season",
+                            "episode",
+                        )
+                        for reason in block_reasons.get(
+                            (scope, getattr(candidate, scope + "_id")), ()
+                        )
+                    }
+                )
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "skipped",
+                    reasons[0],
+                    blocking_reasons=reasons,
+                )
                 continue
 
             policy = resolve_auto_delete_policy(
@@ -686,11 +763,33 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             )
             if not policy.is_enabled:
                 blocked_count += 1
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "skipped",
+                    "canceled"
+                    if policy.state == "canceled"
+                    else "auto_delete_disabled",
+                )
                 continue
             if policy.is_eligible:
                 eligible_ids.append(candidate.id)
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "eligible",
+                    "eligible",
+                    eligible_at=policy.eligible_at.isoformat(),
+                )
             else:
                 waiting_count += 1
+                capture_auto_delete(
+                    candidate,
+                    "selection",
+                    "waiting",
+                    "postponed" if policy.state == "postponed" else "review_period",
+                    eligible_at=policy.eligible_at.isoformat(),
+                )
 
         return eligible_ids, blocked_count, waiting_count
 
@@ -725,6 +824,74 @@ def _record_target_key(record: MatchedCandidateRecord) -> tuple[str, int] | None
     if record.series_id is not None:
         return TARGET_SERIES, record.series_id
     return None
+
+
+def _hold_candidate_for_unavailable_rules(
+    candidate: ReclaimCandidate, rule_ids: Collection[int]
+) -> None:
+    candidate.matched_criteria = {
+        **(candidate.matched_criteria or {}),
+        _CANDIDATE_UNAVAILABLE_RULE_IDS: sorted(rule_ids),
+    }
+
+
+def _preserve_unavailable_candidates(
+    candidates: Iterable[ReclaimCandidate],
+    availability: RulePreviewMatchMetadata | None,
+    preserve_candidate_ids: Collection[int],
+) -> set[int]:
+    preserved = set(preserve_candidate_ids)
+    if availability is not None:
+        for candidate in candidates:
+            key = _candidate_target_key(candidate)
+            unknown = set(candidate.matched_rule_ids or []) & (
+                availability.unavailable_rule_ids_by_target.get(key, set())
+                if key is not None
+                else set()
+            )
+            if unknown:
+                _hold_candidate_for_unavailable_rules(candidate, unknown)
+                preserved.add(candidate.id)
+    return preserved
+
+
+async def _preserve_skipped_rule_candidates(
+    db: AsyncSession, skipped_rule_ids: set[int]
+) -> set[int]:
+    if not skipped_rule_ids:
+        return set()
+    candidates = (
+        await db.scalars(
+            select(ReclaimCandidate).where(ReclaimCandidate.delete_request_id.is_(None))
+        )
+    ).all()
+    preserved: set[int] = set()
+    for candidate in candidates:
+        unknown = set(candidate.matched_rule_ids or []) & skipped_rule_ids
+        if unknown:
+            _hold_candidate_for_unavailable_rules(candidate, unknown)
+            preserved.add(candidate.id)
+    return preserved
+
+
+def _record_unavailable_candidate_rule(
+    metadata: RulePreviewMatchMetadata | None,
+    rule: ReclaimRule,
+    *,
+    target_scope: str,
+    target_id: int,
+    **context: Any,
+) -> bool:
+    if (
+        metadata is None
+        or evaluate_advanced_rule_state(rule, target_scope=target_scope, **context)
+        is not None
+    ):
+        return False
+    metadata.unavailable_rule_ids_by_target.setdefault(
+        (target_scope, target_id), set()
+    ).add(rule.id)
+    return True
 
 
 async def _revalidate_auto_delete_candidate_ids(
@@ -797,6 +964,7 @@ async def _revalidate_auto_delete_candidate_ids(
                 affected.append(candidate)
             else:
                 passthrough_ids.add(candidate.id)
+                capture_auto_delete(candidate, "dispatch", "authorized", "authorized")
 
         if not affected:
             existing_ids = {candidate.id for candidate in candidates}
@@ -819,6 +987,8 @@ async def _revalidate_auto_delete_candidate_ids(
             if target_key is not None:
                 target_ids_by_scope[target_key[0]].add(target_key[1])
 
+        auto_recorder = current_auto_delete.get()
+        trace_token = current_scan.set(auto_recorder.scan) if auto_recorder else None
         try:
             preview = await collect_rule_preview_matches_with_metadata(
                 db,
@@ -832,6 +1002,14 @@ async def _revalidate_auto_delete_candidate_ids(
                 f"will be skipped: {exc}",
                 exc_info=True,
             )
+            for candidate in affected:
+                capture_auto_delete(
+                    candidate,
+                    "revalidation",
+                    "skipped",
+                    "revalidation_failed",
+                    error_category=error_category(exc),
+                )
             return _AutoDeleteRevalidationResult(
                 candidate_ids=[
                     candidate_id
@@ -841,12 +1019,30 @@ async def _revalidate_auto_delete_candidate_ids(
                 revalidated_out=len(affected),
                 playback_unavailable=len(affected),
             )
+        finally:
+            if trace_token is not None:
+                current_scan.reset(trace_token)
+
+        coverage = {name: getattr(preview.metadata, name) for name in COVERAGE_FIELDS}
+        coverage["seerr_unavailable"] = preview.metadata.seerr_unavailable
+        coverage["playback_error"] = bool(preview.metadata.playback_error)
+        coverage["sonarr_error"] = bool(preview.metadata.sonarr_error)
+        coverage["seerr_error"] = bool(preview.metadata.seerr_error)
 
         if preview.metadata.playback_error:
             LOG.warning(
                 "Auto-delete playback revalidation could not establish complete "
                 f"provider coverage: {preview.metadata.playback_error}"
             )
+            for candidate in affected:
+                capture_auto_delete(
+                    candidate,
+                    "revalidation",
+                    "skipped",
+                    "playback_data_unavailable",
+                    coverage=coverage,
+                    error_category=error_category(preview.metadata.playback_error),
+                )
             return _AutoDeleteRevalidationResult(
                 candidate_ids=[
                     candidate_id
@@ -874,8 +1070,33 @@ async def _revalidate_auto_delete_candidate_ids(
             )
             if matched_rule_ids & applicable_by_candidate[candidate.id]:
                 retained_ids.add(candidate.id)
+                capture_auto_delete(
+                    candidate,
+                    "dispatch",
+                    "authorized",
+                    "authorized",
+                    matched_rule_ids=sorted(matched_rule_ids),
+                    coverage=coverage,
+                )
             else:
                 revalidated_out += 1
+                unavailable_rules = (
+                    preview.metadata.unavailable_rule_ids_by_target.get(
+                        target_key, set()
+                    )
+                    if target_key
+                    else set()
+                )
+                capture_auto_delete(
+                    candidate,
+                    "revalidation",
+                    "skipped",
+                    "revalidation_data_unavailable"
+                    if unavailable_rules
+                    else "revalidation_not_matched",
+                    unavailable_rule_ids=sorted(unavailable_rules),
+                    coverage=coverage,
+                )
 
         return _AutoDeleteRevalidationResult(
             candidate_ids=[
@@ -975,6 +1196,15 @@ async def _filter_movie_candidates_by_favorites(
         if candidate.movie_id is None
         or movie_tmdb_map.get(candidate.movie_id) not in favorite_tmdb_ids
     ]
+    allowed = {candidate.id for candidate in filtered}
+    for candidate in candidates:
+        if candidate.id not in allowed:
+            record_outcome(
+                candidate.id,
+                "skipped",
+                stage="validation",
+                reason="favorites_protection",
+            )
     return filtered, len(candidates) - len(filtered)
 
 
@@ -1080,6 +1310,9 @@ async def _filter_movie_candidates_by_sibling_protection(
             and candidate.movie_version_id not in protected_version_ids
         ):
             held_back.append(candidate.id)
+            record_outcome(
+                candidate.id, "skipped", stage="validation", reason="sibling_protection"
+            )
             continue
         filtered.append(candidate)
     return filtered, held_back
@@ -1118,6 +1351,15 @@ async def _filter_series_candidates_by_favorites(
         if candidate.series_id is None
         or series_tmdb_map.get(candidate.series_id) not in favorite_tmdb_ids
     ]
+    allowed = {candidate.id for candidate in filtered}
+    for candidate in candidates:
+        if candidate.id not in allowed:
+            record_outcome(
+                candidate.id,
+                "skipped",
+                stage="validation",
+                reason="favorites_protection",
+            )
     return filtered, len(candidates) - len(filtered)
 
 
@@ -6004,6 +6246,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         await _activate_collection_sibling_rule_data_for_rules(db, list(rules))
 
         preserved_protection_rule_ids: set[int] = set()
+        skipped_candidate_rule_ids: set[int] = set()
         seerr_skipped_rules = 0
         seerr_skip_reason: str | None = None
         seerr_ready, seerr_error = await _activate_seerr_request_resolver_for_rules(
@@ -6015,6 +6258,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         if not seerr_ready:
             seerr_dependent_rules = [r for r in rules if _rule_uses_seerr_fields(r)]
             if seerr_dependent_rules:
+                skipped_candidate_rule_ids.update(
+                    rule.id
+                    for rule in seerr_dependent_rules
+                    if normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE
+                )
                 preserved_protection_rule_ids = {
                     rule.id
                     for rule in seerr_dependent_rules
@@ -6060,6 +6308,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         # data resolve as unknown, so they fail playback conditions on their
         # own while other branches of the rule still evaluate normally
         if playback_rule_result.blocking:
+            skipped_candidate_rule_ids.update(
+                rule.id
+                for rule in playback_dependent_rules
+                if normalize_rule_outcome(rule) == RULE_OUTCOME_CANDIDATE
+            )
             preserved_protection_rule_ids.update(
                 rule.id
                 for rule in playback_dependent_rules
@@ -6148,6 +6401,10 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
             f"{protected_removed} removed"
         )
 
+        preserve_candidate_ids = await _preserve_skipped_rule_candidates(
+            db, skipped_candidate_rule_ids
+        )
+
         # Separate candidate rules by explicit advanced target. Rules without a
         # valid advanced definition are skipped by the evaluator and will not match.
         movie_rules = [
@@ -6172,7 +6429,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         # process movies
         if movie_rules:
             created, updated, removed = await _process_media(
-                db, movie_rules, MediaType.MOVIE, commit=False
+                db,
+                movie_rules,
+                MediaType.MOVIE,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += created
             candidates_updated += updated
@@ -6185,6 +6446,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                     delete(ReclaimCandidate)
                     .where(ReclaimCandidate.delete_request_id.is_(None))
                     .where(ReclaimCandidate.media_type == MediaType.MOVIE)
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
@@ -6192,7 +6454,11 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         # process series
         if series_rules:
             created, updated, removed = await _process_media(
-                db, series_rules, MediaType.SERIES, commit=False
+                db,
+                series_rules,
+                MediaType.SERIES,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += created
             candidates_updated += updated
@@ -6207,13 +6473,17 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                         ReclaimCandidate.media_type == MediaType.SERIES,
                         _is_series_scope(ReclaimCandidate),
                     )
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
 
         if season_rules:
             s_cr, s_up, s_rm = await _process_series_seasons(
-                db, season_rules, commit=False
+                db,
+                season_rules,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += s_cr
             candidates_updated += s_up
@@ -6228,13 +6498,17 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                         ReclaimCandidate.media_type == MediaType.SERIES,
                         _is_season_scope(ReclaimCandidate),
                     )
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
 
         if episode_rules:
             e_cr, e_up, e_rm = await _process_series_episodes(
-                db, episode_rules, commit=False
+                db,
+                episode_rules,
+                commit=False,
+                preserve_candidate_ids=preserve_candidate_ids,
             )
             candidates_created += e_cr
             candidates_updated += e_up
@@ -6249,6 +6523,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                         ReclaimCandidate.media_type == MediaType.SERIES,
                         _is_episode_scope(ReclaimCandidate),
                     )
+                    .where(ReclaimCandidate.id.notin_(preserve_candidate_ids))
                 ),
             )
             candidates_removed += del_result.rowcount or 0
@@ -6323,6 +6598,7 @@ async def _process_media(
     media_type: MediaType,
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """
     Process movies or series against cleanup rules.
@@ -6330,10 +6606,21 @@ async def _process_media(
     Returns (created_count, updated_count, removed_count)
     """
     if media_type is MediaType.MOVIE:
-        return await _process_movie_versions(db, rules, commit=commit)
+        return await _process_movie_versions(
+            db, rules, commit=commit, preserve_candidate_ids=preserve_candidate_ids
+        )
 
-    records = await _collect_series_candidate_records(db, rules)
-    return await _sync_series_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_series_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_series_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _collect_series_candidate_records(
@@ -6448,19 +6735,22 @@ async def _collect_series_candidate_records(
         reasons: list[dict[str, Any]] = []
 
         for rule in rules:
-            if (
-                preview_metadata is not None
-                and _rule_uses_season_episode_watch_fields(rule)
-                and evaluate_advanced_rule_state(
-                    rule,
-                    target_scope=TARGET_SERIES,
-                    series=item,
-                )
-                is None
-            ):
-                _record_unavailable_series_inventory(preview_metadata, item)
             if _evaluate_movie_rule(item, rule, matched_criteria, reasons):
                 matched_rules.append(rule.id)
+                continue
+            unknown = _record_unavailable_candidate_rule(
+                preview_metadata,
+                rule,
+                target_scope=TARGET_SERIES,
+                target_id=item.id,
+                series=item,
+            )
+            if (
+                unknown
+                and preview_metadata is not None
+                and _rule_uses_season_episode_watch_fields(rule)
+            ):
+                _record_unavailable_series_inventory(preview_metadata, item)
 
         if not matched_rules:
             continue
@@ -6557,6 +6847,8 @@ async def _sync_series_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize series candidates with the database."""
     result = await db.execute(
@@ -6568,6 +6860,9 @@ async def _sync_series_candidates(
         )
     )
     existing_candidates = result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     candidate_lookup = {
         candidate.series_id: candidate
         for candidate in existing_candidates
@@ -6584,6 +6879,8 @@ async def _sync_series_candidates(
         if record.series_id is None:
             continue
         existing = candidate_lookup.get(record.series_id)
+        if existing and existing.id in preserved:
+            continue
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
             existing.matched_criteria = record.matched_criteria
@@ -6611,13 +6908,18 @@ async def _sync_series_candidates(
     stale_candidates = [
         candidate
         for series_id, candidate in candidate_lookup.items()
-        if series_id not in matched_item_ids
+        if series_id not in matched_item_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -6633,10 +6935,20 @@ async def _process_movie_versions(
     rules: list[ReclaimRule],
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Evaluate movie rules at movie-version granularity."""
-    records = await _collect_movie_version_candidate_records(db, rules)
-    return await _sync_movie_version_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_movie_version_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_movie_version_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _collect_movie_version_candidate_records(
@@ -6743,6 +7055,15 @@ async def _collect_movie_version_candidate_records(
                     movie, version, rule, matched_criteria, reasons
                 ):
                     matched_rules.append(rule.id)
+                elif version.size or movie.size:
+                    _record_unavailable_candidate_rule(
+                        preview_metadata,
+                        rule,
+                        target_scope=TARGET_MOVIE_VERSION,
+                        target_id=version.id,
+                        movie=movie,
+                        version=version,
+                    )
 
             if not matched_rules:
                 continue
@@ -6771,6 +7092,8 @@ async def _sync_movie_version_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize movie version candidates with the database."""
     pending = (await db.scalars(select(CandidateResyncIdentity))).all()
@@ -6785,6 +7108,9 @@ async def _sync_movie_version_candidates(
         )
     )
     existing_candidates = existing_result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     version_candidate_lookup: dict[int, ReclaimCandidate] = {
         candidate.movie_version_id: candidate
         for candidate in existing_candidates
@@ -6793,7 +7119,7 @@ async def _sync_movie_version_candidates(
     legacy_movie_candidates = [
         candidate
         for candidate in existing_candidates
-        if candidate.movie_version_id is None
+        if candidate.movie_version_id is None and candidate.id not in preserved
     ]
 
     matched_version_ids = {
@@ -6809,6 +7135,8 @@ async def _sync_movie_version_candidates(
         if record.movie_version_id is None or record.movie_id is None:
             continue
         existing = version_candidate_lookup.get(record.movie_version_id)
+        if existing and existing.id in preserved:
+            continue
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
             existing.matched_criteria = record.matched_criteria
@@ -6838,7 +7166,7 @@ async def _sync_movie_version_candidates(
     stale_version_candidates = [
         candidate
         for version_id, candidate in version_candidate_lookup.items()
-        if version_id not in matched_version_ids
+        if version_id not in matched_version_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_version_candidates) + len(legacy_movie_candidates)
     for candidate in stale_version_candidates:
@@ -6846,7 +7174,12 @@ async def _sync_movie_version_candidates(
     for candidate in legacy_movie_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -6862,13 +7195,23 @@ async def _process_series_seasons(
     rules: list[ReclaimRule],
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Evaluate each series' seasons against rules and create/update season-level candidates.
 
     Returns (created_count, updated_count, removed_count).
     """
-    records = await _collect_season_candidate_records(db, rules)
-    return await _sync_season_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_season_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_season_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _process_series_episodes(
@@ -6876,13 +7219,23 @@ async def _process_series_episodes(
     rules: list[ReclaimRule],
     *,
     commit: bool = True,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Evaluate each series' episodes against rules and create/update episode-level candidates.
 
     Returns (created_count, updated_count, removed_count).
     """
-    records = await _collect_episode_candidate_records(db, rules)
-    return await _sync_episode_candidates(db, records, commit=commit)
+    availability = RulePreviewMatchMetadata()
+    records = await _collect_episode_candidate_records(
+        db, rules, preview_metadata=availability
+    )
+    return await _sync_episode_candidates(
+        db,
+        records,
+        commit=commit,
+        availability=availability,
+        preserve_candidate_ids=preserve_candidate_ids,
+    )
 
 
 async def _collect_season_candidate_records(
@@ -7003,25 +7356,27 @@ async def _collect_season_candidate_records(
             reasons: list[dict[str, Any]] = []
 
             for rule in rules:
-                if (
-                    preview_metadata is not None
-                    and season.size
-                    and _rule_uses_season_episode_watch_fields(rule)
-                    and evaluate_advanced_rule_state(
-                        rule,
-                        target_scope=TARGET_SEASON,
-                        series=series,
-                        season=season,
-                    )
-                    is None
-                ):
-                    _record_unavailable_season_inventory(
-                        preview_metadata, series, season
-                    )
                 if _evaluate_rule_for_season(
                     series, season, rule, matched_criteria, reasons
                 ):
                     matched_rules.append(rule.id)
+                    continue
+                unknown = bool(season.size) and _record_unavailable_candidate_rule(
+                    preview_metadata,
+                    rule,
+                    target_scope=TARGET_SEASON,
+                    target_id=season.id,
+                    series=series,
+                    season=season,
+                )
+                if (
+                    unknown
+                    and preview_metadata is not None
+                    and _rule_uses_season_episode_watch_fields(rule)
+                ):
+                    _record_unavailable_season_inventory(
+                        preview_metadata, series, season
+                    )
 
             if not matched_rules:
                 continue
@@ -7047,6 +7402,8 @@ async def _sync_season_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize season candidates with the database."""
     existing_result = await db.execute(
@@ -7057,9 +7414,13 @@ async def _sync_season_candidates(
             _is_season_scope(ReclaimCandidate),
         )
     )
+    existing_candidates = existing_result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     season_candidate_lookup: dict[int, ReclaimCandidate] = {
         candidate.season_id: candidate
-        for candidate in existing_result.scalars().all()
+        for candidate in existing_candidates
         if candidate.season_id is not None
     }
 
@@ -7074,6 +7435,8 @@ async def _sync_season_candidates(
         if record.season_id is None or record.series_id is None:
             continue
         existing = season_candidate_lookup.get(record.season_id)
+        if existing and existing.id in preserved:
+            continue
 
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
@@ -7103,13 +7466,18 @@ async def _sync_season_candidates(
     stale_candidates = [
         candidate
         for season_id, candidate in season_candidate_lookup.items()
-        if season_id not in matched_season_ids
+        if season_id not in matched_season_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -7266,25 +7634,28 @@ async def _collect_episode_candidate_records(
                 reasons: list[dict[str, Any]] = []
 
                 for rule in rules:
-                    if (
-                        preview_metadata is not None
-                        and _rule_uses_season_episode_watch_fields(rule)
-                        and evaluate_advanced_rule_state(
-                            rule,
-                            target_scope=TARGET_EPISODE,
-                            series=series,
-                            season=season,
-                            episode=episode,
-                        )
-                        is None
-                    ):
-                        _record_unavailable_season_inventory(
-                            preview_metadata, series, season
-                        )
                     if _evaluate_rule_for_episode(
                         series, season, episode, rule, matched_criteria, reasons
                     ):
                         matched_rules.append(rule.id)
+                        continue
+                    unknown = _record_unavailable_candidate_rule(
+                        preview_metadata,
+                        rule,
+                        target_scope=TARGET_EPISODE,
+                        target_id=episode.id,
+                        series=series,
+                        season=season,
+                        episode=episode,
+                    )
+                    if (
+                        unknown
+                        and preview_metadata is not None
+                        and _rule_uses_season_episode_watch_fields(rule)
+                    ):
+                        _record_unavailable_season_inventory(
+                            preview_metadata, series, season
+                        )
 
                 if not matched_rules:
                     continue
@@ -7311,6 +7682,8 @@ async def _sync_episode_candidates(
     records: list[MatchedCandidateRecord],
     *,
     commit: bool = True,
+    availability: RulePreviewMatchMetadata | None = None,
+    preserve_candidate_ids: Collection[int] = (),
 ) -> tuple[int, int, int]:
     """Synchronize episode candidates with the database."""
     existing_result = await db.execute(
@@ -7321,9 +7694,13 @@ async def _sync_episode_candidates(
             _is_episode_scope(ReclaimCandidate),
         )
     )
+    existing_candidates = existing_result.scalars().all()
+    preserved = _preserve_unavailable_candidates(
+        existing_candidates, availability, preserve_candidate_ids
+    )
     episode_candidate_lookup: dict[int, ReclaimCandidate] = {
         candidate.episode_id: candidate
-        for candidate in existing_result.scalars().all()
+        for candidate in existing_candidates
         if candidate.episode_id is not None
     }
 
@@ -7338,6 +7715,8 @@ async def _sync_episode_candidates(
         if record.episode_id is None or record.series_id is None:
             continue
         existing = episode_candidate_lookup.get(record.episode_id)
+        if existing and existing.id in preserved:
+            continue
 
         if existing:
             existing.matched_rule_ids = record.matched_rule_ids
@@ -7368,13 +7747,18 @@ async def _sync_episode_candidates(
     stale_candidates = [
         candidate
         for episode_id, candidate in episode_candidate_lookup.items()
-        if episode_id not in matched_episode_ids
+        if episode_id not in matched_episode_ids and candidate.id not in preserved
     ]
     candidates_removed = len(stale_candidates)
     for candidate in stale_candidates:
         await db.delete(candidate)
 
-    if candidates_created > 0 or candidates_updated > 0 or candidates_removed > 0:
+    if (
+        candidates_created > 0
+        or candidates_updated > 0
+        or candidates_removed > 0
+        or preserved
+    ):
         if commit:
             await db.commit()
         else:
@@ -8253,7 +8637,22 @@ async def _sync_expected_arr_tags(
 async def delete_cleanup_candidates() -> dict[str, int]:
     """Serialize automatic deletion with other candidate workflows."""
     async with candidate_workflow_lock:
-        return await _delete_cleanup_candidates_unlocked()
+        recorder = AutoDeleteRecorder()
+        token = current_auto_delete.set(recorder)
+        try:
+            result = await _delete_cleanup_candidates_unlocked()
+            recorder.scan.context.update(status="completed", summary=result)
+            return result
+        except Exception as exc:
+            recorder.scan.context.update(
+                status="failed", error_category=error_category(exc)
+            )
+            raise
+        finally:
+            try:
+                await persist_auto_delete_history(recorder, session_factory=async_db)
+            finally:
+                current_auto_delete.reset(token)
 
 
 async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
@@ -8343,9 +8742,11 @@ async def _delete_cleanup_candidates_unlocked() -> dict[str, int]:
         return summary
 
 
-async def _mark_candidate_delete_failure(candidate_id: int, error: str) -> None:
+async def _mark_candidate_delete_failure(
+    candidate_id: int, error: str, *, diagnostic_fallback: bool = False
+) -> None:
     """Persist delete failure details for a candidate."""
-    record_outcome(candidate_id, "failed", error=error)
+    record_outcome(candidate_id, "failed", error=error, fallback=diagnostic_fallback)
     async with async_db() as db:
         result = await db.execute(
             select(ReclaimCandidate).where(ReclaimCandidate.id == candidate_id)
@@ -8568,7 +8969,9 @@ async def _diagnose_unhandled_delete_failures(candidate_ids: Iterable[int]) -> N
             diagnosed[candidate_id] = generic
 
     for candidate_id, reason in diagnosed.items():
-        await _mark_candidate_delete_failure(candidate_id, reason)
+        await _mark_candidate_delete_failure(
+            candidate_id, reason, diagnostic_fallback=True
+        )
 
 
 def _has_delete_route(media_type: MediaType) -> bool:
@@ -14870,8 +15273,16 @@ async def _run_playback_guarded_candidates(
             else "_batch_completed"
         )
         await record_operations(snapshots, correlation, event)
-        for candidate_id in result.deferrals:
-            record_outcome(candidate_id, "deferred", stage="playback_guard")
+        for candidate_id, detail in result.deferrals.items():
+            code = detail.get("code")
+            record_outcome(
+                candidate_id,
+                "deferred",
+                deferral_code=code,
+                stage="validation"
+                if code in ("resync_pending", "manual_deletion_scheduled")
+                else "playback_guard",
+            )
         LOG.info("Support file operation finished")
         return result
     finally:

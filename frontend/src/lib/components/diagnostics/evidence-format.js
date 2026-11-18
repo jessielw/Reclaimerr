@@ -26,6 +26,7 @@ export function outcomeLabel(value) {
       succeeded: "Succeeded",
       failed: "Failed",
       deferred: "Deferred",
+      skipped: "Skipped",
     }[value] ?? value.replaceAll("_", " ")
   );
 }

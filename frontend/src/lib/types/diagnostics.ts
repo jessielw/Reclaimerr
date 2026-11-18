@@ -11,6 +11,25 @@ export interface DiagnosticsReport {
   summary: string[];
   target: DiagnosticsTarget | null;
   sections: {
+    recent_runs:
+      | {
+          id: number;
+          task: string;
+          status: string;
+          started_at: string | null;
+          completed_at: string | null;
+        }[]
+      | null;
+    auto_delete_runs:
+      | {
+          correlation_id: string;
+          started_at: string;
+          status: string;
+          summary: Record<string, number> | null;
+          dropped_decisions: number;
+          dropped_traces: number;
+        }[]
+      | null;
     decisions: DecisionContext | null;
     services:
       { id: number; alias: string; service: string; enabled: boolean }[] | null;
@@ -65,6 +84,7 @@ export interface BundlePreview {
   traces: DecisionTrace[];
   timeline: TimelineEntry[];
   logs: unknown[];
+  checks: DiagnosticCheckResult[];
 }
 
 export interface RecordedCondition {
@@ -94,6 +114,12 @@ export interface DecisionContext {
     matched_rule_ids: number[];
     conditions: RecordedCondition[];
     conditions_state: string;
+    playback_deferral: {
+      code: string;
+      checked_at: string | null;
+      server_config_ids: number[];
+      completed_step_count: number | null;
+    } | null;
   }[];
   protections: (ProtectionEvidence & { target: DiagnosticsTarget })[];
 }
@@ -136,6 +162,7 @@ export interface TimelineEntry {
   error_category: string | null;
   note: string | null;
   operation: {
+    reason: "favorites_protection" | "sibling_protection" | null;
     action: string;
     stage: string;
     outcome: string;
@@ -146,6 +173,19 @@ export interface TimelineEntry {
     reference: string | null;
     shared_request: boolean;
     dropped_observations: number;
+    deferral_code: string | null;
+  } | null;
+  auto_delete: {
+    stage: "selection" | "revalidation" | "dispatch";
+    outcome: "eligible" | "waiting" | "skipped" | "authorized";
+    reason: string;
+    rule_ids: number[];
+    matched_rule_ids: number[];
+    unavailable_rule_ids: number[];
+    blocking_reasons: string[];
+    eligible_at: string | null;
+    coverage: Record<string, number | boolean>;
+    note: string;
   } | null;
 }
 export interface SupportMatch {
@@ -172,6 +212,10 @@ export interface DiagnosticCheckResult {
   check_id: string;
   kind: CheckKind;
   checked_at: string;
+  target: DiagnosticsTarget | null;
+  service_config_id: number | null;
+  file_paths_included: boolean;
+  attachment_expires_at: string | null;
   observations: {
     subject: string;
     status: "passed" | "failed" | "unknown";

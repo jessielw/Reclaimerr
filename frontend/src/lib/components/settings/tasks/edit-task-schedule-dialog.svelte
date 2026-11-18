@@ -47,8 +47,8 @@
     { label: "Every day at 2 AM", value: "0 2 * * *" },
     { label: "Every day at 6 AM", value: "0 6 * * *" },
     { label: "Every day at noon", value: "0 12 * * *" },
-    { label: "Every Sunday at 2 AM", value: "0 2 * * 0" },
-    { label: "Every Monday at 3 AM", value: "0 3 * * 1" },
+    { label: "Every Sunday at 2 AM", value: "0 2 * * sun" },
+    { label: "Every Monday at 3 AM", value: "0 3 * * mon" },
     { label: "First of month at midnight", value: "0 0 1 * *" },
     { label: "Custom", value: "custom" },
   ];
@@ -324,7 +324,8 @@
               placeholder="e.g., 0 2 * * * for 2 AM daily"
             />
             <p class="text-xs text-muted-foreground">
-              Format: minute hour day month weekday
+              Format: minute hour day month weekday (0 or 7 = Sunday, 1 =
+              Monday, ..., 6 = Saturday; names like sun and mon-fri also work).
             </p>
           </div>
         {/if}
