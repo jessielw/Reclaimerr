@@ -90,7 +90,17 @@ Expand **Run a diagnostic check**, choose a check, then **Run selected check**. 
 - **Stored relationships:** selected media parents and configured history-source bindings. This is not a whole-database integrity scan.
 - **Provider connection:** a read-only connection test against one saved service. It uses saved credentials internally and returns only a sanitized result. No arbitrary URL/path input, provider sync, library refresh or cleanup runs.
 
-Each check phase has a five-second timeout and at most two checks can occupy worker slots. A stuck filesystem lookup retains its slot until the OS returns; timeouts report **unknown**, never success. Results have timestamps and can be downloaded separately with **Download check result**. They are not silently added to an already prepared bundle.
+Each check phase has a five-second timeout and at most two checks can occupy worker slots. A stuck filesystem lookup retains its slot until the OS returns; timeouts report **unknown**, never success. Results have timestamps and can be downloaded separately with **Download check result**.
+
+To include completed results in one ZIP:
+
+1. Run the desired checks explicitly.
+2. Under **Attach completed checks (optional)** in the bundle options, select up to five results. None are selected automatically.
+3. Prepare a fresh preview, review the attached check data and inventory, then download that ZIP.
+
+Preparing a bundle reads the selected snapshots without rerunning any check. The results retain their original observation times, media target or app-wide provider ID, statuses and sharing mode. They appear in `evidence.json`, the full preview and optional `support_checks` SQLite table. They may predate the selected history window. Aliases are local to each check, so `path-1` or `server-1` in a check need not identify the same object as a report alias.
+
+Check snapshots remain in server memory for up to ten minutes, bound to their requesting administrator and database. The cache holds at most 32 results / 1 MiB per process, with at most 64 KiB per result and 256 KiB of selected attachments per bundle. A restart or capacity eviction can make a result unavailable earlier. Expired/unavailable selections require rerunning the check or deselecting it; preparation never silently replaces them. Media bundles accept target checks for that exact media item; system bundles can explicitly include checks for multiple targets, and provider checks are labeled app-wide. Checks made with actual file paths cannot be attached while bundle path sharing is off. Changing the dialog's path-sharing mode clears its prior check selections.
 
 ## Sharing and privacy
 

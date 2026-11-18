@@ -84,6 +84,7 @@ export interface BundlePreview {
   traces: DecisionTrace[];
   timeline: TimelineEntry[];
   logs: unknown[];
+  checks: DiagnosticCheckResult[];
 }
 
 export interface RecordedCondition {
@@ -211,6 +212,10 @@ export interface DiagnosticCheckResult {
   check_id: string;
   kind: CheckKind;
   checked_at: string;
+  target: DiagnosticsTarget | null;
+  service_config_id: number | null;
+  file_paths_included: boolean;
+  attachment_expires_at: string | null;
   observations: {
     subject: string;
     status: "passed" | "failed" | "unknown";

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -510,6 +511,7 @@ class BundleOptions(DiagnosticsOptions):
     include_sqlite: bool = False
     include_logs: bool = False
     support_code: str | None = Field(default=None, max_length=80)
+    check_ids: list[UUID] = Field(default_factory=list, max_length=5)
 
     @field_validator("support_code")
     @classmethod
@@ -677,6 +679,7 @@ class BundlePreview(ExportModel):
     traces: list[DecisionTrace]
     timeline: list[TimelineEntry]
     logs: list[LogExcerpt]
+    checks: list["DiagnosticCheckResult"] = Field(default_factory=list)
 
 
 class DiagnosticCheckRequest(DiagnosticsOptions):
@@ -696,4 +699,8 @@ class DiagnosticCheckResult(ExportModel):
     kind: Literal["path", "provider", "relationships"]
     checked_at: datetime
     observations: list[CheckObservation]
-    note: str = "Explicit check only; no repairs, provider syncs or cleanup were run."
+    target: Target | None = None
+    service_config_id: int | None = None
+    file_paths_included: bool = False
+    attachment_expires_at: datetime | None = None
+    note: str = "Explicit check only; no repairs, provider syncs or cleanup were run. Aliases are local to this check and may differ from report aliases."

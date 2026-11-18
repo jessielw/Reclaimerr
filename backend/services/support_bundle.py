@@ -30,6 +30,7 @@ from backend.core.operation_diagnostics import (
 from backend.core.rule_engine import FIELD_LABELS, OPERATOR_LABELS
 from backend.core.support_codes import parse_support_code
 from backend.models import diagnostics as m
+from backend.services.diagnostic_check_cache import check_cache
 from backend.services.diagnostic_jobs import duplicate_target_filter
 from backend.services.diagnostics import (
     Collector,
@@ -1016,6 +1017,9 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         and not options.support_code
     ):
         raise ValueError("Choose a media item for this support preset")
+    checks = check_cache.selected(
+        owner, path, options.check_ids, options.target, options.include_file_paths
+    )
     collector = BundleCollector(path, options)
     report, traces, timeline, logs = collector.prepare()
     # A hard cap applies to preview evidence, including optional history.
@@ -1026,6 +1030,7 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
                     "traces": [t.model_dump(mode="json") for t in traces],
                     "timeline": [e.model_dump(mode="json") for e in timeline],
                     "logs": [e.model_dump(mode="json") for e in logs],
+                    "checks": [c.model_dump(mode="json") for c in checks],
                 }
             ).encode()
         )
@@ -1045,6 +1050,11 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
                 "Extra history truncated to the 1 MiB preview budget."
             )
     tables = support_tables(report, traces, timeline, logs)
+    if checks:
+        tables["checks"] = [check.model_dump(mode="json") for check in checks]
+        collector.limitations.append(
+            "Attached checks are timestamped snapshots of explicitly selected completed checks; preparing this bundle did not rerun them. Check aliases are local to each check. Their observation times can predate this bundle's history window."
+        )
     files = {
         "report.json": report.model_dump_json(indent=2).encode(),
         "evidence.json": json.dumps(
@@ -1052,6 +1062,7 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
                 "traces": [t.model_dump(mode="json") for t in traces],
                 "timeline": [e.model_dump(mode="json") for e in timeline],
                 "logs": [e.model_dump(mode="json") for e in logs],
+                "checks": [c.model_dump(mode="json") for c in checks],
             },
             indent=2,
             ensure_ascii=False,
@@ -1067,6 +1078,8 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         excluded.append("logs")
     if not options.include_file_paths:
         excluded.append("actual_file_paths")
+    if not checks:
+        excluded.append("completed_checks")
     manifest = m.BundleManifest(
         support_code=options.support_code,
         report_id=report.report_id,
@@ -1102,4 +1115,5 @@ def prepare_bundle(path: Path, options: m.BundleOptions, owner: int) -> m.Bundle
         traces=traces,
         timeline=timeline,
         logs=logs,
+        checks=checks,
     )

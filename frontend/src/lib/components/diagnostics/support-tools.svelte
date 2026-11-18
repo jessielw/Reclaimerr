@@ -100,6 +100,8 @@
   let checking = $state(false);
   let checkError = $state("");
   let checkResult = $state<DiagnosticCheckResult | null>(null);
+  let completedChecks = $state<DiagnosticCheckResult[]>([]);
+  let selectedChecks = $state<string[]>([]);
   let previewController: AbortController | undefined;
   let checkController: AbortController | undefined;
   let downloadController: AbortController | undefined;
@@ -121,6 +123,7 @@
       include_file_paths: includePaths,
       include_sqlite: includeSqlite,
       include_logs: includeLogs,
+      check_ids: selectedChecks,
     }),
   );
   const ready = $derived(
@@ -135,6 +138,7 @@
             traces: preview.traces,
             timeline: preview.timeline,
             logs: preview.logs,
+            checks: preview.checks,
           },
           null,
           2,
@@ -148,6 +152,8 @@
       checkController?.abort();
       checking = false;
       checkResult = null;
+      completedChecks = [];
+      selectedChecks = [];
       checkError = "";
     });
   });
@@ -160,6 +166,8 @@
       preview = null;
       preparedKey = "";
       checkResult = null;
+      completedChecks = [];
+      selectedChecks = [];
       bundleError = "";
       checkError = "";
       preparing = checking = downloading = false;
@@ -236,7 +244,17 @@
         body: key,
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(failure(response.status));
+      if (!response.ok) {
+        if (response.status === 422 && selectedChecks.length) {
+          const problem = await response.json();
+          throw new Error(
+            typeof problem.detail === "string"
+              ? problem.detail
+              : "Selected check results are unavailable. Rerun the checks or deselect them.",
+          );
+        }
+        throw new Error(failure(response.status));
+      }
       const result: BundlePreview = await response.json();
       if (controller.signal.aborted) return;
       preview = result;
@@ -317,7 +335,19 @@
       });
       if (!response.ok) throw new Error(failure(response.status));
       const result: DiagnosticCheckResult = await response.json();
-      if (!controller.signal.aborted) checkResult = result;
+      if (!controller.signal.aborted) {
+        checkResult = result;
+        const retained = [...completedChecks, result];
+        // Keep selected snapshots and a bounded list of recent alternatives.
+        while (retained.length > 10) {
+          const discard = retained.findIndex(
+            (check) => !selectedChecks.includes(check.check_id),
+          );
+          if (discard < 0) break;
+          retained.splice(discard, 1);
+        }
+        completedChecks = retained;
+      }
     } catch (error) {
       if (!controller.signal.aborted)
         checkError =
@@ -446,6 +476,50 @@
       Decision conditions can also contain playback evidence. Schedules and
       recent task runs describe app-wide activity.
     </p>
+    {#if completedChecks.length}
+      <fieldset class="space-y-2 rounded border p-3">
+        <legend class="text-sm font-medium"
+          >Attach completed checks (optional)</legend
+        >
+        <p class="text-xs text-muted-foreground">
+          Select up to five timestamped results to include in this ZIP.
+          Preparing a bundle does not rerun checks. Results are available for
+          ten minutes.
+        </p>
+        {#each completedChecks as check (check.check_id)}
+          <label class="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              class="mt-1"
+              value={check.check_id}
+              bind:group={selectedChecks}
+              disabled={!check.attachment_expires_at ||
+                (selectedChecks.length >= 5 &&
+                  !selectedChecks.includes(check.check_id))}
+            />
+            <span
+              >{check.kind} check · {new Date(
+                check.checked_at,
+              ).toLocaleString()}
+              {#if check.service_config_id}
+                · Service #{check.service_config_id}{/if}
+              {#if check.target}
+                · {check.target.scope.replaceAll("_", " ")} #{check.target
+                  .id}{/if}
+              {#if !check.attachment_expires_at}<span
+                  class="block text-muted-foreground"
+                  >Unavailable for attachment; download this result separately.</span
+                >{/if}
+            </span>
+          </label>
+        {/each}
+      </fieldset>
+    {:else}
+      <p class="text-xs text-muted-foreground">
+        To attach check results, run a check below and select its completed
+        result here.
+      </p>
+    {/if}
   </fieldset>
   <div class="flex flex-wrap gap-2">
     <Button
