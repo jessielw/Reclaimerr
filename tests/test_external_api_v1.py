@@ -250,7 +250,7 @@ def test_external_openapi_schema_only_contains_supported_v1_routes() -> None:
             for operations in schema["paths"].values()
             for method in operations
         )
-        == 28
+        == 39
     )
     assert all(path.startswith("/api/v1") for path in schema["paths"])
     assert "/api/settings/general" not in schema["paths"]
@@ -277,7 +277,7 @@ def test_external_api_documentation_routes() -> None:
             for operations in schema["paths"].values()
             for method in operations
         )
-        == 28
+        == 39
     )
 
     swagger_response = client.get("/api/v1/docs")

@@ -653,15 +653,6 @@
                       selectedRequest.playback_deferral.checked_at,
                     )}. Retry when playback has ended.
                   </p>
-                  {#if canManageRequests && !selectedRequest.scheduled_deletion_id}
-                    <Button
-                      class="mt-3"
-                      disabled={retrySubmitting ||
-                        selectedRequest.target_available === false}
-                      onclick={() => retryRequest(selectedRequest)}
-                      >Retry deletion</Button
-                    >
-                  {/if}
                 </div>
               {/if}
 
@@ -679,6 +670,14 @@
               {/if}
 
               <div class="flex flex-wrap gap-3">
+                {#if canManageRequests && selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.scheduled_deletion_id && !selectedRequest.executed_at && (selectedRequest.execution_error || selectedRequest.playback_deferral)}
+                  <Button
+                    disabled={retrySubmitting ||
+                      selectedRequest.target_available === false}
+                    onclick={() => retryRequest(selectedRequest)}
+                    >Retry deletion</Button
+                  >
+                {/if}
                 {#if canManageRequests && selectedRequest.scheduled_deletion_id && ["scheduled", "blocked", "failed"].includes(selectedRequest.schedule_state ?? "")}
                   <Button
                     onclick={() => openSchedule(selectedRequest, "reschedule")}

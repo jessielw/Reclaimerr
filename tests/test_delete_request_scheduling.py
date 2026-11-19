@@ -29,15 +29,16 @@ from backend.models.jobs import CandidateFileOpJobPayload
 from backend.models.requests import ApproveDeleteRequest
 from backend.models.scheduled_deletions import RescheduleDeletionRequest
 from backend.models.settings import GeneralSettingsResponse
+from backend.services import delete_request_workflow, schedule_workflow
 
 
 @pytest.fixture
 def notifications(monkeypatch):
     approval = AsyncMock()
-    monkeypatch.setattr(requests, "notify_user", approval)
+    monkeypatch.setattr(delete_request_workflow, "notify_user", approval)
     monkeypatch.setattr(candidate_file_ops, "notify_user", AsyncMock())
     monkeypatch.setattr(candidate_file_ops, "notify_admins", AsyncMock())
-    monkeypatch.setattr(schedules, "request_leaving_soon_sync", lambda: None)
+    monkeypatch.setattr(schedule_workflow, "request_leaving_soon_sync", lambda: None)
     return approval
 
 
@@ -74,7 +75,9 @@ def test_approval_timing_defaults_and_overrides(
 ):
     async def run():
         queue = AsyncMock()
-        monkeypatch.setattr(requests, "queue_candidate_file_op_job", queue)
+        monkeypatch.setattr(
+            delete_request_workflow, "queue_candidate_file_op_job", queue
+        )
         async with database(monkeypatch) as factory, factory() as db:
             user, request, _, _ = await seed_request(db, days=days)
             before = datetime.now(UTC)
@@ -138,7 +141,7 @@ def test_failed_scheduling_preserves_pending_request(
             request_id = request.id
             if failure == "enqueue":
                 monkeypatch.setattr(
-                    schedules,
+                    schedule_workflow,
                     "add_schedule_job",
                     AsyncMock(side_effect=RuntimeError("queue unavailable")),
                 )
@@ -207,7 +210,9 @@ def test_request_manager_can_reschedule_and_cancel_without_reclaim_permission(
                 )
             )["skipped"]
             await schedules.cancel_scheduled_deletion(schedule.id, user, db)
-            response = await requests._build_delete_request_response(db, request)
+            response = await delete_request_workflow.build_delete_request_response(
+                db, request
+            )
             assert response.status is ProtectionRequestStatus.APPROVED
             assert response.schedule_state == "canceled"
             request.playback_deferral = {"message": "Playing"}
@@ -284,7 +289,9 @@ def test_scheduled_request_execution_and_outcomes(monkeypatch, notifications, ou
             if outcome == "deferred":
                 assert request.playback_deferral["message"] == "Currently playing"
                 assert request.execution_error is None
-                response = await requests._build_delete_request_response(db, request)
+                response = await delete_request_workflow.build_delete_request_response(
+                    db, request
+                )
                 assert response.execution_error is None
                 assert response.schedule_state == "blocked"
             elif outcome != "success":
@@ -300,7 +307,9 @@ def test_scheduled_request_execution_and_outcomes(monkeypatch, notifications, ou
 
 
 def test_concurrent_approvals_create_only_one_schedule(monkeypatch, notifications):
-    monkeypatch.setattr(requests, "candidate_workflow_lock", asyncio.Lock())
+    monkeypatch.setattr(
+        delete_request_workflow, "candidate_workflow_lock", asyncio.Lock()
+    )
 
     async def run():
         async with database(monkeypatch) as factory, factory() as db:

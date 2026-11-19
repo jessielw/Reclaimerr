@@ -134,6 +134,8 @@ class DeleteRequestResponse(BaseModel):
     status: ProtectionRequestStatus
     reviewed_by_user_id: int | None
     reviewed_by_username: str | None
+    reviewed_by_api_token_id: int | None = None
+    reviewed_by_api_token_name: str | None = None
     reviewed_at: str | None
     admin_notes: str | None
 

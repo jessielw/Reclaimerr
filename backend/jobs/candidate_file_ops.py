@@ -4,12 +4,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.api_tokens import (
+    API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE,
+    deletion_token_error,
+)
 from backend.core.logger import LOG
 from backend.core.utils.request import describe_exception, summarize_error_message
 from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import async_db
 from backend.database.models import (
+    ApiToken,
     BackgroundJob,
     DeleteRequest,
     Movie,
@@ -21,6 +27,7 @@ from backend.enums import (
     BackgroundJobType,
     CandidateFileOpOperation,
     NotificationType,
+    ProtectionRequestStatus,
 )
 from backend.jobs.queue import enqueue_background_job, update_background_job_payload
 from backend.models.jobs import (
@@ -29,7 +36,10 @@ from backend.models.jobs import (
     CandidateFileOpJobProgress,
     CandidateFileOpJobResult,
 )
-from backend.services.candidate_lifecycle import candidate_deletion_blockers
+from backend.services.candidate_lifecycle import (
+    candidate_deletion_blockers,
+    candidate_scope,
+)
 from backend.services.notifications import (
     notify_admins,
     notify_user,
@@ -47,12 +57,14 @@ async def queue_candidate_file_op_job(
     *,
     operation: CandidateFileOpOperation,
     candidate_ids: list[int],
-    requested_by_user_id: int,
+    requested_by_user_id: int | None,
     requested_by_username: str,
+    requested_by_api_token_id: int | None = None,
     delete_request_id: int | None = None,
     item_labels: list[str] | None = None,
     item_label_total: int | None = None,
     item_details: list[CandidateFileOpJobItem] | None = None,
+    db: AsyncSession | None = None,
 ) -> BackgroundJob:
     """Queues a background job to perform file operations (delete/move) on candidates."""
     payload = CandidateFileOpJobPayload(
@@ -60,6 +72,7 @@ async def queue_candidate_file_op_job(
         candidate_ids=candidate_ids,
         requested_by_user_id=requested_by_user_id,
         requested_by_username=requested_by_username,
+        requested_by_api_token_id=requested_by_api_token_id,
         delete_request_id=delete_request_id,
         item_labels=item_labels or [],
         item_label_total=item_label_total,
@@ -68,6 +81,16 @@ async def queue_candidate_file_op_job(
             total_items=len(candidate_ids),
         ),
     ).model_dump(mode="json")
+    if db is not None:
+        job = BackgroundJob(
+            job_type=BackgroundJobType.CANDIDATE_FILE_OP,
+            payload=payload,
+            scheduled_at=datetime.now(UTC),
+            priority=BackgroundJobPriority.HIGH,
+        )
+        db.add(job)
+        await db.flush()
+        return job
     job = await enqueue_background_job(
         job_type=BackgroundJobType.CANDIDATE_FILE_OP,
         payload=payload,
@@ -203,6 +226,71 @@ async def run_candidate_file_op_job(
             from backend.jobs.scheduled_deletions import run_scheduled_deletion
 
             return await run_scheduled_deletion(job_id, payload)
+        if payload.requested_by_api_token_id is not None:
+            async with async_db() as db:
+                token = await db.get(ApiToken, payload.requested_by_api_token_id)
+                error = deletion_token_error(
+                    token, API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE
+                )
+                request = (
+                    await db.get(DeleteRequest, payload.delete_request_id)
+                    if payload.delete_request_id is not None
+                    else None
+                )
+                waiting = (
+                    request is not None
+                    and request.status == ProtectionRequestStatus.APPROVED
+                    and request.executed_at is None
+                )
+                candidate = (
+                    await db.get(ReclaimCandidate, payload.candidate_ids[0])
+                    if len(payload.candidate_ids) == 1
+                    else None
+                )
+                candidate_ids = (
+                    [candidate.id]
+                    if candidate is not None
+                    and candidate.delete_request_id is not None
+                    and candidate.delete_request_id == payload.delete_request_id
+                    else []
+                )
+                target_matches = bool(
+                    candidate is not None
+                    and len(payload.item_details) == 1
+                    and payload.item_details[0].candidate_id == candidate.id
+                    and payload.item_details[0].scope == candidate_scope(candidate)
+                )
+                if not waiting or not candidate_ids or not target_matches:
+                    error = (
+                        error
+                        or "The approved deletion request target is no longer available"
+                    )
+            if error:
+                if waiting and payload.delete_request_id is not None:
+                    await _finalize_delete_request_job(
+                        delete_request_id=payload.delete_request_id,
+                        candidate_ids=candidate_ids,
+                        succeeded=0,
+                        failed=len(payload.candidate_ids),
+                        fallback_error=error,
+                    )
+                count = len(payload.candidate_ids)
+                progress = CandidateFileOpJobProgress(
+                    total_items=count,
+                    completed_items=count,
+                    failed_items=count,
+                    percent=100,
+                )
+                await update_background_job_payload(
+                    job_id, {"progress": progress.model_dump(mode="json")}
+                )
+                return CandidateFileOpJobResult(
+                    operation=payload.operation,
+                    processed=count,
+                    succeeded=0,
+                    failed=count,
+                    errors=[error],
+                ).model_dump(mode="json")
         return await _run_candidate_file_op_job_unlocked(job_id, payload)
 
 

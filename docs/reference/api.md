@@ -19,9 +19,13 @@ Authorization: Bearer rcl_prefix_secret
 Available scopes are:
 
 - `system:read` for version, capabilities, latest successful sync times, and the totals in `/api/v1/stats`.
-- `media:read` for movie and series catalog lookup.
+- `media:read` for movie and series catalog lookup, including movie version paths and media server IDs.
 - `candidates:read` for candidate lookup, status queries, and the unified leaving-soon feed.
 - `candidates:manage` for cancellation, postponement, timer resets, and candidate protection. This also grants `candidates:read`.
+- `delete_requests:read` for delete request lookup and approval options.
+- `delete_requests:manage` for approving, denying, and retrying requests and changing their schedules. This also grants `delete_requests:read`.
+- `scheduled_deletions:read` for standalone and request-linked schedule lookup.
+- `scheduled_deletions:manage` for creating, rescheduling, and canceling standalone manual schedules. This also grants `scheduled_deletions:read`.
 - `events:read` for the durable lifecycle event feed.
 - `protections:read` for protection lookup.
 - `protections:manage` for creating and removing protections. This also grants `protections:read`.
@@ -132,7 +136,44 @@ Events are returned oldest-first. Supply the response's `next_cursor` as the nex
 - `GET /api/v1/series`
 - `GET /api/v1/series/{media_id}`
 
-Media lists support title search, canonical provider IDs, status, pagination, sorting, and optional removed-item inclusion. Responses include candidate and active-protection IDs but intentionally omit filesystem paths and service credentials.
+Media lists support title search, canonical provider IDs, status, pagination, sorting, and optional removed-item inclusion. Responses include candidate and active-protection IDs.
+
+Both movie endpoints include a `versions` array, ordered by Reclaimerr version ID. Each version contains `id`, `path`, `service_item_id` (the media server item ID), `service_media_id` (the media source ID), `size_bytes`, and `resolution`. Paths and resolutions are `null` when unavailable. Use `size_bytes` at the movie level for the aggregate and the version's `size_bytes` for that file.
+
+### Delete Requests
+
+- `GET /api/v1/delete-requests` lists requests. Filter by `status` (`pending`, `approved`, or `denied`).
+- `GET /api/v1/delete-requests/{id}` shows the target, requester and linked media identities, review, and execution details.
+- `GET /api/v1/delete-requests/approval-options` returns `delete_request_grace_period_days`.
+- `POST /api/v1/delete-requests/{id}/approve` accepts `admin_notes` and `scheduled_at`. Send `{}` to use the configured grace period, `{"scheduled_at":null}` to queue immediately, or a future ISO 8601 timestamp with a timezone to schedule it.
+- `POST /api/v1/delete-requests/{id}/deny` accepts `{}` or a body with `admin_notes`. `POST /api/v1/delete-requests/{id}/retry` retries an approved request whose immediate execution failed or was deferred. Reschedule a linked schedule to retry it.
+
+For a token review, `reviewed_by_api_token_id` and `reviewed_by_api_token_name` identify the reviewer. Request creation and withdrawal are available through the web UI.
+
+### Scheduled Deletions
+
+- `GET /api/v1/scheduled-deletions` lists active standalone and request-linked schedules. Pass `active_only=false` to include completed and canceled entries.
+- `GET /api/v1/scheduled-deletions/{id}` returns the saved target summary, `scheduled_at`, state, last error, and any linked `delete_request_id`.
+- `POST /api/v1/scheduled-deletions` creates a standalone manual schedule for a synced target. Send `media_type`, Reclaimerr `media_id`, and a timezone-aware future `scheduled_at`. Include `movie_version_id` for one movie copy, `season_id` for a season, or both `season_id` and `episode_id` for an episode.
+- `POST /api/v1/scheduled-deletions/{id}/reschedule` takes a new `scheduled_at`. `POST /api/v1/scheduled-deletions/{id}/cancel` cancels the schedule. For an approved request's schedule, both actions require `delete_requests:manage`. Standalone schedules require `scheduled_deletions:manage`.
+
+Delete request and schedule lists use `page` (default 1) and `per_page` (default 50, maximum 200). The response includes `items`, `total`, `page`, `per_page`, and `total_pages`.
+
+Reclaimerr checks the authorizing token when execution starts. A revoked, expired, missing, or insufficiently scoped token blocks execution. An authorized reschedule or immediate retry supplies a fresh grant. Canceling a schedule releases its hold on ordinary cleanup rules. The requested time is when the job becomes eligible to run. Playback, protections, and the saved file scope still apply.
+
+To schedule only one copy of a movie, look up the movie, select the matching `versions[].id`, and schedule it using that value as `movie_version_id`:
+
+```bash
+curl -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  "https://reclaimerr.example/api/v1/movies?tmdb_id=550"
+
+curl -X POST -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"media_type":"movie","media_id":42,"movie_version_id":71,"scheduled_at":"2099-06-01T16:30:00Z"}' \
+  "https://reclaimerr.example/api/v1/scheduled-deletions"
+```
+
+Use the returned schedule `id` for rescheduling or cancellation.
 
 ### Protections
 

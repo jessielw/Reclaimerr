@@ -9,6 +9,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.api_tokens import (
+    API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE,
+    API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE,
+    ApiPrincipal,
+)
 from backend.core.auth import has_permission
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import mapped_path_variants, normalize_fpath
@@ -68,14 +73,31 @@ def future_time(value: datetime) -> datetime:
 
 
 async def require_schedule_permission(
-    db: AsyncSession, user: User, schedule: ScheduledDeletion
+    db: AsyncSession, actor: User | ApiPrincipal, schedule: ScheduledDeletion
 ) -> None:
     """Request approvals retain their own permission boundary throughout execution."""
-    if schedule.delete_request_id is None:
-        require_delete_permission(user)
-        return
-    if not user.is_active or not has_permission(user, Permission.MANAGE_REQUESTS):
+    if isinstance(actor, ApiPrincipal):
+        scope = schedule_manage_scope(schedule)
+        if not actor.has_scope(scope):
+            raise HTTPException(403, f"API token requires the {scope} scope")
+    elif schedule.delete_request_id is None:
+        require_delete_permission(actor)
+    elif not actor.is_active or not has_permission(actor, Permission.MANAGE_REQUESTS):
         raise HTTPException(403, "Manage requests permission required")
+    await require_waiting_request(db, schedule)
+
+
+def schedule_manage_scope(schedule: ScheduledDeletion) -> str:
+    if schedule.delete_request_id is not None:
+        return API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE
+    return API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE
+
+
+async def require_waiting_request(
+    db: AsyncSession, schedule: ScheduledDeletion
+) -> None:
+    if schedule.delete_request_id is None:
+        return
     request = await db.get(DeleteRequest, schedule.delete_request_id)
     if (
         request is None
@@ -642,8 +664,9 @@ async def add_schedule_job(
     payload = CandidateFileOpJobPayload(
         operation=CandidateFileOpOperation.DELETE,
         candidate_ids=[],
-        requested_by_user_id=schedule.created_by_user_id or 0,
+        requested_by_user_id=schedule.created_by_user_id,
         requested_by_username=schedule.created_by_username,
+        requested_by_api_token_id=schedule.created_by_api_token_id,
         scheduled_deletion_id=schedule.id,
         delete_request_id=schedule.delete_request_id,
         item_labels=[schedule.target["title"]],
@@ -685,7 +708,9 @@ async def schedule_response(
         id=schedule.id,
         scheduled_at=ensure_utc(schedule.scheduled_at),
         state=state,
+        delete_request_id=schedule.delete_request_id,
         target=schedule.target,
         created_by_username=schedule.created_by_username,
+        created_by_api_token_id=schedule.created_by_api_token_id,
         last_error=error,
     )

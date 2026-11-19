@@ -2228,6 +2228,12 @@ class DeleteRequest(Base):
     reviewed_by: Mapped[User | None] = relationship(
         foreign_keys=[reviewed_by_user_id], init=False, lazy="noload", repr=False
     )
+    reviewed_by_api_token_id: Mapped[int | None] = mapped_column(
+        ForeignKey("api_tokens.id", ondelete="SET NULL"), default=None
+    )
+    reviewed_by_api_token_name: Mapped[str | None] = mapped_column(
+        String(100), default=None
+    )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     admin_notes: Mapped[str | None] = mapped_column(Text, default=None)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -2267,6 +2273,9 @@ class ScheduledDeletion(Base):
     requester_warned_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_by_api_token_id: Mapped[int | None] = mapped_column(
+        ForeignKey("api_tokens.id", ondelete="SET NULL"), default=None
     )
     job_id: Mapped[int | None] = mapped_column(
         ForeignKey("background_jobs.id", ondelete="SET NULL"), default=None

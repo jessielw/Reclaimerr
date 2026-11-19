@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Scoped API tokens can review delete requests and create or manage scheduled deletions. Movie lookups now include individual versions and their paths, so integrations can schedule one copy. Deletion jobs recheck the authorizing token before execution. #535
 - A unified `GET /api/v1/leaving-soon` endpoint for automatic cleanup, manual schedules, and delayed deletion approvals, with deletion dates, scope, version IDs, sizes, filtering, and pagination. #534
 - Cleanup candidate API responses and lifecycle events now include `size_bytes` for the selected movie version, movie, series, season, or episode, so integrations can display estimated space savings. #533
 - Account and delete-request API responses now include linked Jellyfin, Plex, and Emby identities with server configuration IDs, provider user IDs, usernames, and display names, so integrations can match users across services. #532

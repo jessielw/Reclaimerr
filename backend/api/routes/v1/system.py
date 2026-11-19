@@ -63,5 +63,8 @@ async def get_system(
             "task-triggering",
             "durable-webhooks",
             "media-user-import",
+            "delete-requests",
+            "scheduled-deletions",
+            "movie-versions",
         ],
     )

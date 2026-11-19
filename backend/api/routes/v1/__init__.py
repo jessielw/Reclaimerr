@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 
 from backend.api.routes.v1 import (
     candidates,
+    deletions,
     docs,
     events,
     leaving_soon,
@@ -31,6 +32,7 @@ async def discover_api(
         api_version="v1",
         resources={
             "candidates": "/api/v1/candidates",
+            "delete_requests": "/api/v1/delete-requests",
             "docs": "/api/v1/docs",
             "events": "/api/v1/events",
             "leaving_soon": "/api/v1/leaving-soon",
@@ -40,6 +42,7 @@ async def discover_api(
             "stats": "/api/v1/stats",
             "protections": "/api/v1/protections",
             "rules": "/api/v1/rules",
+            "scheduled_deletions": "/api/v1/scheduled-deletions",
             "system": "/api/v1/system",
             "tasks": "/api/v1/tasks",
             "users": "/api/v1/users",
@@ -50,6 +53,7 @@ async def discover_api(
 
 
 router.include_router(candidates.router)
+router.include_router(deletions.router)
 router.include_router(events.router)
 router.include_router(leaving_soon.router)
 router.include_router(media.router)

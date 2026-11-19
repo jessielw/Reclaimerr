@@ -29,9 +29,29 @@ class MediaResponse(BaseModel):
     protection_ids: list[int] = Field(default_factory=list)
 
 
-class MediaListResponse(BaseModel):
-    items: list[MediaResponse]
+class MediaPage(BaseModel):
     total: int
     page: int
     per_page: int
     total_pages: int
+
+
+class MediaListResponse(MediaPage):
+    items: list[MediaResponse]
+
+
+class MovieVersionResponse(BaseModel):
+    id: int
+    path: str | None
+    service_item_id: str
+    service_media_id: str
+    size_bytes: int
+    resolution: str | None
+
+
+class MovieResponse(MediaResponse):
+    versions: list[MovieVersionResponse]
+
+
+class MovieListResponse(MediaPage):
+    items: list[MovieResponse]

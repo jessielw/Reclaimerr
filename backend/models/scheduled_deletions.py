@@ -13,10 +13,10 @@ class ScheduleCandidatesRequest(BaseModel):
 
 class ScheduleMediaRequest(BaseModel):
     media_type: MediaType
-    media_id: int
-    movie_version_id: int | None = None
-    season_id: int | None = None
-    episode_id: int | None = None
+    media_id: int = Field(gt=0)
+    movie_version_id: int | None = Field(default=None, gt=0)
+    season_id: int | None = Field(default=None, gt=0)
+    episode_id: int | None = Field(default=None, gt=0)
     scheduled_at: AwareDatetime
 
 
@@ -28,6 +28,8 @@ class ScheduledDeletionResponse(BaseModel):
     id: int
     scheduled_at: datetime
     state: str
+    delete_request_id: int | None = None
     target: dict[str, Any]
     created_by_username: str
+    created_by_api_token_id: int | None = None
     last_error: str | None

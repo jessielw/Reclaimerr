@@ -4,16 +4,19 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import delete
 
+from backend.core.api_tokens import deletion_token_error
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.request import describe_exception
 from backend.database import async_db
-from backend.database.models import ReclaimCandidate, ScheduledDeletion, User
+from backend.database.models import ApiToken, ReclaimCandidate, ScheduledDeletion, User
 from backend.models.jobs import CandidateFileOpJobItem, CandidateFileOpJobPayload
 from backend.services.candidate_lifecycle import candidate_deletion_blockers
 from backend.services.scheduled_deletions import (
     executing_schedule_id,
     require_schedule_permission,
+    require_waiting_request,
     resolve_target,
+    schedule_manage_scope,
 )
 
 
@@ -51,16 +54,30 @@ async def run_scheduled_deletion(
             delete_request_id = schedule.delete_request_id
             if ensure_utc(schedule.scheduled_at) > datetime.now(UTC):
                 raise RuntimeError("Scheduled deletion was invoked before its due time")
-            user = (
-                await db.get(User, schedule.created_by_user_id)
-                if schedule.created_by_user_id
-                else None
-            )
-            if user is None:
-                raise HTTPException(
-                    409, "The user who scheduled this deletion no longer exists"
+            if (
+                schedule.created_by_api_token_id is not None
+                or payload.requested_by_api_token_id is not None
+            ):
+                api_token = (
+                    await db.get(ApiToken, schedule.created_by_api_token_id)
+                    if schedule.created_by_api_token_id is not None
+                    else None
                 )
-            await require_schedule_permission(db, user, schedule)
+                error = deletion_token_error(api_token, schedule_manage_scope(schedule))
+                if error:
+                    raise HTTPException(409, error)
+                await require_waiting_request(db, schedule)
+            else:
+                user = (
+                    await db.get(User, schedule.created_by_user_id)
+                    if schedule.created_by_user_id
+                    else None
+                )
+                if user is None:
+                    raise HTTPException(
+                        409, "The user who scheduled this deletion no longer exists"
+                    )
+                await require_schedule_permission(db, user, schedule)
             candidate = await resolve_target(db, schedule.target)
             candidate.delete_request_id = delete_request_id
             candidate.matched_criteria = {"scheduled_deletion_id": schedule.id}
