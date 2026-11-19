@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
+from backend.models.media_identity import MediaServerItem
 from backend.models.requests import DeleteRequestResponse
 
 
@@ -22,6 +23,7 @@ class ApprovalOptionsResponse(BaseModel):
 class ScheduledDeletionTarget(BaseModel):
     media_type: MediaType
     media_id: int
+    media_server_items: list[MediaServerItem] = Field(default_factory=list)
     scope: Literal["movie", "version", "series", "season", "episode"]
     title: str
     year: int | None

@@ -47,17 +47,16 @@ async def list_leaving_soon(
     before: datetime | None = ensure_utc(delete_before) if delete_before else None
     if after is not None and before is not None and before < after:
         raise HTTPException(422, "delete_before must not precede delete_after")
-    items = [
-        item
-        for item in await load_leaving_soon(db)
-        if (media_type is None or item.media_type == media_type)
-        and (after is None or item.delete_at >= after)
-        and (before is None or item.delete_at <= before)
-    ]
-    total = len(items)
-    start = (page - 1) * per_page
+    items, total = await load_leaving_soon(
+        db,
+        media_type=media_type,
+        after=after,
+        before=before,
+        offset=(page - 1) * per_page,
+        limit=per_page,
+    )
     return LeavingSoonListResponse(
-        items=items[start : start + per_page],
+        items=items,
         total=total,
         page=page,
         per_page=per_page,

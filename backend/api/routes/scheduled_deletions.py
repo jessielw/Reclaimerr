@@ -31,7 +31,7 @@ from backend.services.scheduled_deletions import (
     ACTIVE_SCHEDULE_STATES,
     future_time,
     require_delete_permission,
-    schedule_response,
+    schedule_responses,
 )
 
 router = APIRouter(prefix="/api/media", tags=["scheduled-deletions"])
@@ -49,7 +49,7 @@ async def list_scheduled_deletions(
             .order_by(ScheduledDeletion.scheduled_at, ScheduledDeletion.id)
         )
     ).all()
-    return [await schedule_response(db, schedule) for schedule in schedules]
+    return await schedule_responses(db, schedules)
 
 
 @router.post(

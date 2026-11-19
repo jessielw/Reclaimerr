@@ -110,7 +110,11 @@ curl -X POST \
 
 Each item includes `source` (`candidate`, `manual`, or `delete_request`), `delete_at`, `state`, `delete_operation` (`delete` or `move`), `scope`, `size_bytes`, title, year, TMDB ID, and Reclaimerr media IDs. Movie versions include `movie_version_id`; TV scopes include series, season, and episode IDs and numbers where applicable. `candidate_id`, `scheduled_deletion_id`, and `delete_request_id` identify the originating records when present. Scheduled entries use the saved target snapshot; filesystem paths, routing settings, and account details are omitted.
 
-`size_bytes` describes only the selected scope, using the cleanup estimate or that scope's size for candidates, and the saved estimate for schedules. Unknown sizes are `null`; known zero sizes are `0`.
+`size_bytes` describes only the selected scope, using the cleanup estimate or that scope's size for candidates, and the saved estimate for schedules. Unknown sizes are `null`; known zero sizes are `0`. Use `media_server_items` to open the target directly on a media server.
+
+Each `media_server_items` entry contains `source_service` (`jellyfin`, `plex`, or `emby`), `source_service_config_id`, `source_service_name`, `source_item_id`, and `source_media_id`. Use the config ID with the item ID since servers can assign the same item ID. For movies, the media source ID (Plex `Media.id` or Jellyfin/Emby `MediaSource.Id`) identifies the file version when multiple versions share an item ID. It is `null` when unavailable or for TV scopes. Whole-movie targets can list several versions. TV targets report item IDs for their specific series, season, or episode scope.
+
+The array comes from synced Reclaimerr data and saved linked-server matches. A linked movie version is included only when its saved file match identifies one version unambiguously. Targets with no resolvable IDs return `[]`. Server addresses, credentials, and filesystem paths are omitted.
 
 Results are ordered by `delete_at` ascending, with stable source and record-ID tie breakers. Use `page` (default 1) and `per_page` (default 50, maximum 200). The response includes `items`, `total`, `page`, `per_page`, and `total_pages`. Optional filters are `media_type` (`movie` or `series`), `delete_after`, and `delete_before`. Both date bounds are inclusive ISO 8601 timestamps requiring a timezone. Filtering happens before pagination.
 
@@ -148,7 +152,7 @@ Both movie endpoints include a `versions` array, ordered by Reclaimerr version I
 - `POST /api/v1/delete-requests/{id}/approve` accepts `admin_notes` and `scheduled_at`. Send `{}` to use the configured grace period, `{"scheduled_at":null}` to queue immediately, or a future ISO 8601 timestamp with a timezone to schedule it.
 - `POST /api/v1/delete-requests/{id}/deny` accepts `{}` or a body with `admin_notes`. `POST /api/v1/delete-requests/{id}/retry` retries an approved request whose immediate execution failed or was deferred. Reschedule a linked schedule to retry it.
 
-For a token review, `reviewed_by_api_token_id` and `reviewed_by_api_token_name` identify the reviewer. Request creation and withdrawal are available through the web UI.
+`media_server_items` uses the same shape as [Leaving Soon](#leaving-soon) and identifies the requested media. `requested_by_media_identities` identifies the requester. For a token review, `reviewed_by_api_token_id` and `reviewed_by_api_token_name` identify the reviewer. Request creation and withdrawal are available through the web UI.
 
 ### Scheduled Deletions
 
@@ -158,6 +162,8 @@ For a token review, `reviewed_by_api_token_id` and `reviewed_by_api_token_name` 
 - `POST /api/v1/scheduled-deletions/{id}/reschedule` takes a new `scheduled_at`. `POST /api/v1/scheduled-deletions/{id}/cancel` cancels the schedule. For an approved request's schedule, both actions require `delete_requests:manage`. Standalone schedules require `scheduled_deletions:manage`.
 
 Delete request and schedule lists use `page` (default 1) and `per_page` (default 50, maximum 200). The response includes `items`, `total`, `page`, `per_page`, and `total_pages`.
+
+`target.media_server_items` uses the same shape as [Leaving Soon](#leaving-soon). New schedules save available IDs with their target. Older schedules resolve IDs from their stored scope when it still matches synced media.
 
 Reclaimerr checks the authorizing token when execution starts. A revoked, expired, missing, or insufficiently scoped token blocks execution. An authorized reschedule or immediate retry supplies a fresh grant. Canceling a schedule releases its hold on ordinary cleanup rules. The requested time is when the job becomes eligible to run. Playback, protections, and the saved file scope still apply.
 

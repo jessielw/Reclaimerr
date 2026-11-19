@@ -19,8 +19,10 @@ from backend.database.models import (
     MovieVersion,
     ReclaimCandidate,
     ScheduledDeletion,
+    ServiceConfig,
+    SupplementalMediaMatch,
 )
-from backend.enums import BackgroundJobStatus, Service
+from backend.enums import BackgroundJobStatus, MediaType, Service
 from backend.jobs import candidate_file_ops
 from backend.models.jobs import CandidateFileOpJobPayload
 from backend.services import delete_request_workflow, schedule_workflow
@@ -266,6 +268,131 @@ async def test_request_manager_can_review_and_manage_linked_schedule(monkeypatch
         assert (await client.post(f"{url}/cancel", headers=reviews)).status_code == 200
         updated = await client.get(detail, headers=reviews)
         assert updated.json()["schedule_state"] == "canceled"
+
+
+@pytest.mark.anyio
+async def test_exact_server_items_across_leaving_soon_requests_and_schedules(
+    monkeypatch,
+):
+    async with api(monkeypatch) as (client, factory), factory() as db:
+        _, request, candidate, _ = await seed_request(db, days=3)
+        version = await db.get(MovieVersion, candidate.movie_version_id)
+        sibling = MovieVersion(
+            movie_id=version.movie_id,
+            service=Service.PLEX,
+            service_item_id=version.service_item_id,
+            service_media_id="4k",
+            library_id="movies",
+            library_name="Movies",
+            path="/movies/4k.mkv",
+        )
+        main = ServiceConfig(
+            service_type=Service.PLEX,
+            name="Main",
+            base_url="http://private-main",
+            api_key="private-key",
+            is_main=True,
+        )
+        linked = ServiceConfig(
+            service_type=Service.PLEX,
+            name="Linked",
+            base_url="http://private-linked",
+            api_key="private-key",
+        )
+        db.add_all([main, linked, sibling])
+        await db.flush()
+        db.add_all(
+            [
+                SupplementalMediaMatch(
+                    source_service=Service.PLEX,
+                    source_service_config_id=linked.id,
+                    source_item_id=version.service_item_id,
+                    media_type=MediaType.MOVIE,
+                    movie_id=version.movie_id,
+                    source_media_id="linked-hd",
+                    path_tail="movies/original.mkv",
+                ),
+                SupplementalMediaMatch(
+                    source_service=Service.PLEX,
+                    source_service_config_id=linked.id,
+                    source_item_id="sibling-item",
+                    media_type=MediaType.MOVIE,
+                    movie_id=version.movie_id,
+                    source_media_id="linked-4k",
+                    path_tail="movies/4k.mkv",
+                ),
+            ]
+        )
+        _, headers = await token(
+            db, "candidates:read", "delete_requests:manage", "scheduled_deletions:read"
+        )
+        await db.commit()
+        expected = [
+            {
+                "source_service": "plex",
+                "source_service_config_id": main.id,
+                "source_service_name": "Main",
+                "source_item_id": version.service_item_id,
+                "source_media_id": version.service_media_id,
+            },
+            {
+                "source_service": "plex",
+                "source_service_config_id": linked.id,
+                "source_service_name": "Linked",
+                "source_item_id": version.service_item_id,
+                "source_media_id": "linked-hd",
+            },
+        ]
+        feed = "/api/v1/leaving-soon"
+        detail = f"{REQUESTS}/{request.id}"
+        assert (await client.get(feed, headers=headers)).json()["items"][0][
+            "media_server_items"
+        ] == expected
+        assert (await client.get(REQUESTS, headers=headers)).json()["items"][0][
+            "media_server_items"
+        ] == expected
+        assert (await client.get(detail, headers=headers)).json()[
+            "media_server_items"
+        ] == expected
+
+        approved = await client.post(f"{detail}/approve", headers=headers, json={})
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["media_server_items"] == expected
+        schedule_id = approved.json()["scheduled_deletion_id"]
+        url = f"{SCHEDULES}/{schedule_id}"
+        response = await client.get(url, headers=headers)
+        assert response.json()["target"]["media_server_items"] == expected
+        assert "private-" not in response.text and ".mkv" not in response.text
+        assert (await client.get(SCHEDULES, headers=headers)).json()["items"][0][
+            "target"
+        ]["media_server_items"] == expected
+        (item,) = (await client.get(feed, headers=headers)).json()["items"]
+        assert item["source"] == "delete_request"
+        assert item["media_server_items"] == expected
+
+        # Legacy schedules resolve from the exact stored scope. If the same row
+        # now points at a different file, the original identity is unavailable.
+        schedule = await db.get(ScheduledDeletion, schedule_id)
+        assert schedule.target["media_server_items"] == expected
+        schedule.target = {
+            key: value
+            for key, value in schedule.target.items()
+            if key != "media_server_items"
+        }
+        await db.commit()
+        assert (await client.get(url, headers=headers)).json()["target"][
+            "media_server_items"
+        ] == expected
+        sibling.path = "/another/movies/original.mkv"
+        await db.commit()
+        assert (await client.get(url, headers=headers)).json()["target"][
+            "media_server_items"
+        ] == expected[:1]
+        version.path = "/movies/replaced.mkv"
+        await db.commit()
+        assert (await client.get(url, headers=headers)).json()["target"][
+            "media_server_items"
+        ] == []
 
 
 @pytest.mark.anyio

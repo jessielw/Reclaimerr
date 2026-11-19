@@ -40,6 +40,7 @@ from backend.services.deletion_actor import DeletionActor
 from backend.services.scheduled_deletions import (
     ACTIVE_SCHEDULE_STATES,
     schedule_response,
+    schedule_responses,
 )
 
 router = APIRouter()
@@ -174,7 +175,10 @@ async def list_scheduled_deletions(
         .offset((page - 1) * per_page)
         .limit(per_page)
     )
-    items = [_schedule_summary(await schedule_response(db, row)) for row in rows]
+    items = [
+        _schedule_summary(response)
+        for response in await schedule_responses(db, rows.all())
+    ]
     return ScheduledDeletionListResponse(
         items=items,
         total=total,

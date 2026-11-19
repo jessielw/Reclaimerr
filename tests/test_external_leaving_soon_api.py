@@ -24,6 +24,9 @@ from backend.database.models import (
     ScheduledDeletion,
     Season,
     Series,
+    SeriesServiceRef,
+    ServiceConfig,
+    SupplementalMediaMatch,
     User,
 )
 from backend.enums import (
@@ -295,6 +298,96 @@ async def test_tv_schedule_keeps_snapshot_scope_without_a_candidate(client_db):
     assert item["episode_number"] == 7
     assert item["size_bytes"] is None
     assert item["delete_operation"] == "move"
+
+
+async def test_tv_server_items_respect_series_and_child_scopes(client_db):
+    client, db = client_db
+    series = Series(title="Show", tmdb_id=0)
+    main = ServiceConfig(
+        service_type=Service.JELLYFIN,
+        name="Jellyfin",
+        base_url="http://private",
+        api_key="secret",
+        is_main=True,
+    )
+    linked = ServiceConfig(
+        service_type=Service.EMBY,
+        name="Emby",
+        base_url="http://private",
+        api_key="secret",
+    )
+    rule = ReclaimRule(
+        name="Cleanup",
+        media_type=MediaType.SERIES,
+        action={"auto_delete_enabled": True},
+    )
+    db.add_all([series, main, linked, rule])
+    await db.flush()
+    season = Season(
+        series_id=series.id, season_number=1, jellyfin_season_id="main-season"
+    )
+    db.add_all(
+        [
+            season,
+            SeriesServiceRef(
+                series_id=series.id,
+                service=Service.JELLYFIN,
+                service_id="main-series",
+                library_id="tv",
+                library_name="TV",
+            ),
+        ]
+    )
+    await db.flush()
+    episode = Episode(
+        season_id=season.id, episode_number=2, jellyfin_episode_id="main-episode"
+    )
+    db.add(episode)
+    await db.flush()
+    for scope, season_id, episode_id in [
+        ("series", None, None),
+        ("season", season.id, None),
+        ("episode", season.id, episode.id),
+    ]:
+        db.add(
+            SupplementalMediaMatch(
+                source_service=Service.EMBY,
+                source_service_config_id=linked.id,
+                source_item_id=f"linked-{scope}",
+                media_type=MediaType.SERIES,
+                series_id=series.id,
+                season_id=season_id,
+                episode_id=episode_id,
+            )
+        )
+        db.add(
+            ReclaimCandidate(
+                media_type=MediaType.SERIES,
+                series_id=series.id,
+                season_id=season_id,
+                episode_id=episode_id,
+                matched_rule_ids=[rule.id],
+                matched_criteria={},
+                reason="test",
+            )
+        )
+    await db.commit()
+
+    response = await client.get("/api/v1/leaving-soon")
+    assert response.status_code == 200
+    by_scope = {
+        item["scope"]: item["media_server_items"] for item in response.json()["items"]
+    }
+    assert set(by_scope) == {"series", "season", "episode"}
+    for scope, refs in by_scope.items():
+        assert [
+            (
+                ref["source_service_config_id"],
+                ref["source_item_id"],
+                ref["source_media_id"],
+            )
+            for ref in refs
+        ] == [(main.id, f"main-{scope}", None), (linked.id, f"linked-{scope}", None)]
 
 
 @pytest.mark.parametrize("scope", ["movie", "version", "series", "season", "episode"])

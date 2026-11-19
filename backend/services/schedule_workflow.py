@@ -21,6 +21,7 @@ from backend.models.scheduled_deletions import (
 )
 from backend.services.candidate_lifecycle import candidate_deletion_blockers
 from backend.services.deletion_actor import DeletionActor
+from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 from backend.services.scheduled_deletions import (
     ACTIVE_SCHEDULE_STATES,
     add_schedule_job,
@@ -30,6 +31,7 @@ from backend.services.scheduled_deletions import (
     resolve_target,
     schedule_inventory_overlap,
     schedule_response,
+    schedule_responses,
     snapshot_target,
     target_inventory,
 )
@@ -131,8 +133,15 @@ async def create_schedules(
             raise HTTPException(
                 409, "An overlapping delete or move operation is already queued"
             )
+    item_targets = [MediaItemTarget.from_schedule(target) for target in targets]
+    media_server_items = await load_media_server_items(db, item_targets)
     schedules = []
-    for target in targets:
+    for target, item_target in zip(targets, item_targets, strict=True):
+        items = media_server_items[item_target]
+        if items:
+            target["media_server_items"] = [
+                item.model_dump(mode="json") for item in items
+            ]
         schedule = ScheduledDeletion(
             scheduled_at=when,
             target=target,
@@ -148,7 +157,7 @@ async def create_schedules(
     # Intent and execution job are committed together.
     await db.commit()
     request_leaving_soon_sync()
-    return [await schedule_response(db, schedule) for schedule in schedules]
+    return await schedule_responses(db, schedules)
 
 
 async def _editable_schedule(

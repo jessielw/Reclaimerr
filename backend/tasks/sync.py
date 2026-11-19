@@ -17,7 +17,7 @@ from backend.core.service_manager import service_manager
 from backend.core.task_tracking import track_task_execution
 from backend.core.tmdb import AsyncTMDBClient
 from backend.core.utils.datetime_utils import ensure_utc
-from backend.core.utils.filesystem import normalize_fpath, paths_equivalent
+from backend.core.utils.filesystem import normalize_fpath, path_tail, paths_equivalent
 from backend.database import async_db
 from backend.database.models import (
     CandidateResyncIdentity,
@@ -298,21 +298,10 @@ def _is_media_server_type(service: Service) -> TypeGuard[MediaServerType]:
     return service in MEDIA_SERVERS
 
 
-def _path_tail(path: str | None, depth: int) -> str | None:
-    """Extract the last `depth` segments of a file path (normalized for consistent matching)."""
-    if not path:
-        return None
-    normalized = normalize_fpath(path, strip_ending_slash=True, lower=True)
-    parts = [part for part in normalized.split("/") if part]
-    if len(parts) < depth:
-        return None
-    return "/".join(parts[-depth:])
-
-
 def _episode_file_names(paths: list[str] | None) -> set[str]:
     names: set[str] = set()
     for path in paths or []:
-        tail = _path_tail(path, 1)
+        tail = path_tail(path, 1)
         if tail:
             names.add(tail)
     return names
@@ -521,7 +510,7 @@ async def _build_movie_supplemental_matches(
 
     main_by_key: dict[tuple[int, str], list[tuple[MovieVersion, Movie]]] = {}
     for version, movie in rows:
-        tail = _path_tail(version.path, 2)
+        tail = path_tail(version.path, 2)
         if not tail:
             continue
         main_by_key.setdefault((movie.tmdb_id, tail), []).append((version, movie))
@@ -533,7 +522,7 @@ async def _build_movie_supplemental_matches(
         if not tmdb_id:
             continue
         for version in movie.versions:
-            tail = _path_tail(version.path, 2)
+            tail = path_tail(version.path, 2)
             if not tail:
                 continue
             candidates = main_by_key.get((tmdb_id, tail), [])
@@ -601,7 +590,7 @@ async def _build_series_supplemental_matches(
     series_by_tail: dict[tuple[int, str], list[Series]] = {}
     for ref, series in ref_rows:
         series_by_tmdb[series.tmdb_id] = series
-        tail = _path_tail(ref.path, 1)
+        tail = path_tail(ref.path, 1)
         if tail:
             series_by_tail.setdefault((series.tmdb_id, tail), []).append(series)
 
@@ -617,7 +606,7 @@ async def _build_series_supplemental_matches(
     season_episode_names: dict[int, set[str]] = {}
     for season, series in season_rows:
         seasons_by_key[(series.id, season.season_number)] = season
-        tail = _path_tail(season.path, 2)
+        tail = path_tail(season.path, 2)
         if tail:
             season_tails[season.id] = tail
         names = _episode_file_names(season.episode_paths)
@@ -646,7 +635,7 @@ async def _build_series_supplemental_matches(
             continue
 
         local_series: Series | None = None
-        source_series_tail = _path_tail(source_series.path, 1)
+        source_series_tail = path_tail(source_series.path, 1)
         if source_series_tail:
             candidates = series_by_tail.get((tmdb_id, source_series_tail), [])
             candidate_ids = {candidate.id for candidate in candidates}
@@ -692,7 +681,7 @@ async def _build_series_supplemental_matches(
             if local_season is None:
                 continue
 
-            source_season_tail = _path_tail(source_season.path, 2)
+            source_season_tail = path_tail(source_season.path, 2)
             local_season_tail = season_tails.get(local_season.id)
             source_episode_names = _episode_file_names(source_season.episode_paths)
             local_episode_names = season_episode_names.get(local_season.id, set())

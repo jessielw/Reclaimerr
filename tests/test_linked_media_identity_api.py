@@ -24,6 +24,7 @@ from backend.database.models import (
     User,
 )
 from backend.enums import MediaType, Permission, Service, UserRole
+from backend.services import delete_request_workflow
 
 
 @pytest.fixture
@@ -144,7 +145,7 @@ def identity_api(monkeypatch):
         return state.current_user
 
     monkeypatch.setattr(delete_requests, "notify_admins", AsyncMock())
-    monkeypatch.setattr(delete_requests, "notify_user", AsyncMock())
+    monkeypatch.setattr(delete_request_workflow, "notify_user", AsyncMock())
     app = FastAPI()
     app.include_router(api_router)
     app.include_router(delete_requests.router)

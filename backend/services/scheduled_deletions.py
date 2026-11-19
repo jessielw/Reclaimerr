@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,7 +45,9 @@ from backend.enums import (
     UserRole,
 )
 from backend.models.jobs import CandidateFileOpJobPayload
+from backend.models.media_identity import MediaServerItem
 from backend.models.scheduled_deletions import ScheduledDeletionResponse
+from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 
 ACTIVE_SCHEDULE_STATES = ("scheduled", "running", "blocked", "failed")
 executing_schedule_id: ContextVar[int | None] = ContextVar(
@@ -685,9 +688,31 @@ async def add_schedule_job(
     return job
 
 
-async def schedule_response(
+_media_server_items_adapter = TypeAdapter(list[MediaServerItem])
+
+
+async def scheduled_media_server_items(
+    db: AsyncSession, schedules: Sequence[ScheduledDeletion]
+) -> dict[int, list[MediaServerItem]]:
+    legacy = {
+        schedule.id: MediaItemTarget.from_schedule(schedule.target)
+        for schedule in schedules
+        if "media_server_items" not in schedule.target
+    }
+    items = await load_media_server_items(db, legacy.values())
+    return {
+        schedule.id: items[legacy[schedule.id]]
+        if schedule.id in legacy
+        else _media_server_items_adapter.validate_python(
+            schedule.target["media_server_items"]
+        )
+        for schedule in schedules
+    }
+
+
+async def schedule_execution_state(
     db: AsyncSession, schedule: ScheduledDeletion
-) -> ScheduledDeletionResponse:
+) -> tuple[str, str | None]:
     job = await db.get(BackgroundJob, schedule.job_id) if schedule.job_id else None
     state = schedule.state
     error = schedule.last_error
@@ -704,13 +729,41 @@ async def schedule_response(
                 "blocked",
                 "The execution job was canceled; reschedule or cancel this deletion",
             )
+    return state, error
+
+
+async def schedule_response(
+    db: AsyncSession,
+    schedule: ScheduledDeletion,
+    media_server_items: list[MediaServerItem] | None = None,
+) -> ScheduledDeletionResponse:
+    state, error = await schedule_execution_state(db, schedule)
+    if media_server_items is None:
+        media_server_items = (await scheduled_media_server_items(db, [schedule]))[
+            schedule.id
+        ]
     return ScheduledDeletionResponse(
         id=schedule.id,
         scheduled_at=ensure_utc(schedule.scheduled_at),
         state=state,
         delete_request_id=schedule.delete_request_id,
-        target=schedule.target,
+        target={
+            **schedule.target,
+            "media_server_items": [
+                item.model_dump(mode="json") for item in media_server_items
+            ],
+        },
         created_by_username=schedule.created_by_username,
         created_by_api_token_id=schedule.created_by_api_token_id,
         last_error=error,
     )
+
+
+async def schedule_responses(
+    db: AsyncSession, schedules: Sequence[ScheduledDeletion]
+) -> list[ScheduledDeletionResponse]:
+    items = await scheduled_media_server_items(db, schedules)
+    return [
+        await schedule_response(db, schedule, items[schedule.id])
+        for schedule in schedules
+    ]

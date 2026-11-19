@@ -20,6 +20,7 @@ from backend.database.models import (
 from backend.enums import MediaType
 from backend.models.api_v1.leaving_soon import LeavingSoonItem
 from backend.services.candidate_lifecycle import candidate_scope
+from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 from backend.services.reclaim_stats import (
     SCHEDULED_AUTO_DELETE_STATES,
     load_auto_delete_inputs,
@@ -29,11 +30,20 @@ from backend.services.scheduled_deletions import (
     active_schedules,
     blocking_schedule,
     inventory_cache,
-    schedule_response,
+    schedule_execution_state,
+    scheduled_media_server_items,
 )
 
 
-async def load_leaving_soon(db: AsyncSession) -> list[LeavingSoonItem]:
+async def load_leaving_soon(
+    db: AsyncSession,
+    *,
+    media_type: MediaType | None,
+    after: datetime | None,
+    before: datetime | None,
+    offset: int,
+    limit: int,
+) -> tuple[list[LeavingSoonItem], int]:
     rows = (
         await db.execute(
             select(ReclaimCandidate, Movie, MovieVersion, Series, Season, Episode)
@@ -138,7 +148,7 @@ async def load_leaving_soon(db: AsyncSession) -> list[LeavingSoonItem]:
             for action in (target.get("rule_actions") or {}).values()
         ):
             continue
-        response = await schedule_response(db, schedule)
+        state, _ = await schedule_execution_state(db, schedule)
         # Select public fields explicitly: snapshots also contain paths and routing.
         items.append(
             LeavingSoonItem(
@@ -165,14 +175,50 @@ async def load_leaving_soon(db: AsyncSession) -> list[LeavingSoonItem]:
                 size_bytes=target.get("estimated_space_bytes"),
                 delete_operation=target["operation"],
                 delete_at=ensure_utc(schedule.scheduled_at),
-                state=response.state,
+                state=state,
             )
         )
-    return sorted(
-        items,
+    filtered = sorted(
+        (
+            item
+            for item in items
+            if (media_type is None or item.media_type == media_type)
+            and (after is None or item.delete_at >= after)
+            and (before is None or item.delete_at <= before)
+        ),
         key=lambda item: (
             item.delete_at,
             item.source,
             item.scheduled_deletion_id or item.candidate_id or 0,
         ),
     )
+    page = filtered[offset : offset + limit]
+    candidate_targets = {
+        index: MediaItemTarget(
+            item.media_type,
+            item.media_id,
+            item.scope,
+            movie_version_id=item.movie_version_id,
+            season_id=item.season_id,
+            episode_id=item.episode_id,
+        )
+        for index, item in enumerate(page)
+        if item.scheduled_deletion_id is None
+    }
+    candidate_items = await load_media_server_items(db, candidate_targets.values())
+    for index, target in candidate_targets.items():
+        page[index].media_server_items = candidate_items[target]
+
+    schedules_by_id = {schedule.id: schedule for schedule in schedules}
+    scheduled_items = await scheduled_media_server_items(
+        db,
+        [
+            schedules_by_id[item.scheduled_deletion_id]
+            for item in page
+            if item.scheduled_deletion_id is not None
+        ],
+    )
+    for item in page:
+        if item.scheduled_deletion_id is not None:
+            item.media_server_items = scheduled_items[item.scheduled_deletion_id]
+    return page, len(filtered)

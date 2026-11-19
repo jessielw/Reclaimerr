@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
@@ -32,7 +33,7 @@ from backend.enums import (
 )
 from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
 from backend.models.jobs import CandidateFileOpJobItem
-from backend.models.media_identity import LinkedMediaIdentity
+from backend.models.media_identity import LinkedMediaIdentity, MediaServerItem
 from backend.models.requests import (
     ApproveDeleteRequest,
     DeleteRequestResponse,
@@ -43,6 +44,7 @@ from backend.services.candidate_lifecycle import (
     candidate_scope,
 )
 from backend.services.deletion_actor import DeletionActor
+from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 from backend.services.media_user_identity import linked_media_identities
 from backend.services.notifications import (
     notify_user,
@@ -52,7 +54,8 @@ from backend.services.schedule_workflow import create_schedules
 from backend.services.scheduled_deletions import (
     blocking_schedule,
     future_time,
-    schedule_response,
+    schedule_execution_state,
+    scheduled_media_server_items,
 )
 
 
@@ -472,6 +475,43 @@ def request_target_scope(
     return "series"
 
 
+def _request_media_item_target(request: DeleteRequest) -> MediaItemTarget | None:
+    media_id = (
+        request.movie_id if request.media_type is MediaType.MOVIE else request.series_id
+    )
+    if media_id is None:
+        return None
+    return MediaItemTarget(
+        request.media_type,
+        media_id,
+        request_target_scope(
+            media_type=request.media_type,
+            movie_version_id=request.movie_version_id,
+            season_id=request.season_id,
+            episode_id=request.episode_id,
+            target_scope=request.target_scope,
+            season_number_snapshot=request.season_number_snapshot,
+            episode_number_snapshot=request.episode_number_snapshot,
+        ),
+        movie_version_id=request.movie_version_id,
+        season_id=request.season_id,
+        episode_id=request.episode_id,
+    )
+
+
+async def load_delete_request_item_refs(
+    db: AsyncSession, requests: Iterable[DeleteRequest]
+) -> dict[int, list[MediaServerItem]]:
+    targets = {request.id: _request_media_item_target(request) for request in requests}
+    refs = await load_media_server_items(
+        db, (target for target in targets.values() if target is not None)
+    )
+    return {
+        request_id: refs[target] if target is not None else []
+        for request_id, target in targets.items()
+    }
+
+
 async def build_delete_request_response(
     db: AsyncSession,
     request: DeleteRequest,
@@ -479,6 +519,7 @@ async def build_delete_request_response(
     reviewed_by_username: str | None = None,
     version: MovieVersion | None = None,
     requested_by_media_identities: list[LinkedMediaIdentity] | None = None,
+    media_server_items: list[MediaServerItem] | None = None,
 ) -> DeleteRequestResponse:
     """Build a DeleteRequestResponse from a DeleteRequest, looking up related media and user info as needed."""
     # Reading/reviewing a stale request must remain possible even after its
@@ -531,10 +572,19 @@ async def build_delete_request_response(
             ScheduledDeletion.delete_request_id == request.id
         )
     )
-    if schedule is not None:
-        schedule_status = await schedule_response(db, schedule)
-    else:
-        schedule_status = None
+    schedule_state, schedule_error = (
+        await schedule_execution_state(db, schedule)
+        if schedule is not None
+        else (None, None)
+    )
+    if schedule is not None and "media_server_items" in schedule.target:
+        media_server_items = (await scheduled_media_server_items(db, [schedule]))[
+            schedule.id
+        ]
+    if media_server_items is None:
+        media_server_items = (await load_delete_request_item_refs(db, [request]))[
+            request.id
+        ]
     if requested_by_media_identities is None:
         identities = await linked_media_identities(db, [request.requested_by_user_id])
         requested_by_media_identities = identities[request.requested_by_user_id]
@@ -542,6 +592,7 @@ async def build_delete_request_response(
         id=request.id,
         media_type=request.media_type,
         media_id=media_id,
+        media_server_items=media_server_items,
         media_title=media.title,
         media_year=media.year,
         target_scope=target_scope,
@@ -571,13 +622,9 @@ async def build_delete_request_response(
         executed_at=to_utc_isoformat(request.executed_at),
         scheduled_deletion_id=schedule.id if schedule else None,
         scheduled_at=to_utc_isoformat(schedule.scheduled_at) if schedule else None,
-        schedule_state=schedule_status.state if schedule_status else None,
+        schedule_state=schedule_state,
         execution_error=request.execution_error
-        or (
-            schedule_status.last_error
-            if schedule_status and not request.playback_deferral
-            else None
-        ),
+        or (schedule_error if not request.playback_deferral else None),
         playback_deferral=request.playback_deferral,
         created_at=to_utc_isoformat(request.created_at) or "",
         updated_at=to_utc_isoformat(request.updated_at) or "",
@@ -637,6 +684,7 @@ async def list_requests(
     identities = await linked_media_identities(
         db, (req.requested_by_user_id for req in requests)
     )
+    item_refs = await load_delete_request_item_refs(db, requests)
 
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
@@ -652,6 +700,7 @@ async def list_requests(
             db,
             req,
             requested_by_media_identities=identities[req.requested_by_user_id],
+            media_server_items=item_refs[req.id],
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,

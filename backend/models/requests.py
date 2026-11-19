@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import AwareDatetime, BaseModel, Field
 
 from backend.enums import MediaType, ProtectionRequestStatus
-from backend.models.media_identity import LinkedMediaIdentity
+from backend.models.media_identity import LinkedMediaIdentity, MediaServerItem
 
 
 class CreateProtectionRequest(BaseModel):
@@ -112,6 +112,7 @@ class DeleteRequestResponse(BaseModel):
     id: int
     media_type: MediaType
     media_id: int
+    media_server_items: list[MediaServerItem] = Field(default_factory=list)
     media_title: str
     media_year: int | None
     target_scope: str | None = None

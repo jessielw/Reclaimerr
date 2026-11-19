@@ -1,4 +1,4 @@
-"""Credential-free details for an account's linked media-server identities."""
+"""Credential-free identities for media server accounts and items."""
 
 from pydantic import BaseModel
 
@@ -14,3 +14,13 @@ class LinkedMediaIdentity(BaseModel):
     source_user_id: str
     username: str
     display_name: str | None = None
+
+
+class MediaServerItem(BaseModel):
+    """An item ID and optional physical media source on a specific server."""
+
+    source_service: Service
+    source_service_config_id: int
+    source_service_name: str
+    source_item_id: str
+    source_media_id: str | None = None

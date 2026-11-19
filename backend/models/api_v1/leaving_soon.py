@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
+from backend.models.media_identity import MediaServerItem
 
 
 class LeavingSoonItem(BaseModel):
@@ -16,6 +17,7 @@ class LeavingSoonItem(BaseModel):
     media_type: MediaType
     scope: Literal["movie", "version", "series", "season", "episode"]
     media_id: int
+    media_server_items: list[MediaServerItem] = Field(default_factory=list)
     movie_version_id: int | None = None
     series_id: int | None = None
     season_id: int | None = None

@@ -50,6 +50,7 @@ from backend.services.delete_request_workflow import (
     build_delete_request_response,
     deny_request,
     list_requests,
+    load_delete_request_item_refs,
     request_target_scope,
     retry_request,
 )
@@ -334,6 +335,9 @@ async def create_delete_request(
         id=delete_request.id,
         media_type=delete_request.media_type,
         media_id=request_data.media_id,
+        media_server_items=(await load_delete_request_item_refs(db, [delete_request]))[
+            delete_request.id
+        ],
         media_title=media.title,
         media_year=media.year,
         target_scope=target_scope,
@@ -406,6 +410,7 @@ async def get_my_delete_requests(
     identities = await linked_media_identities(
         db, (req.requested_by_user_id for req in requests)
     )
+    item_refs = await load_delete_request_item_refs(db, requests)
 
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
@@ -422,6 +427,7 @@ async def get_my_delete_requests(
             req,
             requested_by_username=user.username,
             requested_by_media_identities=identities[req.requested_by_user_id],
+            media_server_items=item_refs[req.id],
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,
