@@ -50,6 +50,7 @@ from backend.api.utils.middleware import (
     setup_guard_middleware,
     sliding_session_middleware,
 )
+from backend.core.__version__ import __version__
 from backend.core.auth import ORIGINAL_CLIENT_HOST_STATE_KEY
 from backend.core.logger import LOG
 from backend.core.service_bootstrap import load_enabled_services
@@ -210,7 +211,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 fastapi_app = FastAPI(
     title="reclaimerr API",
     description="Media server cleanup and deletion management tool",
-    version="0.6.1",
+    version=str(__version__),
     lifespan=lifespan,
     # replaced below with pages that load vendored assets instead of the CDN
     docs_url=None,
