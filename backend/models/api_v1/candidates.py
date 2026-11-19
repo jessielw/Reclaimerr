@@ -24,6 +24,10 @@ class CandidateStatusResponse(BaseModel):
     title: str
     year: int | None = None
     tmdb_id: int | None = None
+    size_bytes: int | None = Field(
+        default=None,
+        description="Estimated size in bytes for this candidate's scope; null if unknown.",
+    )
     matched_rule_ids: list[int]
     reason: str
     delete_operation: Literal["delete", "move"]

@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -11,6 +12,7 @@ from starlette.requests import Request
 
 from backend.api.routes.v1.candidates import (
     cancel_candidate_deletion,
+    get_candidate,
     list_candidates,
     permanently_protect_candidate,
     postpone_candidate_deletion,
@@ -26,18 +28,23 @@ from backend.core.api_tokens import (
 from backend.database import Base
 from backend.database.models import (
     ApiToken,
+    Episode,
     GeneralSettings,
     LifecycleEvent,
     Movie,
+    MovieVersion,
     ProtectedMedia,
     ReclaimCandidate,
     ReclaimRule,
+    Season,
+    Series,
 )
-from backend.enums import MediaType
+from backend.enums import MediaType, Service
 from backend.models.api_v1 import (
     CandidateActionRequest,
     CandidatePostponeRequest,
 )
+from backend.services.candidate_lifecycle import record_candidate_event
 
 
 def test_api_token_authentication_and_candidate_lifecycle(monkeypatch) -> None:
@@ -119,6 +126,7 @@ def test_api_token_authentication_and_candidate_lifecycle(monkeypatch) -> None:
             )
             assert canceled.candidate.auto_delete_state == "canceled"
             assert canceled.candidate.auto_delete_is_active is False
+            assert canceled.candidate.size_bytes == 100
 
             replayed = await cancel_candidate_deletion(
                 candidate.id,
@@ -129,6 +137,7 @@ def test_api_token_authentication_and_candidate_lifecycle(monkeypatch) -> None:
             )
             assert replayed.replayed is True
             assert replayed.event_id == canceled.event_id
+            assert replayed.candidate.size_bytes == 100
 
             postponed = await postpone_candidate_deletion(
                 candidate.id,
@@ -173,6 +182,115 @@ def test_api_token_authentication_and_candidate_lifecycle(monkeypatch) -> None:
             assert protection_count == 1
             assert event_count == 4
             assert enqueue_mock.await_count == 4
+            events = (await db.scalars(select(LifecycleEvent))).all()
+            assert all(
+                event.payload["candidate"]["size_bytes"] == 100 for event in events
+            )
+
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("scope", ["movie", "version", "series", "season", "episode"])
+@pytest.mark.parametrize(
+    "size_source", ["estimate", "media", "zero_estimate", "zero_media", "unknown"]
+)
+def test_external_candidate_sizes_match_scope(scope: str, size_source: str) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(engine, expire_on_commit=False)
+        principal = ApiPrincipal(
+            token_id=1,
+            name="Reader",
+            scopes=frozenset({API_TOKEN_CANDIDATES_READ_SCOPE}),
+        )
+        async with session_maker() as db:
+            movie = Movie(title="Multiple versions", tmdb_id=550, size=60 * 1024**3)
+            series = Series(title="Multiple seasons", tmdb_id=1399, size=100 * 1024**3)
+            db.add_all([movie, series])
+            await db.flush()
+            version = MovieVersion(
+                movie_id=movie.id,
+                service=Service.PLEX,
+                service_item_id="movie",
+                service_media_id="version",
+                library_id="1",
+                library_name="Movies",
+                size=10 * 1024**3,
+            )
+            season = Season(series_id=series.id, season_number=1, size=30 * 1024**3)
+            db.add_all([version, season])
+            await db.flush()
+            episode = Episode(season_id=season.id, episode_number=1, size=4 * 1024**3)
+            db.add(episode)
+            await db.flush()
+
+            target = {
+                "movie": movie,
+                "version": version,
+                "series": series,
+                "season": season,
+                "episode": episode,
+            }[scope]
+            expected_size = target.size
+            estimate = None
+            if size_source == "estimate":
+                estimate = expected_size = 3 * 1024**3
+            elif size_source == "zero_estimate":
+                estimate = expected_size = 0
+            elif size_source == "zero_media":
+                target.size = expected_size = 0
+            elif size_source == "unknown":
+                expected_size = None
+                if scope != "version":
+                    target.size = None
+
+            is_movie = scope in {"movie", "version"}
+            candidate = ReclaimCandidate(
+                media_type=MediaType.MOVIE if is_movie else MediaType.SERIES,
+                movie_id=movie.id if is_movie else None,
+                movie_version_id=(
+                    version.id + 1000 if size_source == "unknown" else version.id
+                )
+                if scope == "version"
+                else None,
+                series_id=series.id if not is_movie else None,
+                season_id=season.id if scope in {"season", "episode"} else None,
+                episode_id=episode.id if scope == "episode" else None,
+                matched_rule_ids=[],
+                matched_criteria={},
+                reason="Size test",
+                estimated_space_bytes=estimate,
+            )
+            db.add(candidate)
+            await db.commit()
+
+            response = await list_candidates(
+                principal,
+                db,
+                page=1,
+                per_page=50,
+                media_type=None,
+                tmdb_id=None,
+                series_id=None,
+                season_number=None,
+                episode_number=None,
+                auto_delete_state=None,
+                rule_id=None,
+            )
+            assert response.total == 1
+            assert response.items[0].scope == scope
+            assert (
+                response.model_dump(mode="json")["items"][0]["size_bytes"]
+                == expected_size
+            )
+            detail = await get_candidate(candidate.id, principal, db)
+            assert detail.model_dump(mode="json")["size_bytes"] == expected_size
+            event = await record_candidate_event(db, candidate, "candidate.scheduled")
+            assert event.payload["candidate"]["size_bytes"] == expected_size
 
         await engine.dispose()
 

@@ -175,6 +175,17 @@ async def candidate_status_payload(
         await db.get(Episode, candidate.episode_id) if candidate.episode_id else None
     )
     media = movie or series
+    size_bytes = candidate.estimated_space_bytes
+    if size_bytes is None:
+        if candidate.movie_version_id is not None:
+            version = await db.get(MovieVersion, candidate.movie_version_id)
+            size_bytes = version.size if version else None
+        elif candidate.episode_id is not None:
+            size_bytes = episode.size if episode else None
+        elif candidate.season_id is not None:
+            size_bytes = season.size if season else None
+        else:
+            size_bytes = media.size if media else None
     title = media.title if media else "Unknown media"
     if episode is not None:
         title = (
@@ -204,6 +215,7 @@ async def candidate_status_payload(
         "title": title,
         "year": media.year if media else None,
         "tmdb_id": media.tmdb_id if media else None,
+        "size_bytes": size_bytes,
         "matched_rule_ids": list(candidate.matched_rule_ids),
         "reason": candidate.reason,
         "delete_operation": operation,
