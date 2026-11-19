@@ -6,6 +6,7 @@ from backend.models.api_v1.candidates import (
     CandidateStatusResponse,
 )
 from backend.models.api_v1.events import EventFeedResponse, EventResponse
+from backend.models.api_v1.leaving_soon import LeavingSoonItem, LeavingSoonListResponse
 from backend.models.api_v1.media import MediaListResponse, MediaResponse
 from backend.models.api_v1.protections import (
     ProtectionCreateRequest,
@@ -38,6 +39,8 @@ __all__ = [
     "CandidateStatusResponse",
     "EventFeedResponse",
     "EventResponse",
+    "LeavingSoonItem",
+    "LeavingSoonListResponse",
     "MediaListResponse",
     "MediaResponse",
     "ProtectionCreateRequest",

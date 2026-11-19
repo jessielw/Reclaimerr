@@ -20,7 +20,7 @@ Available scopes are:
 
 - `system:read` for version, capabilities, latest successful sync times, and the totals in `/api/v1/stats`.
 - `media:read` for movie and series catalog lookup.
-- `candidates:read` for candidate lookup and status queries.
+- `candidates:read` for candidate lookup, status queries, and the unified leaving-soon feed.
 - `candidates:manage` for cancellation, postponement, timer resets, and candidate protection. This also grants `candidates:read`.
 - `events:read` for the durable lifecycle event feed.
 - `protections:read` for protection lookup.
@@ -98,6 +98,25 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"until":"2026-08-15T12:00:00Z","reason":"Extended review period"}' \
   "https://reclaimerr.example/api/v1/candidates/42/postpone"
+```
+
+### Leaving Soon
+
+`GET /api/v1/leaving-soon` returns cleanup candidates with automatic deletion enabled, manually scheduled deletions, and delayed approved deletion requests in one paginated list. It requires `candidates:read` (also granted by `candidates:manage`) and is linked as `leaving_soon` in API discovery.
+
+Each item includes `source` (`candidate`, `manual`, or `delete_request`), `delete_at`, `state`, `delete_operation` (`delete` or `move`), `scope`, `size_bytes`, title, year, TMDB ID, and Reclaimerr media IDs. Movie versions include `movie_version_id`; TV scopes include series, season, and episode IDs and numbers where applicable. `candidate_id`, `scheduled_deletion_id`, and `delete_request_id` identify the originating records when present. Scheduled entries use the saved target snapshot; filesystem paths, routing settings, and account details are omitted.
+
+`size_bytes` describes only the selected scope, using the cleanup estimate or that scope's size for candidates, and the saved estimate for schedules. Unknown sizes are `null`; known zero sizes are `0`.
+
+Results are ordered by `delete_at` ascending, with stable source and record-ID tie breakers. Use `page` (default 1) and `per_page` (default 50, maximum 200). The response includes `items`, `total`, `page`, `per_page`, and `total_pages`. Optional filters are `media_type` (`movie` or `series`), `delete_after`, and `delete_before`. Both date bounds are inclusive ISO 8601 timestamps requiring a timezone. Filtering happens before pagination.
+
+`delete_at` is a UTC eligibility deadline, not a guaranteed execution time: cleanup waits for the automatic deletion task, and execution still checks protection, playback, permissions, and file scope. Overdue items remain visible unless excluded by a date filter. Canceled or disabled cleanup timers, completed or canceled schedules, and quality-profile changes that keep files in place are excluded. An active manual or approved-request schedule replaces any cleanup entries it holds, using the same scope and file-overlap checks as cleanup.
+
+Scheduled entries can have `scheduled`, `running`, `blocked`, or `failed` state; blocked and failed entries remain visible and continue holding overlapping cleanup until explicitly rescheduled or canceled. Candidate states are `scheduled`, `eligible`, or `postponed`.
+
+```bash
+curl -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  "https://reclaimerr.example/api/v1/leaving-soon?media_type=movie&delete_before=2026-12-01T00:00:00Z"
 ```
 
 ### Events

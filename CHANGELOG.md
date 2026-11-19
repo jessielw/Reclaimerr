@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- A unified `GET /api/v1/leaving-soon` endpoint for automatic cleanup, manual schedules, and delayed deletion approvals, with deletion dates, scope, version IDs, sizes, filtering, and pagination. #534
 - Cleanup candidate API responses and lifecycle events now include `size_bytes` for the selected movie version, movie, series, season, or episode, so integrations can display estimated space savings. #533
 - Account and delete-request API responses now include linked Jellyfin, Plex, and Emby identities with server configuration IDs, provider user IDs, usernames, and display names, so integrations can match users across services. #532
 - Import users from Jellyfin, Emby, and Plex with user selection, a confirmation screen, explicit existing-account links, configurable access for new accounts, and atomic batches. Available in Settings → Users and through scoped `/api/v1/users` endpoints; API imports are restricted to non-admin accounts. #530
