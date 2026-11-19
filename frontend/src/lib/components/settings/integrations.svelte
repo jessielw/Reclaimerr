@@ -98,6 +98,17 @@
       label: "Run tasks",
       description: "Trigger enabled tasks",
     },
+    {
+      value: "users:read",
+      label: "Users",
+      description: "Account lookup and media user import previews",
+    },
+    {
+      value: "users:manage",
+      label: "Import users",
+      description:
+        "Create and link non-admin media accounts; includes user lookup",
+    },
   ];
 
   const readOnlyScopes: ApiTokenScope[] = [

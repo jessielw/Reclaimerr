@@ -61,5 +61,6 @@ async def get_system(
             "task-observability",
             "task-triggering",
             "durable-webhooks",
+            "media-user-import",
         ],
     )

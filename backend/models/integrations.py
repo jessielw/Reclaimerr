@@ -18,6 +18,8 @@ ApiTokenScope = Literal[
     "system:read",
     "tasks:read",
     "tasks:run",
+    "users:read",
+    "users:manage",
 ]
 LifecycleEventType = Literal[
     "candidate.scheduled",

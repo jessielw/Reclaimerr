@@ -14,6 +14,7 @@ from backend.api.routes.v1 import (
     stats,
     system,
     tasks,
+    users,
 )
 from backend.core.api_tokens import ApiPrincipal, get_api_principal
 from backend.models.api_v1 import ApiDiscoveryResponse
@@ -39,6 +40,8 @@ async def discover_api(
             "rules": "/api/v1/rules",
             "system": "/api/v1/system",
             "tasks": "/api/v1/tasks",
+            "users": "/api/v1/users",
+            "user_import": "/api/v1/users/import-from-media-server",
         },
         granted_scopes=sorted(principal.scopes),
     )
@@ -52,5 +55,6 @@ router.include_router(rules.router)
 router.include_router(stats.router)
 router.include_router(system.router)
 router.include_router(tasks.router)
+router.include_router(users.router)
 router.include_router(docs.router)
 docs.configure_external_api_docs(router)

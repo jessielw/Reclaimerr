@@ -28,8 +28,39 @@ Available scopes are:
 - `rules:read` for listing rules and evaluating match-only rules.
 - `tasks:read` for schedules, next runs, current state, and run history.
 - `tasks:run` for triggering enabled tasks. This also grants `tasks:read`.
+- `users:read` for local account lookup, import-capable media servers, and media-user import previews.
+- `users:manage` for importing non-admin accounts and explicitly linking media identities to non-admin accounts. This also grants `users:read`. Administrator accounts must be provisioned or linked through the administrator UI.
 
 `GET /api/v1` returns API discovery links and the scopes granted to the current token. Integration clients should use these versioned endpoints instead of the cookie-authenticated `/api/...` routes used by Reclaimerr's own UI.
+
+### User Import
+
+- `GET /api/v1/users` lists credential-free local account summaries. Filter by `q`; paginate with `offset` (default 0) and `limit` (default 100, maximum 1,000).
+- `GET /api/v1/users/import-from-media-server/providers` lists enabled media-server configurations by `service_config_id`, `service_type`, and `name` without their addresses or credentials.
+- `POST /api/v1/users/import-from-media-server?preview=true` discovers current users and previews proposed changes. Preview is the default and does not create accounts or identity links.
+- `POST /api/v1/users/import-from-media-server?preview=false` applies the selected batch atomically; it requires `users:manage`.
+
+The JSON request accepts `service_config_id`, optional `source_user_ids`, explicit `links: [{"source_user_id": "provider-id", "target_user_id": 42}]`, and access settings for **new accounts only**: `role` (API imports require `user`), `permissions` (default `["request"]`), `use_default_page_access` (default `true`), and `allowed_pages`. With default page access disabled, `allowed_pages: null` means unrestricted and `[]` means no pages. Existing accounts retain all their settings.
+
+Omitting `source_user_ids` imports eligible new accounts and explicitly supplied links. Existing-account suggestions are skipped unless confirmed in `links`. An empty source selection changes nothing. Link entries must belong to an explicit selection when one is supplied. A media identity already linked to a different local account cannot be reassigned through import. Unsupported Plex managed profiles and disabled server users are skipped. Conflicting email/username matches require manual resolution.
+
+Responses contain `rows` with provider user IDs, media usernames, optional email, proposed local usernames, local account summaries, `status`, `message`, and `revision`. Preview statuses are `ready_to_create`, `ready_to_link`, `needs_review`, `conflict`, or `skipped`; successful execution reports `created`, `linked`, or `skipped`. Totals include `ready`, `created`, `linked`, `skipped`, and `errors`. A new account and its identity link count once as `created`; `linked` counts links to existing accounts. Preview `skipped` includes suggestions needing confirmation; `errors` counts conflicts or errors across preview rows, including unselected users. Only selected conflicts block execution.
+
+Copy selected rows' revision values into `expected_revisions: {"provider-id": "revision"}` on execution to reject changes since preview. The UI always does this; integrations can omit it for direct imports that still revalidate current accounts and provider data. A selected conflict, unknown/stale selection, or concurrent write returns HTTP 409 with no partial account or link changes. Provider failures return HTTP 502, not an empty successful directory. Retrying a completed import skips already linked identities. Directories are limited to 1,000 users.
+
+```bash
+# Discover configured servers.
+curl -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  "https://reclaimerr.example/api/v1/users/import-from-media-server/providers"
+
+# Preview selected users and an explicitly confirmed existing-account link.
+curl -X POST -H "Authorization: Bearer $RECLAIMERR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"service_config_id":1,"source_user_ids":["new-id","existing-id"],"links":[{"source_user_id":"existing-id","target_user_id":42}]}' \
+  "https://reclaimerr.example/api/v1/users/import-from-media-server?preview=true"
+```
+
+After reviewing the response, submit the same selection with `preview=false` and the selected rows' `expected_revisions`. Import does not obtain media-user tokens or add impersonation to other API endpoints. Account lookup and import responses never contain password hashes, provider credentials, or raw provider payloads.
 
 ### Candidate Endpoints
 

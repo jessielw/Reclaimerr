@@ -199,7 +199,10 @@ def _display_name(value: str | None, fallback: str) -> str:
 
 
 def _sanitize_username(value: str, *, fallback: str = "media_user") -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in value)
+    cleaned = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in {"_", "-"} else "_"
+        for ch in value
+    )
     cleaned = cleaned.strip("_-") or fallback
     if len(cleaned) < 5:
         cleaned = f"{cleaned}_user"

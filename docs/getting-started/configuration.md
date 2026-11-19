@@ -55,6 +55,24 @@ If an external provider fails or your admin identity cannot sign in:
 
 A trusted proxy that rejects requests before they reach Reclaimerr still needs its own recovery path. For an unrecognized proxy username, see `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` below; `AUTH_FORCE_LOCAL_LOGIN` does not bypass proxy identity checks.
 
+## Import Users from a Media Server
+
+Users with **Manage users** permission can import accounts under **Settings → Users → Import from media server**.
+
+1. Select an enabled Jellyfin, Emby, or Plex server and choose **Preview users**.
+2. Review the proposed local usernames. New accounts are selected by default; already linked identities, disabled server users, and unsupported Plex profiles are skipped.
+3. Check any suggested existing-account links you want to confirm. For a conflict, choose **Add to identity links**, close the dialog, and select its local account in **Sign-In Identity Links**. Refresh the import preview after resolving it.
+4. Expand **Access for new accounts** to change the role, permissions, or page access. Choose **Review selection** to check the selected users and open a confirmation screen showing each account action and the access new accounts will receive. **Back to selection** preserves your choices.
+5. Choose **Confirm import** to apply the selected changes together. Reviewing does not change any accounts. If any selected user has changed or a write fails, none of the selected changes are applied; refresh the preview before retrying.
+
+New accounts default to the **User** role, **Request** permission, and configured default page access. They have no local password and are linked to their media-server identity immediately. Enable media sign-in to let users log in through their server. Trusted proxy sign-in requires the exact displayed local username, which may differ from the media-server username. Email is optional for Jellyfin and Emby and is never invented from a username. Plex import requires a sign-in-capable account with an email; managed profiles are not supported.
+
+Existing accounts keep their password, profile, role, permissions, page access, and enabled/disabled state. Matching ignores case and checks both email and username. A match is a suggestion, not an automatic link. Multiple matches, or a username belonging to an account with a different email, require manual resolution. Media-server administrator status does not automatically grant administrator access in Reclaimerr.
+
+User managers can only grant access they hold, except for administrator-configured default page access, and cannot link accounts with access exceeding their own. Only administrators can provision or link administrator accounts. Import supports directories of up to 1,000 users. Repeating an import skips identities that are already linked.
+
+Import establishes accounts and identity attribution; it does not acquire user tokens, backfill ownership, send invitations, or change login settings. Plex features that require a user's token still require that user to sign in. Integrations can use the scoped [External API](../reference/api.md#user-import).
+
 ## Import Users from CSV
 
 Users with **Manage users** permission can bulk-create accounts under **Settings → Users → Import CSV**.

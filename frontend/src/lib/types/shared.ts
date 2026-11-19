@@ -364,7 +364,9 @@ export type ApiTokenScope =
   | "rules:read"
   | "system:read"
   | "tasks:read"
-  | "tasks:run";
+  | "tasks:run"
+  | "users:read"
+  | "users:manage";
 
 export interface ApiTokenInfo {
   id: number;

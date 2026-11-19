@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Import users from Jellyfin, Emby, and Plex with user selection, a confirmation screen, explicit existing-account links, configurable access for new accounts, and atomic batches. Available in Settings → Users and through scoped `/api/v1/users` endpoints; API imports are restricted to non-admin accounts. #530
 - A configurable grace period for approved deletion requests. Request managers can use the configured delay, delete immediately, or choose a future date and time when approving. The default is 0 days, preserving immediate deletion. #529
 - Reschedule and cancel controls for approved scheduled deletions, with the deletion time and execution state shown in request details. Delayed approvals appear in Leaving Soon views and collections and use existing requester warning settings, even without a cleanup-rule candidate.
 
