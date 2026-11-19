@@ -11,6 +11,7 @@ from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import get_db
 from backend.database.models import (
     BackgroundJob,
+    DeleteRequest,
     ReclaimCandidate,
     ScheduledDeletion,
     User,
@@ -29,6 +30,7 @@ from backend.services.scheduled_deletions import (
     blocking_schedule,
     future_time,
     require_delete_permission,
+    require_schedule_permission,
     resolve_target,
     schedule_inventory_overlap,
     schedule_response,
@@ -118,6 +120,8 @@ async def _create_schedules(
     user: User,
     candidates: list[ReclaimCandidate],
     when: datetime,
+    *,
+    delete_request: DeleteRequest | None = None,
 ) -> list[ScheduledDeletionResponse]:
     """Validate and save schedules. Call with candidate_workflow_lock held.
 
@@ -126,7 +130,9 @@ async def _create_schedules(
     """
     targets = []
     for candidate in candidates:
-        if candidate.delete_request_id is not None:
+        if candidate.delete_request_id is not None and (
+            delete_request is None or candidate.delete_request_id != delete_request.id
+        ):
             raise HTTPException(
                 409, "Approved deletion requests cannot be scheduled here"
             )
@@ -183,6 +189,7 @@ async def _create_schedules(
             target=target,
             created_by_user_id=user.id,
             created_by_username=user.username,
+            delete_request_id=delete_request.id if delete_request else None,
         )
         db.add(schedule)
         await db.flush()
@@ -194,10 +201,13 @@ async def _create_schedules(
     return [await schedule_response(db, schedule) for schedule in schedules]
 
 
-async def _editable_schedule(db: AsyncSession, schedule_id: int) -> ScheduledDeletion:
+async def _editable_schedule(
+    db: AsyncSession, schedule_id: int, user: User
+) -> ScheduledDeletion:
     schedule = await db.get(ScheduledDeletion, schedule_id)
     if schedule is None:
         raise HTTPException(404, "Scheduled deletion not found")
+    await require_schedule_permission(db, user, schedule)
     if schedule.state not in ACTIVE_SCHEDULE_STATES:
         raise HTTPException(
             409, "This scheduled deletion has already finished or been canceled"
@@ -247,15 +257,19 @@ async def reschedule_deletion(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ) -> ScheduledDeletionResponse:
-    require_delete_permission(user)
     when = future_time(request.scheduled_at)
     async with candidate_workflow_lock:
-        schedule = await _editable_schedule(db, schedule_id)
+        schedule = await _editable_schedule(db, schedule_id, user)
         await resolve_target(db, schedule.target)
         schedule.scheduled_at = when
         schedule.created_by_user_id = user.id
         schedule.created_by_username = user.username
         schedule.state, schedule.last_error = "scheduled", None
+        if schedule.delete_request_id is not None:
+            deletion_request = await db.get(DeleteRequest, schedule.delete_request_id)
+            if deletion_request is not None:
+                deletion_request.execution_error = None
+                deletion_request.playback_deferral = None
         await add_schedule_job(db, schedule)
         await db.commit()
         request_leaving_soon_sync()
@@ -268,10 +282,14 @@ async def cancel_scheduled_deletion(
     user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    require_delete_permission(user)
     async with candidate_workflow_lock:
-        schedule = await _editable_schedule(db, schedule_id)
+        schedule = await _editable_schedule(db, schedule_id, user)
         schedule.state = "canceled"
+        if schedule.delete_request_id is not None:
+            deletion_request = await db.get(DeleteRequest, schedule.delete_request_id)
+            if deletion_request is not None:
+                deletion_request.execution_error = None
+                deletion_request.playback_deferral = None
         schedule.completed_at = datetime.now(UTC)
         await db.commit()
         request_leaving_soon_sync()

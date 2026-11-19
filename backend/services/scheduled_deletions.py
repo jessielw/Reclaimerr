@@ -14,6 +14,7 @@ from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import mapped_path_variants, normalize_fpath
 from backend.database.models import (
     BackgroundJob,
+    DeleteRequest,
     Episode,
     EpisodeVersion,
     GeneralSettings,
@@ -34,6 +35,7 @@ from backend.enums import (
     CandidateFileOpOperation,
     MediaType,
     Permission,
+    ProtectionRequestStatus,
     UserRole,
 )
 from backend.models.jobs import CandidateFileOpJobPayload
@@ -63,6 +65,26 @@ def future_time(value: datetime) -> datetime:
     if value <= datetime.now(UTC):
         raise HTTPException(422, "Deletion time must be in the future")
     return value
+
+
+async def require_schedule_permission(
+    db: AsyncSession, user: User, schedule: ScheduledDeletion
+) -> None:
+    """Request approvals retain their own permission boundary throughout execution."""
+    if schedule.delete_request_id is None:
+        require_delete_permission(user)
+        return
+    if not user.is_active or not has_permission(user, Permission.MANAGE_REQUESTS):
+        raise HTTPException(403, "Manage requests permission required")
+    request = await db.get(DeleteRequest, schedule.delete_request_id)
+    if (
+        request is None
+        or request.status != ProtectionRequestStatus.APPROVED
+        or request.executed_at
+    ):
+        raise HTTPException(
+            409, "The deletion request is no longer approved and waiting"
+        )
 
 
 def _path(value: str) -> str:
@@ -623,6 +645,7 @@ async def add_schedule_job(
         requested_by_user_id=schedule.created_by_user_id or 0,
         requested_by_username=schedule.created_by_username,
         scheduled_deletion_id=schedule.id,
+        delete_request_id=schedule.delete_request_id,
         item_labels=[schedule.target["title"]],
         item_label_total=1,
     ).model_dump(mode="json")

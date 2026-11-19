@@ -11,13 +11,16 @@
     value = $bindable(""),
     allowNow = true,
     nowLabel = "Delete now",
+    validationRequested = false,
   }: {
     mode?: "now" | "later";
     value?: string;
     allowNow?: boolean;
     nowLabel?: string;
+    validationRequested?: boolean;
   } = $props();
   const id = $props.id();
+  let timeInput = $state<HTMLInputElement | null>(null);
   const presets = [
     { label: "In 1 hour", apply: (d: Date) => d.setHours(d.getHours() + 1) },
     { label: "Tomorrow", apply: (d: Date) => d.setDate(d.getDate() + 1) },
@@ -27,10 +30,19 @@
     const date = new Date();
     apply(date);
     value = localDateTime(date);
+    timeInput?.setCustomValidity("");
+    interacting = false;
   }
-  const error = $derived(mode === "later" ? scheduledDeletionError(value) : "");
+  let touched = $state(false);
+  let interacting = $state(false);
+  const validationError = $derived(
+    mode === "later" ? scheduledDeletionError(value) : "",
+  );
+  const error = $derived(
+    !interacting && (touched || validationRequested) ? validationError : "",
+  );
   const displayTime = $derived(
-    mode === "later" && !error
+    mode === "later" && !validationError
       ? new Date(value).toLocaleString(undefined, { timeZoneName: "short" })
       : "",
   );
@@ -56,7 +68,22 @@
     <Input
       id={`${id}-time`}
       type="datetime-local"
+      name="scheduled_at"
+      required
+      bind:ref={timeInput}
       bind:value
+      oninvalid={() => {
+        touched = true;
+        interacting = false;
+      }}
+      onblur={() => {
+        touched = true;
+        interacting = false;
+      }}
+      oninput={(event) => {
+        interacting = true;
+        event.currentTarget.setCustomValidity("");
+      }}
       aria-invalid={!!error}
       aria-describedby={`${id}-hint`}
     />
@@ -70,9 +97,11 @@
         >
       {/each}
     </div>
-    <p id={`${id}-hint`} class="text-muted-foreground">
+    <p id={`${id}-hint`} class="text-muted-foreground" aria-live="polite">
       {error ||
-        `Scheduled for ${displayTime}. Runs at or after this time when Reclaimerr is available.`}
+        (displayTime
+          ? `Scheduled for ${displayTime}. Runs at or after this time when Reclaimerr is available.`
+          : "Choose a future date and time in your local timezone.")}
     </p>
     <p class="text-muted-foreground">
       You can reschedule or cancel before execution starts. Protection and

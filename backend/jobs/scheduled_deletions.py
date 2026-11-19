@@ -12,7 +12,7 @@ from backend.models.jobs import CandidateFileOpJobItem, CandidateFileOpJobPayloa
 from backend.services.candidate_lifecycle import candidate_deletion_blockers
 from backend.services.scheduled_deletions import (
     executing_schedule_id,
-    require_delete_permission,
+    require_schedule_permission,
     resolve_target,
 )
 
@@ -21,10 +21,14 @@ async def run_scheduled_deletion(
     job_id: int, payload: CandidateFileOpJobPayload
 ) -> dict[str, Any]:
     """Called while holding the candidate workflow lock, including finalization."""
-    from backend.jobs.candidate_file_ops import _run_candidate_file_op_job_unlocked
+    from backend.jobs.candidate_file_ops import (
+        _finalize_delete_request_job,
+        _run_candidate_file_op_job_unlocked,
+    )
 
     candidate_id = None
     owns_execution = False
+    delete_request_id = None
     token = executing_schedule_id.set(payload.scheduled_deletion_id)
     result: dict[str, Any] = {
         "operation": "delete",
@@ -44,6 +48,7 @@ async def run_scheduled_deletion(
             ):
                 return {**result, "processed": 0, "skipped": True}
             owns_execution = True
+            delete_request_id = schedule.delete_request_id
             if ensure_utc(schedule.scheduled_at) > datetime.now(UTC):
                 raise RuntimeError("Scheduled deletion was invoked before its due time")
             user = (
@@ -55,8 +60,9 @@ async def run_scheduled_deletion(
                 raise HTTPException(
                     409, "The user who scheduled this deletion no longer exists"
                 )
-            require_delete_permission(user)
+            await require_schedule_permission(db, user, schedule)
             candidate = await resolve_target(db, schedule.target)
+            candidate.delete_request_id = delete_request_id
             candidate.matched_criteria = {"scheduled_deletion_id": schedule.id}
             blockers = await candidate_deletion_blockers(db, candidate)
             if blockers:
@@ -84,6 +90,7 @@ async def run_scheduled_deletion(
                 update={
                     "candidate_ids": [candidate_id],
                     "item_details": [item],
+                    "delete_request_id": delete_request_id,
                 }
             ),
         )
@@ -112,6 +119,15 @@ async def run_scheduled_deletion(
         state, error = "failed", describe_exception(exc)
         result.update(failed=1, errors=[error])
     finally:
+        if owns_execution and delete_request_id is not None:
+            await _finalize_delete_request_job(
+                delete_request_id=delete_request_id,
+                candidate_ids=[candidate_id] if candidate_id is not None else [],
+                succeeded=result.get("succeeded", 0),
+                failed=result.get("failed", 0),
+                deferred=result.get("deferred", 0),
+                fallback_error=error,
+            )
         executing_schedule_id.reset(token)
         async with async_db() as db:
             if candidate_id is not None:

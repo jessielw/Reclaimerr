@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 from backend.enums import MediaType, ProtectionRequestStatus
 
@@ -99,6 +99,12 @@ class ReviewDeleteRequest(BaseModel):
     admin_notes: str | None = None
 
 
+class ApproveDeleteRequest(ReviewDeleteRequest):
+    """Omit scheduled_at for the default grace period; null means delete now."""
+
+    scheduled_at: AwareDatetime | None = None
+
+
 class DeleteRequestResponse(BaseModel):
     """Delete request with details and execution status."""
 
@@ -127,6 +133,9 @@ class DeleteRequestResponse(BaseModel):
     admin_notes: str | None
 
     executed_at: str | None = None
+    scheduled_deletion_id: int | None = None
+    scheduled_at: str | None = None
+    schedule_state: str | None = None
     playback_deferral: dict[str, Any] | None = None
     execution_error: str | None = None
 

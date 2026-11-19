@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A configurable grace period for approved deletion requests. Request managers can use the configured delay, delete immediately, or choose a future date and time when approving. The default is 0 days, preserving immediate deletion. #529
+- Reschedule and cancel controls for approved scheduled deletions, with the deletion time and execution state shown in request details. Delayed approvals appear in Leaving Soon views and collections and use existing requester warning settings, even without a cleanup-rule candidate.
+
 ## [0.6.14] - 2026-11-17
 
 ### Changed

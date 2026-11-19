@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -26,10 +26,12 @@ from backend.database.models import (
     BackgroundJob,
     DeleteRequest,
     Episode,
+    GeneralSettings,
     Movie,
     MovieVersion,
     ProtectedMedia,
     ReclaimCandidate,
+    ScheduledDeletion,
     Season,
     Series,
     User,
@@ -47,6 +49,7 @@ from backend.enums import (
 from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
 from backend.models.jobs import CandidateFileOpJobItem
 from backend.models.requests import (
+    ApproveDeleteRequest,
     CreateDeleteRequest,
     DeleteRequestResponse,
     ReviewDeleteRequest,
@@ -82,6 +85,14 @@ async def retry_delete_request(
         ):
             raise HTTPException(
                 status_code=409, detail="Only deferred approved requests can be retried"
+            )
+        if await db.scalar(
+            select(ScheduledDeletion.id).where(
+                ScheduledDeletion.delete_request_id == request_id
+            )
+        ):
+            raise HTTPException(
+                409, "Reschedule this deletion instead of retrying it immediately"
             )
         jobs = (
             await db.scalars(
@@ -520,6 +531,17 @@ async def _build_delete_request_response(
         season_number_snapshot=request.season_number_snapshot,
         episode_number_snapshot=request.episode_number_snapshot,
     )
+    schedule = await db.scalar(
+        select(ScheduledDeletion).where(
+            ScheduledDeletion.delete_request_id == request.id
+        )
+    )
+    if schedule is not None:
+        from backend.services.scheduled_deletions import schedule_response
+
+        schedule_status = await schedule_response(db, schedule)
+    else:
+        schedule_status = None
     return DeleteRequestResponse(
         id=request.id,
         media_type=request.media_type,
@@ -548,7 +570,15 @@ async def _build_delete_request_response(
         reviewed_at=to_utc_isoformat(request.reviewed_at),
         admin_notes=request.admin_notes,
         executed_at=to_utc_isoformat(request.executed_at),
-        execution_error=request.execution_error,
+        scheduled_deletion_id=schedule.id if schedule else None,
+        scheduled_at=to_utc_isoformat(schedule.scheduled_at) if schedule else None,
+        schedule_state=schedule_status.state if schedule_status else None,
+        execution_error=request.execution_error
+        or (
+            schedule_status.last_error
+            if schedule_status and not request.playback_deferral
+            else None
+        ),
         playback_deferral=request.playback_deferral,
         created_at=to_utc_isoformat(request.created_at) or "",
         updated_at=to_utc_isoformat(request.updated_at) or "",
@@ -921,16 +951,45 @@ async def get_all_delete_requests(
     ]
 
 
+@router.get("/delete-requests/approval-options")
+async def delete_request_approval_options(
+    _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    settings = await db.scalar(select(GeneralSettings).limit(1))
+    return {
+        "delete_request_grace_period_days": settings.delete_request_grace_period_days
+        if settings
+        else 0
+    }
+
+
 @router.post(
     "/delete-requests/{request_id}/approve", response_model=DeleteRequestResponse
 )
 async def approve_delete_request(
     request_id: int,
-    review_data: ReviewDeleteRequest,
+    review_data: ApproveDeleteRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
 ) -> DeleteRequestResponse:
-    """Approve a delete request and queue it for background execution."""
+    """Approve a deletion for immediate or scheduled background execution."""
+    async with candidate_workflow_lock:
+        try:
+            return await _approve_delete_request_unlocked(
+                request_id, review_data, manager, db
+            )
+        except Exception:
+            await db.rollback()
+            raise
+
+
+async def _approve_delete_request_unlocked(
+    request_id: int,
+    review_data: ApproveDeleteRequest,
+    manager: User,
+    db: AsyncSession,
+) -> DeleteRequestResponse:
     result = await db.execute(
         select(DeleteRequest).where(DeleteRequest.id == request_id)
     )
@@ -948,6 +1007,18 @@ async def approve_delete_request(
     media, _ = await _get_delete_request_media(db, request)
     media_year = getattr(media, "year", None)
     media_tmdb_id = getattr(media, "tmdb_id", None)
+
+    when = None
+    if "scheduled_at" in review_data.model_fields_set:
+        if review_data.scheduled_at is not None:
+            from backend.services.scheduled_deletions import future_time
+
+            when = future_time(review_data.scheduled_at)
+    else:
+        settings = await db.scalar(select(GeneralSettings).limit(1))
+        days = settings.delete_request_grace_period_days if settings else 0
+        if days:
+            when = datetime.now(UTC) + timedelta(days=days)
 
     request.status = ProtectionRequestStatus.APPROVED
     request.reviewed_by_user_id = manager.id
@@ -972,30 +1043,39 @@ async def approve_delete_request(
         tagged_in_arr=False,
         estimated_space_bytes=None,
     )
-    db.add(candidate)
-    await db.commit()
-    await db.refresh(candidate)
+    if when is not None:
+        from backend.api.routes.scheduled_deletions import _create_schedules
 
-    item_detail = await _build_delete_request_job_item(
-        db,
-        request,
-        media_title=media.title,
-        media_year=media_year,
-        media_tmdb_id=media_tmdb_id,
-        candidate_id=candidate.id,
-    )
-    item_label = item_detail.display_label
+        # Autoflush is disabled: persist the approval within this transaction so
+        # validation no longer sees this request as pending. No candidate is saved.
+        await db.flush()
+        await _create_schedules(db, manager, [candidate], when, delete_request=request)
+    else:
+        from backend.services.scheduled_deletions import blocking_schedule
 
-    await queue_candidate_file_op_job(
-        operation=CandidateFileOpOperation.DELETE,
-        candidate_ids=[candidate.id],
-        requested_by_user_id=manager.id,
-        requested_by_username=manager.username,
-        delete_request_id=request.id,
-        item_labels=[item_label],
-        item_label_total=1,
-        item_details=[item_detail],
-    )
+        if await blocking_schedule(db, candidate):
+            raise HTTPException(409, "This item already overlaps a scheduled deletion")
+        db.add(candidate)
+        await db.commit()
+        await db.refresh(candidate)
+        item_detail = await _build_delete_request_job_item(
+            db,
+            request,
+            media_title=media.title,
+            media_year=media_year,
+            media_tmdb_id=media_tmdb_id,
+            candidate_id=candidate.id,
+        )
+        await queue_candidate_file_op_job(
+            operation=CandidateFileOpOperation.DELETE,
+            candidate_ids=[candidate.id],
+            requested_by_user_id=manager.id,
+            requested_by_username=manager.username,
+            delete_request_id=request.id,
+            item_labels=[item_detail.display_label],
+            item_label_total=1,
+            item_details=[item_detail],
+        )
 
     tracked_request = await db.get(DeleteRequest, request_id)
     if tracked_request is None:
@@ -1014,7 +1094,11 @@ async def approve_delete_request(
             user_id=tracked_request.requested_by_user_id,
             notification_type=NotificationType.REQUEST_APPROVED,
             title="Delete Request Approved",
-            message=f"Your delete request for {media.title} was approved and queued for execution",
+            message=(
+                f"Your delete request for {media.title} was approved and scheduled for {to_utc_isoformat(when)}"
+                if when
+                else f"Your delete request for {media.title} was approved and queued for execution"
+            ),
             context={
                 "media_title": media.title,
                 "media_year": media.year,
@@ -1027,6 +1111,7 @@ async def approve_delete_request(
                 ),
                 "request_id": tracked_request.id,
                 "request_type": "Deletion",
+                "scheduled_at": to_utc_isoformat(when),
                 "reason": tracked_request.reason,
                 "admin_notes": tracked_request.admin_notes,
             },

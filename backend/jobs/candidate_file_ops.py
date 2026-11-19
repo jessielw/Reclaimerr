@@ -326,7 +326,11 @@ async def _run_candidate_file_op_job_unlocked(
                     await _candidate_failure_reason(candidate_id),
                 )
 
-            if linked_request_id is not None and payload.delete_request_id is None:
+            if (
+                linked_request_id is not None
+                and payload.delete_request_id is None
+                and payload.scheduled_deletion_id is None
+            ):
                 await _finalize_delete_request_job(
                     delete_request_id=linked_request_id,
                     candidate_ids=[candidate_id],
@@ -349,7 +353,10 @@ async def _run_candidate_file_op_job_unlocked(
             completed=completed_items,
             failed_count=failed,
         )
-        if payload.delete_request_id is not None:
+        if (
+            payload.delete_request_id is not None
+            and payload.scheduled_deletion_id is None
+        ):
             await _finalize_delete_request_job(
                 delete_request_id=payload.delete_request_id,
                 candidate_ids=payload.candidate_ids,
@@ -382,7 +389,7 @@ async def _run_candidate_file_op_job_unlocked(
         deferrals=deferrals,
     )
 
-    if payload.delete_request_id is not None:
+    if payload.delete_request_id is not None and payload.scheduled_deletion_id is None:
         await _finalize_delete_request_job(
             delete_request_id=payload.delete_request_id,
             candidate_ids=payload.candidate_ids,

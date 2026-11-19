@@ -321,6 +321,7 @@ export interface GeneralSettings {
   add_arr_import_exclusions_on_delete: boolean;
   auto_delete_movie_delay_days: number;
   auto_delete_series_delay_days: number;
+  delete_request_grace_period_days: number;
   application_url: string | null;
   playback_movie_min_seconds: number;
   playback_episode_min_seconds: number;
@@ -1202,6 +1203,9 @@ export interface DeleteRequest {
   reviewed_at: string | null;
   admin_notes: string | null;
   executed_at: string | null;
+  scheduled_deletion_id: number | null;
+  scheduled_at: string | null;
+  schedule_state: string | null;
   execution_error: string | null;
   playback_deferral?: PlaybackDeferral | null;
   season_id: number | null;

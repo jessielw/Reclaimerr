@@ -6,11 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.database import Base
 from backend.database.models import (
+    DeleteRequest,
     GeneralSettings,
     MediaUserIdentity,
     Movie,
@@ -26,6 +27,7 @@ from backend.database.models import (
 from backend.enums import (
     MediaType,
     NotificationType,
+    ProtectionRequestStatus,
     ScheduleType,
     Service,
     Task,
@@ -326,3 +328,80 @@ def test_several_titles_for_one_user_arrive_as_one_notification(
 def test_the_type_maps_to_its_own_setting_column() -> None:
     field = _notification_type_to_field(NotificationType.REQUESTER_LEAVING_SOON)
     assert field == "requester_leaving_soon"
+
+
+@pytest.mark.parametrize("keep_candidate", [True, False])
+@pytest.mark.parametrize("state", ["scheduled", "blocked", "failed", "canceled"])
+def test_approved_request_schedules_warn_without_candidates_and_deduplicate(
+    monkeypatch, keep_candidate, state
+):
+    harness = Harness(monkeypatch, _movie_snapshot(BOB))
+
+    async def add(db, _rule):
+        movie = await db.scalar(select(Movie))
+        user = await db.scalar(select(User))
+        request = DeleteRequest(
+            media_type=MediaType.MOVIE,
+            movie_id=movie.id,
+            requested_by_user_id=user.id,
+            status=ProtectionRequestStatus.APPROVED,
+        )
+        db.add(request)
+        await db.flush()
+        db.add(
+            ScheduledDeletion(
+                scheduled_at=NOW + timedelta(days=2),
+                state=state,
+                created_by_username="admin",
+                delete_request_id=request.id,
+                target={
+                    "media_type": "movie",
+                    "media_id": movie.id,
+                    "scope": "movie",
+                    "title": "Dune (2021)",
+                    "tmdb_id": movie.tmdb_id,
+                },
+            )
+        )
+        if not keep_candidate:
+            await db.execute(delete(ReclaimCandidate))
+
+    results = harness.run(task_enabled=False, extra=add, scans=2)
+    assert len(harness.sent) == int(state == "scheduled")
+    assert [r.warned_candidates for r in results] == (
+        [1, 0] if state == "scheduled" else [0, 0]
+    )
+    if state == "scheduled":
+        assert len(harness.sent[0][2]["titles"]) == 1
+
+
+def test_missing_seerr_data_does_not_mark_request_schedule_warned(monkeypatch):
+    harness = Harness(monkeypatch, None)
+    saved = []
+
+    async def add(db, _rule):
+        movie = await db.scalar(select(Movie))
+        user = await db.scalar(select(User))
+        request = DeleteRequest(
+            media_type=MediaType.MOVIE, movie_id=movie.id, requested_by_user_id=user.id
+        )
+        db.add(request)
+        await db.flush()
+        schedule = ScheduledDeletion(
+            scheduled_at=NOW + timedelta(days=2),
+            created_by_username="admin",
+            delete_request_id=request.id,
+            target={
+                "media_type": "movie",
+                "media_id": movie.id,
+                "scope": "movie",
+                "title": movie.title,
+                "tmdb_id": movie.tmdb_id,
+            },
+        )
+        db.add(schedule)
+        saved.append(schedule)
+        await db.execute(delete(ReclaimCandidate))
+
+    harness.run(extra=add)
+    assert saved[0].requester_warned_at is None

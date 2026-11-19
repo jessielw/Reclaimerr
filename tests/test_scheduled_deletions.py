@@ -923,6 +923,11 @@ def test_migration_matches_schedule_model_and_preserves_existing_rows():
             ],
         )
         connection.execute(
+            text(
+                "ALTER TABLE general_settings DROP COLUMN delete_request_grace_period_days"
+            )
+        )
+        connection.execute(
             User.__table__.insert().values(
                 username="existing",
                 password_hash="x",

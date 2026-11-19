@@ -183,6 +183,7 @@ async def test_missing_version_cannot_queue_deletion(monkeypatch, retry):
         assert caught.value.status_code == 409
         queue.assert_not_awaited()
         if not retry:
+            await db.refresh(stale)
             assert stale.status is ProtectionRequestStatus.PENDING
             assert not (await db.scalars(select(ReclaimCandidate))).all()
 

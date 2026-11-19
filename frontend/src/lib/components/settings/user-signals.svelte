@@ -42,6 +42,7 @@
     add_arr_import_exclusions_on_delete: true,
     auto_delete_movie_delay_days: 14,
     auto_delete_series_delay_days: 7,
+    delete_request_grace_period_days: 0,
     application_url: null,
     playback_movie_min_seconds: 15,
     playback_episode_min_seconds: 7,
