@@ -99,6 +99,8 @@ The candidate list accepts `rule_id` to match exact membership in a candidate's 
 - `PUT /api/protected/{entry_id}/duration`
 - `DELETE /api/protected/{entry_id}`
 
+Delete-request responses include `requested_by_media_identities` alongside the local `requested_by_user_id` and `requested_by_username`. This array uses the same linked identity fields as [`GET /api/v1/users`](api.md#user-import), including the server configuration ID, provider user ID, username, and display name. It reflects the requester's current persisted links and is empty when there are none. Creation, listing (including `/api/delete-requests/my`), and review responses all include it; existing session authentication and permissions still apply.
+
 ## Rules
 
 - `GET /api/rules`

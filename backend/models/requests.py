@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 
 from backend.enums import MediaType, ProtectionRequestStatus
+from backend.models.media_identity import LinkedMediaIdentity
 
 
 class CreateProtectionRequest(BaseModel):
@@ -124,6 +125,10 @@ class DeleteRequestResponse(BaseModel):
 
     requested_by_user_id: int
     requested_by_username: str
+    requested_by_media_identities: list[LinkedMediaIdentity] = Field(
+        default_factory=list,
+        description="The requester's current persisted media-server identity links.",
+    )
     reason: str | None
 
     status: ProtectionRequestStatus

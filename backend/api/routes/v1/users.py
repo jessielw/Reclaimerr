@@ -9,12 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.api_tokens import ApiPrincipal, require_api_scope
 from backend.database import get_db
 from backend.database.models import User
+from backend.models.api_v1 import UserAccountResponse
 from backend.models.media_user_import import (
-    MediaImportAccount,
     MediaImportProvider,
     MediaUserImportRequest,
     MediaUserImportResponse,
 )
+from backend.services.media_user_identity import linked_media_identities
 from backend.services.media_user_import import (
     account_summary,
     import_media_users,
@@ -24,14 +25,14 @@ from backend.services.media_user_import import (
 router = APIRouter(prefix="/users", tags=["v1:users"])
 
 
-@router.get("", response_model=list[MediaImportAccount])
+@router.get("", response_model=list[UserAccountResponse])
 async def list_users(
     _principal: Annotated[ApiPrincipal, Depends(require_api_scope("users:read"))],
     db: Annotated[AsyncSession, Depends(get_db)],
     q: str | None = Query(default=None, max_length=255),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-) -> list[MediaImportAccount]:
+) -> list[UserAccountResponse]:
     stmt = select(User)
     if q and q.strip():
         query = f"%{q.strip().lower()}%"
@@ -47,7 +48,14 @@ async def list_users(
         .scalars()
         .all()
     )
-    return [account_summary(user) for user in users]
+    identities = await linked_media_identities(db, (user.id for user in users))
+    return [
+        UserAccountResponse(
+            **account_summary(user).model_dump(),
+            media_identities=identities[user.id],
+        )
+        for user in users
+    ]
 
 
 @router.get(

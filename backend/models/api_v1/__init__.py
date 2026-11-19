@@ -27,6 +27,7 @@ from backend.models.api_v1.tasks import (
     TaskRunResponse,
     TaskRunTriggerResponse,
 )
+from backend.models.api_v1.users import UserAccountResponse
 
 __all__ = [
     "ApiDiscoveryResponse",
@@ -53,4 +54,5 @@ __all__ = [
     "TaskRunListResponse",
     "TaskRunResponse",
     "TaskRunTriggerResponse",
+    "UserAccountResponse",
 ]

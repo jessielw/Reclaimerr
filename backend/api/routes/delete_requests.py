@@ -48,12 +48,14 @@ from backend.enums import (
 )
 from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
 from backend.models.jobs import CandidateFileOpJobItem
+from backend.models.media_identity import LinkedMediaIdentity
 from backend.models.requests import (
     ApproveDeleteRequest,
     CreateDeleteRequest,
     DeleteRequestResponse,
     ReviewDeleteRequest,
 )
+from backend.services.media_user_identity import linked_media_identities
 from backend.services.notifications import (
     notify_admins,
     notify_user,
@@ -484,6 +486,7 @@ async def _build_delete_request_response(
     requested_by_username: str | None = None,
     reviewed_by_username: str | None = None,
     version: MovieVersion | None = None,
+    requested_by_media_identities: list[LinkedMediaIdentity] | None = None,
 ) -> DeleteRequestResponse:
     """Build a DeleteRequestResponse from a DeleteRequest, looking up related media and user info as needed."""
     # Reading/reviewing a stale request must remain possible even after its
@@ -542,6 +545,9 @@ async def _build_delete_request_response(
         schedule_status = await schedule_response(db, schedule)
     else:
         schedule_status = None
+    if requested_by_media_identities is None:
+        identities = await linked_media_identities(db, [request.requested_by_user_id])
+        requested_by_media_identities = identities[request.requested_by_user_id]
     return DeleteRequestResponse(
         id=request.id,
         media_type=request.media_type,
@@ -563,6 +569,7 @@ async def _build_delete_request_response(
         episode_name=episode_name,
         requested_by_user_id=request.requested_by_user_id,
         requested_by_username=requested_by_username,
+        requested_by_media_identities=requested_by_media_identities,
         reason=request.reason,
         status=request.status,
         reviewed_by_user_id=request.reviewed_by_user_id,
@@ -827,6 +834,9 @@ async def create_delete_request(
         episode_name=episode.name if episode else None,
         requested_by_user_id=user.id,
         requested_by_username=user.username,
+        requested_by_media_identities=(await linked_media_identities(db, [user.id]))[
+            user.id
+        ],
         reason=delete_request.reason,
         status=delete_request.status,
         reviewed_by_user_id=None,
@@ -882,6 +892,10 @@ async def get_my_delete_requests(
     result = await db.execute(query)
     requests = result.scalars().all()
 
+    identities = await linked_media_identities(
+        db, (req.requested_by_user_id for req in requests)
+    )
+
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
     if version_ids:
@@ -896,6 +910,7 @@ async def get_my_delete_requests(
             db,
             req,
             requested_by_username=user.username,
+            requested_by_media_identities=identities[req.requested_by_user_id],
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,
@@ -930,6 +945,10 @@ async def get_all_delete_requests(
     result = await db.execute(query)
     requests = result.scalars().all()
 
+    identities = await linked_media_identities(
+        db, (req.requested_by_user_id for req in requests)
+    )
+
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
     if version_ids:
@@ -943,6 +962,7 @@ async def get_all_delete_requests(
         await _build_delete_request_response(
             db,
             req,
+            requested_by_media_identities=identities[req.requested_by_user_id],
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,
