@@ -51,6 +51,18 @@ def test_media_event_context_tolerates_missing_genres():
     assert notifications.media_event_context(media)["genres"] == []
 
 
+def test_media_event_context_accepts_genre_names_or_objects():
+    media = SimpleNamespace(
+        poster_url=None,
+        size=1,
+        tmdb_id=1,
+        imdb_id=None,
+        overview=None,
+        genres=["Drama", {"id": 1, "name": "Comedy"}, {"id": 2}],
+    )
+    assert notifications.media_event_context(media)["genres"] == ["Drama", "Comedy"]
+
+
 def test_event_payload_is_json_safe_and_names_the_recipient():
     payload = notifications.build_event_payload(
         notification_type=NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED,

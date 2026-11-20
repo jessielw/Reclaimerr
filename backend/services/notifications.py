@@ -41,12 +41,14 @@ from backend.database.models import (
 )
 from backend.enums import LogLevel, NotificationChannel, NotificationType, UserRole
 from backend.models.settings import normalize_notification_preferences
+from backend.services import email_templates
 from backend.services.admin_notices import create_event_notice
 from backend.services.notification_destinations import (
     destination_approval_for_user,
     email_recipient_for,
     is_deliverable,
 )
+from backend.services.reclaim_stats import load_reclaim_totals
 from backend.services.smtp import SmtpConfig, build_mailto_url, load_smtp_config
 
 __all__ = [
@@ -1105,6 +1107,59 @@ def _resolve_destination(
     return url, setting.name or f"notification {setting.id}"
 
 
+async def _compose_email_template(
+    *,
+    setting: NotificationSetting,
+    notification_type: NotificationType,
+    context: dict[str, Any] | None,
+    application_url: str | None,
+    recipient: Any,
+) -> tuple[str, str, apprise.NotifyFormat] | None:
+    """Render the admin's custom HTML email for this event, when one exists.
+
+    Only system email destinations use it, and only while a template file for the
+    event is present in the data directory: those that chose "Template", and
+    every one when the admin turned on "everyone" for the event. Anything else
+    keeps the default body.
+    """
+    if setting.channel != NotificationChannel.SYSTEM_EMAIL:
+        return None
+    event = notification_type.value
+    preferences = normalize_notification_preferences(setting.preferences)
+    # "Template" opts in; an admin can also send it to every Email destination
+    if preferences.get(event, {}).get("detail") != "template" and (
+        event not in email_templates.events_for_everyone()
+    ):
+        return None
+    path = email_templates.find_template(event)
+    if path is None:
+        return None
+    try:
+        source = path.read_text(encoding="utf-8")
+        total_reclaimed = None
+        if email_templates.template_uses(source, "total_reclaimed"):
+            async with async_db() as session:
+                total_reclaimed = (await load_reclaim_totals(session)).reclaimed_bytes
+        values = email_templates.build_values(
+            event=event,
+            context=context,
+            recipient=recipient,
+            application_url=application_url,
+            total_reclaimed_bytes=total_reclaimed,
+        )
+        subject, html = email_templates.render_template(
+            source,
+            values,
+            default_subject=_compose_title(notification_type, "", context or {}),
+        )
+    except Exception as exc:
+        LOG.warning(
+            f"Could not render email template {path.name}, using default: {exc}"
+        )
+        return None
+    return subject, html, apprise.NotifyFormat.HTML
+
+
 async def notify_user(
     user_id: int,
     notification_type: NotificationType,
@@ -1162,13 +1217,23 @@ async def notify_user(
                     continue
                 delivered.add(key)
 
-            composed_title, composed_message, composed_format = _compose_notification(
-                notification_type=notification_type,
+            templated = await _compose_email_template(
                 setting=setting,
-                fallback_title=title,
-                fallback_message=message,
+                notification_type=notification_type,
                 context=context,
                 application_url=application_url,
+                recipient=setting.user,
+            )
+            composed_title, composed_message, composed_format = (
+                templated
+                or _compose_notification(
+                    notification_type=notification_type,
+                    setting=setting,
+                    fallback_title=title,
+                    fallback_message=message,
+                    context=context,
+                    application_url=application_url,
+                )
             )
             success = await send_notification(
                 url=url,
@@ -1345,13 +1410,23 @@ async def notify_all_users(
                 continue
             delivered.add(key)
 
-            composed_title, composed_message, composed_format = _compose_notification(
-                notification_type=notification_type,
+            templated = await _compose_email_template(
                 setting=setting,
-                fallback_title=title,
-                fallback_message=message,
+                notification_type=notification_type,
                 context=context,
                 application_url=application_url,
+                recipient=user,
+            )
+            composed_title, composed_message, composed_format = (
+                templated
+                or _compose_notification(
+                    notification_type=notification_type,
+                    setting=setting,
+                    fallback_title=title,
+                    fallback_message=message,
+                    context=context,
+                    application_url=application_url,
+                )
             )
             success = await send_notification(
                 url=url,
@@ -1488,3 +1563,27 @@ async def test_system_email(
         build_mailto_url(smtp, recipient),
         log_label=f"system email to {recipient}",
     )
+
+
+async def send_template_test_email(
+    smtp: SmtpConfig, recipient: str, subject: str, html: str
+) -> tuple[bool, str | None]:
+    """Send a rendered email template to one address through the instance SMTP."""
+    label = f"template test email to {recipient}"
+    try:
+        return (
+            await send_notification(
+                url=build_mailto_url(smtp, recipient),
+                title=subject,
+                message=html,
+                body_format=apprise.NotifyFormat.HTML,
+                notify_type=apprise.NotifyType.INFO,
+                log_label=label,
+            ),
+            None,
+        )
+    except RetryError:
+        return False, "Failed to send the email after several attempts"
+    except Exception as exc:
+        LOG.error(f"Unhandled error sending {label}: {exc}")
+        return False, str(exc)

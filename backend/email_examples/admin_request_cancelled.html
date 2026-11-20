@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- The title is the subject line. Placeholders in double curly braces are filled in for each email. -->
+<title>Request cancelled: {{media_title}}</title>
+</head>
+<body style="margin:0;padding:0;background:#0f1115">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0f1115;padding:24px 12px"><tr><td align="center">
+<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background:#181b21;border-radius:14px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <tr><td style="padding:20px 26px;border-bottom:1px solid #2a2d33;color:#e8eaed;font-size:17px;font-weight:600">
+    <!-- Replace this logo and name with your own header image or text. -->
+    <img src="https://raw.githubusercontent.com/jessielw/Reclaimerr/main/public/logo.png" width="30" height="30" alt="" style="vertical-align:middle;width:30px;height:30px"> Reclaimerr
+  </td></tr>
+  <tr><td style="padding:20px 26px 0;color:#9aa0a6;font-size:12px;letter-spacing:.08em;text-transform:uppercase">Cancelled</td></tr>
+  <tr><td style="padding:6px 26px 0;color:#fff;font-size:22px;font-weight:600">{{#if is_protection}}Protection request cancelled{{/if}}{{#if is_deletion}}Delete request cancelled{{/if}}</td></tr>
+  <tr><td style="padding:8px 26px 0;color:#9aa0a6;font-size:15px;line-height:1.5">{{actor}} cancelled their request for {{media_title}}.</td></tr>
+  <tr><td style="padding:20px 26px 6px">
+    <table cellpadding="0" cellspacing="0" width="100%"><tr>
+      {{#if poster_url}}<td width="130" valign="top" style="padding-right:18px"><img src="{{poster_url}}" width="130" alt="" style="display:block;border-radius:8px;width:130px;height:auto"></td>{{/if}}
+      <td valign="top">
+        <div style="color:#fff;font-size:18px;font-weight:600;margin-bottom:4px">{{media_title}} {{#if media_year}}({{media_year}}){{/if}}</div>
+        <table cellpadding="0" cellspacing="0">
+          <tr><td style="padding:6px 12px 6px 0;color:#8a8f98;font-size:13px;white-space:nowrap;vertical-align:top">Cancelled by</td><td style="color:#e8eaed;font-size:14px">{{actor}}</td></tr>
+          {{#if media_type}}<tr><td style="padding:6px 12px 6px 0;color:#8a8f98;font-size:13px;white-space:nowrap;vertical-align:top">Type</td><td style="color:#e8eaed;font-size:14px">{{media_type}}</td></tr>{{/if}}
+          {{#if scope}}<tr><td style="padding:6px 12px 6px 0;color:#8a8f98;font-size:13px;white-space:nowrap;vertical-align:top">Scope</td><td style="color:#e8eaed;font-size:14px">{{scope}}</td></tr>{{/if}}
+          {{#if reason}}<tr><td style="padding:6px 12px 6px 0;color:#8a8f98;font-size:13px;white-space:nowrap;vertical-align:top">Reason</td><td style="color:#e8eaed;font-size:14px">{{reason}}</td></tr>{{/if}}
+        </table>
+        {{#if overview}}<p style="color:#9aa0a6;font-size:13px;line-height:1.5;margin:14px 0 0">{{overview}}</p>{{/if}}
+        {{#if app_url}}<a href="{{app_url}}/#/requests" style="display:inline-block;margin-top:16px;padding:9px 16px;background:#5b8def;color:#fff;font-size:14px;font-weight:600;text-decoration:none;border-radius:6px">Open Reclaimerr</a>{{/if}}
+      </td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="padding:16px 26px 24px;color:#6b7078;font-size:12px">Sent by Reclaimerr.</td></tr>
+</table>
+</td></tr></table>
+</body>
+</html>

@@ -26,6 +26,63 @@ See the [environment variable reference](../reference/environment-variables.md) 
 
 Email notifications are configured under Settings - Notifications, in the **Email server (SMTP)** panel, which only administrators see. Enter the host, port, encryption mode (STARTTLS, SSL/TLS or none), optional credentials and a from address, then use **Send Test Email** to confirm it works. The password is encrypted at rest with `ENCRYPTION_KEY` and is never returned to the browser; leaving the field blank on a later save keeps the stored one. Once it is enabled, each user can add an **Email** destination from the same page, and it is delivered to the address on their account unless they enter a different one.
 
+### Custom email templates
+
+By default an email is the same short text as the other notification channels. To send your own HTML instead, put a file named after the event in `<data dir>/templates/email/`, for example `delete_request_execution_succeeded.html`. The event's detail dropdown on an **Email** destination then offers a **Template** choice next to Compact and Standard, and a destination that picks it receives the template. Nothing changes for destinations that keep Compact or Standard, and only **Email** destinations are affected.
+
+To use a template for everyone without asking each person to change their dropdown, turn on **Use for everyone** for the event in the editor. Every Email destination then receives the template for that event, whatever its dropdown says, and the dropdown shows **Template (set by admin)**. The choice is stored in `settings.json` next to the templates.
+
+Templates are plain HTML with `{{token}}` placeholders. Values are HTML-escaped, a token with no value renders as nothing, and `{{#if token}}...{{/if}}` keeps its content only when the token has a value (blocks cannot be nested). The text of the `<title>` element is the subject line, and it can use tokens too. There is no scripting, so a template can only use the values below.
+
+| Token | Value |
+| --- | --- |
+| `actor` | Who made the request, in the emails sent to administrators |
+| `recipient_name` | Display name (or username) of the person receiving the email |
+| `media_title`, `media_year`, `media_type` | Title, year and "Movie" or "TV show" |
+| `request_type`, `is_deletion`, `is_protection` | "Deletion" or "Protection". The approved and declined emails are also sent for protection requests, so use `{{#if is_protection}}` and `{{#if is_deletion}}` to word both |
+| `scope` | What was removed, such as the whole movie or a season |
+| `poster_url` | Poster image URL, from TMDB (see below) |
+| `size`, `size_bytes` | Size of the title, formatted or in bytes |
+| `genres`, `overview`, `tmdb_id`, `imdb_id` | Media details |
+| `reason`, `admin_notes` | The reason on the request, and the note an administrator added |
+| `error` | What went wrong, for failed deletions |
+| `requested_date`, `scheduled_date`, `deleted_date` | Dates like `8 Nov 2026`. `scheduled_date` is when an approved request will be deleted |
+| `total_reclaimed` | Space reclaimed so far, as on the dashboard |
+| `app_url` | Your Reclaimerr URL, when one is set |
+| `request_id`, `event` | The delete request ID and the event name |
+| `headline`, `subline`, `voice_subject` | One entry from `voices.json`, see below |
+
+Images must be reachable by the recipient, so use public `https://` URLs. Email clients do not load images from a private address. `poster_url` always points at TMDB's image CDN, which works even when Reclaimerr itself is not reachable from the internet; set `EMAIL_POSTER_BASE_URL` to use your own image proxy instead. A media server URL on a private network is never used, and the poster is left out.
+
+There is a starter template for each supported event (deletion completed, deletion failed, request approved, request declined, and the administrator emails for new delete requests, new protection requests, cancellations and failed deletions) in `backend/email_examples/` in the repository, and the editor offers them as a starting point.
+
+#### Varied wording
+
+Wording is optional. The starter templates use fixed text, so nothing here is needed to get a working email. If you would rather not send the same sentence every time, you can keep a list of alternatives and let each email pick one.
+
+1. In **Settings - Notifications - Email templates**, open **Varied wording (optional)**, edit the list and save it. It is stored as `voices.json` next to the templates, and each entry has a `headline`, a `subline` and a `subject`:
+
+   ```json
+   [
+     {
+       "headline": "{{media_title}} is gone",
+       "subline": "Hi {{recipient_name}}, {{size}} is free again.",
+       "subject": "Deleted"
+     },
+     {
+       "headline": "All done, {{recipient_name}}",
+       "subline": "{{media_title}} was removed.",
+       "subject": "Done"
+     }
+   ]
+   ```
+
+2. In a template, replace the fixed text with `{{headline}}` and `{{subline}}`, and use `{{voice_subject}}` in the title, for example `<title>{{voice_subject}}: {{media_title}}</title>`.
+
+Each request always gets the same entry, chosen by its request ID, so a resent email does not change. Entries can use any of the other tokens. The list is shared by every template, so a failure email that uses `{{headline}}` would pick up the same cheerful lines. Keep fixed text in templates where that would read badly. Without a saved list, `{{headline}}` uses the same example list the editor offers.
+
+As an administrator you can check a template with sample data at `GET /api/settings/notifications/email-template/<event>/preview`, which returns the rendered page.
+
 ### Webhook payload
 
 An Apprise destination that uses the `json://` or `jsons://` scheme receives its usual `title` and `message`, plus a structured `reclaimerr` object, so a receiver can build its own message without parsing the text. Other destinations are unchanged, and existing `json://` receivers keep working because the field is additive.
