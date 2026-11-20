@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import select
@@ -34,7 +36,11 @@ from backend.services.notification_destinations import (
     sync_pending_destination_notice,
     url_fingerprint,
 )
-from backend.services.notifications import test_notification_url, test_system_email
+from backend.services.notifications import (
+    send_template_test_email,
+    test_notification_url,
+    test_system_email,
+)
 from backend.services.smtp import load_smtp_config
 
 router = APIRouter(tags=["settings", "notifications"])
@@ -127,6 +133,212 @@ async def get_notification_email_status(
             if email_templates.find_template(event) is not None
         ],
         template_event_types=list(email_templates.TEMPLATE_EVENTS),
+    )
+
+
+class EmailTemplateEvent(BaseModel):
+    event: str
+    label: str
+    custom: bool
+
+
+class EmailTemplateList(BaseModel):
+    events: list[EmailTemplateEvent]
+    voices: str | None
+    example_voices: str
+
+
+class EmailTemplateDetail(BaseModel):
+    event: str
+    custom: bool
+    html: str
+    example_html: str
+
+
+class EmailTemplateBody(BaseModel):
+    html: str = Field(max_length=email_templates.MAX_TEMPLATE_BYTES)
+    voices: str | None = None
+    # picks which library movie the preview shows; the same seed, the same movie
+    seed: int = 0
+
+
+class EmailVoicesBody(BaseModel):
+    text: str = Field(max_length=email_templates.MAX_TEMPLATE_BYTES)
+
+
+class EmailTemplatePreview(BaseModel):
+    subject: str
+    html: str
+
+
+def _known_event(event: str) -> str:
+    if event not in email_templates.TEMPLATE_EVENTS:
+        raise HTTPException(status_code=404, detail="Unknown email event")
+    return event
+
+
+@router.get("/notifications/email-templates")
+async def list_email_templates(
+    _admin: Annotated[User, Depends(require_admin)],
+) -> EmailTemplateList:
+    """The events that can have a custom email template, and which have one."""
+    return EmailTemplateList(
+        events=[
+            EmailTemplateEvent(
+                event=event,
+                label=label,
+                custom=email_templates.find_template(event) is not None,
+            )
+            for event, label in email_templates.TEMPLATE_EVENTS.items()
+        ],
+        voices=email_templates.read_voices_text(),
+        example_voices=email_templates.example_voices(),
+    )
+
+
+@router.get("/notifications/email-templates/{event}")
+async def get_email_template(
+    event: str,
+    _admin: Annotated[User, Depends(require_admin)],
+) -> EmailTemplateDetail:
+    _known_event(event)
+    path = email_templates.find_template(event)
+    example = email_templates.example_template(event)
+    return EmailTemplateDetail(
+        event=event,
+        custom=path is not None,
+        html=path.read_text(encoding="utf-8") if path else example,
+        example_html=example,
+    )
+
+
+@router.put("/notifications/email-templates/{event}")
+async def save_email_template(
+    event: str,
+    data: EmailTemplateBody,
+    _admin: Annotated[User, Depends(require_admin)],
+) -> dict[str, str]:
+    _known_event(event)
+    try:
+        email_templates.save_template(event, data.html)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Template saved"}
+
+
+@router.delete("/notifications/email-templates/{event}")
+async def delete_email_template(
+    event: str,
+    _admin: Annotated[User, Depends(require_admin)],
+) -> dict[str, str]:
+    """Remove the custom template, which restores the default email."""
+    _known_event(event)
+    email_templates.delete_template(event)
+    return {"message": "Template removed"}
+
+
+@router.put("/notifications/email-voices")
+async def save_email_voices(
+    data: EmailVoicesBody,
+    _admin: Annotated[User, Depends(require_admin)],
+) -> dict[str, str]:
+    try:
+        email_templates.save_voices(data.text)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid voices: {exc}") from exc
+    return {"message": "Voices saved"}
+
+
+@router.delete("/notifications/email-voices")
+async def delete_email_voices(
+    _admin: Annotated[User, Depends(require_admin)],
+) -> dict[str, str]:
+    email_templates.delete_voices()
+    return {"message": "Voices removed"}
+
+
+async def _render_body(
+    event: str, data: EmailTemplateBody, user: User, db: AsyncSession
+) -> tuple[str, str]:
+    try:
+        return email_templates.render_source(
+            event,
+            data.html,
+            voices_text=data.voices,
+            recipient=user,
+            context=await email_templates.sample_context(db, data.seed),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid voices: {exc}") from exc
+
+
+@router.post("/notifications/email-templates/{event}/preview")
+async def preview_unsaved_email_template(
+    event: str,
+    data: EmailTemplateBody,
+    current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> EmailTemplatePreview:
+    """Render the editor's current text with sample data, without saving it."""
+    _known_event(event)
+    subject, html = await _render_body(event, data, current_user, db)
+    return EmailTemplatePreview(subject=subject, html=html)
+
+
+@router.post("/notifications/email-templates/{event}/test")
+@limiter.limit("5/minute")
+async def send_email_template_test(
+    event: str,
+    data: EmailTemplateBody,
+    # named 'request' because the rate limiter looks it up by that name
+    request: Request,
+    current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Email the rendered template, with sample data, to the admin's own address."""
+    _known_event(event)
+    smtp = await load_smtp_config(db)
+    if smtp is None:
+        raise HTTPException(status_code=400, detail="Configure the SMTP server first")
+    recipient = email_recipient_for(current_user, None)
+    if not recipient:
+        raise HTTPException(
+            status_code=400, detail="Set an email address on your account first"
+        )
+    subject, html = await _render_body(event, data, current_user, db)
+    success, error = await send_template_test_email(smtp, recipient, subject, html)
+    if not success:
+        raise HTTPException(status_code=400, detail=error or "Sending failed")
+    return {"message": f"Test email sent to {recipient}"}
+
+
+@router.get(
+    "/notifications/email-template/{event}/preview", response_class=HTMLResponse
+)
+async def preview_email_template(
+    event: str,
+    current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """Render a custom email template for an event with sample data."""
+    rendered = email_templates.render_preview(
+        event,
+        recipient=current_user,
+        context=await email_templates.sample_context(db),
+    )
+    if rendered is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No email template found for {event} in {email_templates.template_dir()}",
+        )
+    subject, html = rendered
+    # keep the template's own markup from reaching Reclaimerr's UI origin
+    return HTMLResponse(
+        html,
+        headers={
+            "X-Email-Subject": subject.encode("ascii", "replace").decode(),
+            "Content-Security-Policy": "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'",
+        },
     )
 
 

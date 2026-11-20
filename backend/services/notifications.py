@@ -1559,3 +1559,27 @@ async def test_system_email(
         build_mailto_url(smtp, recipient),
         log_label=f"system email to {recipient}",
     )
+
+
+async def send_template_test_email(
+    smtp: SmtpConfig, recipient: str, subject: str, html: str
+) -> tuple[bool, str | None]:
+    """Send a rendered email template to one address through the instance SMTP."""
+    label = f"template test email to {recipient}"
+    try:
+        return (
+            await send_notification(
+                url=build_mailto_url(smtp, recipient),
+                title=subject,
+                message=html,
+                body_format=apprise.NotifyFormat.HTML,
+                notify_type=apprise.NotifyType.INFO,
+                log_label=label,
+            ),
+            None,
+        )
+    except RetryError:
+        return False, "Failed to send the email after several attempts"
+    except Exception as exc:
+        LOG.error(f"Unhandled error sending {label}: {exc}")
+        return False, str(exc)

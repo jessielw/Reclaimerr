@@ -27,8 +27,12 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.core.logger import LOG
 from backend.core.settings import settings
+from backend.database.models import Movie
 
 # every value a template can use
 TOKENS = (
@@ -251,6 +255,97 @@ def render_template(
     return subject, render_string(source, values, html=True)
 
 
+# the fake parts of a preview: dates, reason and error text. The title comes from
+# the library when there is one (see ``sample_context``).
+SAMPLE_CONTEXT: dict[str, Any] = {
+    "request_id": 1,
+    "actor": "Sam",
+    "media_title": "Example Movie",
+    "media_year": 2024,
+    "media_type": "movie",
+    "scope": "Entire movie",
+    "media_size_bytes": 4_200_000_000,
+    "genres": ["Drama", "Comedy"],
+    "overview": "A short synopsis of the title appears here.",
+    "reason": "Not watched in a year",
+    "requested_at": datetime(2026, 11, 8, tzinfo=UTC),
+    "scheduled_at": datetime(2026, 11, 27, tzinfo=UTC),
+    "admin_notes": "Fine to remove.",
+    "error": "The file is in use by another process.",
+    "executed_at": datetime(2026, 11, 20, tzinfo=UTC),
+}
+
+
+def _genre_labels(genres: Any) -> list[str]:
+    names = []
+    for genre in genres or []:
+        name = genre.get("name") if isinstance(genre, dict) else genre
+        if name:
+            names.append(str(name))
+    return names
+
+
+async def sample_context(db: AsyncSession, seed: int = 0) -> dict[str, Any]:
+    """Preview data using a movie from the library, so the preview looks real.
+
+    The same ``seed`` always picks the same movie, so a preview does not change
+    while the template is being edited. Falls back to ``SAMPLE_CONTEXT`` when the
+    library has no movie with a poster.
+    """
+    # the request id picks the headline from the wording list, so shuffling the
+    # preview also shows the other lines
+    context = {**SAMPLE_CONTEXT, "request_id": abs(seed) + 1}
+    count = await db.scalar(
+        select(func.count()).select_from(Movie).where(Movie.poster_url.is_not(None))
+    )
+    if not count:
+        return context
+    movie = await db.scalar(
+        select(Movie)
+        .where(Movie.poster_url.is_not(None))
+        .order_by(Movie.id)
+        .offset(abs(seed) % count)
+        .limit(1)
+    )
+    if movie is None:
+        return context
+    context.update(
+        media_title=movie.title,
+        media_year=movie.year,
+        poster_path=movie.poster_url,
+        media_size_bytes=movie.size or context["media_size_bytes"],
+        genres=_genre_labels(movie.genres) or context["genres"],
+        overview=movie.overview or context["overview"],
+        tmdb_id=movie.tmdb_id,
+        imdb_id=movie.imdb_id,
+    )
+    return context
+
+
+def render_preview(
+    event: str,
+    *,
+    recipient: Any = None,
+    application_url: str | None = None,
+    directory: Path | None = None,
+    context: Mapping[str, Any] | None = None,
+) -> tuple[str, str] | None:
+    """Render the template for ``event`` with sample data, or None if absent."""
+    path = find_template(event, directory)
+    if path is None:
+        return None
+    source = path.read_text(encoding="utf-8")
+    values = build_values(
+        event=event,
+        context=context or SAMPLE_CONTEXT,
+        recipient=recipient,
+        application_url=application_url,
+        total_reclaimed_bytes=1_250_000_000_000,
+        directory=directory,
+    )
+    return render_template(source, values, default_subject=event)
+
+
 # events an admin can write a template for, and the label the UI shows
 TEMPLATE_EVENTS: dict[str, str] = {
     "delete_request_execution_succeeded": "Deletion completed",
@@ -262,6 +357,7 @@ TEMPLATE_EVENTS: dict[str, str] = {
     "admin_request_cancelled": "Request cancelled (admins)",
     "admin_delete_execution_failed": "Deletion failed (admins)",
 }
+MAX_TEMPLATE_BYTES = 200_000
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "email_examples"
 
 
@@ -272,3 +368,67 @@ def example_template(event: str) -> str:
 
 def example_voices() -> str:
     return (EXAMPLES_DIR / "voices.json").read_text(encoding="utf-8")
+
+
+def read_voices_text() -> str | None:
+    path = template_dir() / "voices.json"
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def save_template(event: str, html: str) -> None:
+    if event not in TEMPLATE_EVENTS:
+        raise ValueError(f"Unknown email event: {event}")
+    if len(html.encode("utf-8")) > MAX_TEMPLATE_BYTES:
+        raise ValueError("Template is too large")
+    _write(template_dir() / f"{event}.html", html)
+
+
+def delete_template(event: str) -> bool:
+    path = find_template(event)
+    if path is None or event not in TEMPLATE_EVENTS:
+        return False
+    path.unlink()
+    return True
+
+
+def save_voices(text: str) -> None:
+    parse_voices(text)
+    if len(text.encode("utf-8")) > MAX_TEMPLATE_BYTES:
+        raise ValueError("Voices file is too large")
+    _write(template_dir() / "voices.json", text)
+
+
+def delete_voices() -> bool:
+    path = template_dir() / "voices.json"
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
+def render_source(
+    event: str,
+    source: str,
+    *,
+    voices_text: str | None = None,
+    recipient: Any = None,
+    application_url: str | None = None,
+    context: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Render unsaved template text with sample data, for the editor preview."""
+    values = build_values(
+        event=event,
+        context=context or SAMPLE_CONTEXT,
+        recipient=recipient,
+        application_url=application_url,
+        total_reclaimed_bytes=1_250_000_000_000,
+        voices=parse_voices(voices_text) if voices_text else None,
+    )
+    return render_template(source, values, default_subject=event)

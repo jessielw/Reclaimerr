@@ -244,44 +244,13 @@ def test_template_is_only_a_valid_choice_for_templatable_events():
     assert prefs["task_failure"]["detail"] == "standard"
 
 
-SAMPLE_CONTEXT = {
-    "request_id": 1,
-    "actor": "Sam",
-    "media_title": "Example Movie",
-    "media_year": 2024,
-    "media_type": "movie",
-    "scope": "Entire movie",
-    "media_size_bytes": 4_200_000_000,
-    "genres": ["Drama", "Comedy"],
-    "overview": "A short synopsis of the title appears here.",
-    "reason": "Not watched in a year",
-    "requested_at": datetime(2026, 11, 8, tzinfo=UTC),
-    "scheduled_at": datetime(2026, 11, 27, tzinfo=UTC),
-    "admin_notes": "Fine to remove.",
-    "error": "The file is in use by another process.",
-    "executed_at": datetime(2026, 11, 20, tzinfo=UTC),
-}
-
-
-def _render_preview(event, *, recipient=None, directory, context=None):
-    source = (directory / f"{event}.html").read_text(encoding="utf-8")
-    values = et.build_values(
-        event=event,
-        context=context or SAMPLE_CONTEXT,
-        recipient=recipient,
-        total_reclaimed_bytes=1_250_000_000_000,
-        directory=directory,
-    )
-    return et.render_template(source, values, default_subject=event)
-
-
 def test_every_shipped_example_renders_with_sample_data(tmp_path):
     for event in et.TEMPLATE_EVENTS:
         (tmp_path / f"{event}.html").write_text(
             (EXAMPLES / f"{event}.html").read_text(encoding="utf-8")
         )
 
-        subject, html = _render_preview(
+        subject, html = et.render_preview(
             event, recipient=SimpleNamespace(display_name="Alex"), directory=tmp_path
         )
 
@@ -294,7 +263,7 @@ def test_the_succeeded_example_shows_size_and_total_reclaimed(tmp_path):
     (tmp_path / f"{EVENT}.html").write_text(
         (EXAMPLES / f"{EVENT}.html").read_text(encoding="utf-8")
     )
-    _, html = _render_preview(EVENT, directory=tmp_path)
+    _, html = et.render_preview(EVENT, directory=tmp_path)
     assert "GB freed" in html and "Total reclaimed" in html
 
 
@@ -309,22 +278,67 @@ def test_templates_work_without_a_voices_file(tmp_path):
         (EXAMPLES / f"{EVENT}.html").read_text(encoding="utf-8")
     )
     assert not (tmp_path / "voices.json").exists()
-    assert _render_preview(EVENT, directory=tmp_path) is not None
+    assert et.render_preview(EVENT, directory=tmp_path) is not None
 
 
 def test_approved_and_declined_examples_handle_protection_requests(tmp_path):
-    protection = {**SAMPLE_CONTEXT, "request_type": "Protection"}
+    protection = {**et.SAMPLE_CONTEXT, "request_type": "Protection"}
     protection.pop("scheduled_at")
     for event in ("request_approved", "request_declined"):
         (tmp_path / f"{event}.html").write_text(
             (EXAMPLES / f"{event}.html").read_text(encoding="utf-8")
         )
 
-        _, deletion = _render_preview(event, directory=tmp_path)
-        _, protect = _render_preview(event, directory=tmp_path, context=protection)
+        _, deletion = et.render_preview(event, directory=tmp_path)
+        _, protect = et.render_preview(event, directory=tmp_path, context=protection)
 
         assert "delete request" in deletion and "protection request" not in deletion
         assert "protection request" in protect and "delete request" not in protect
         assert "{{" not in protect and "{{" not in deletion
         if event == "request_approved":
             assert "will be deleted on 27 Nov 2026" in deletion
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_sample_context_uses_a_library_movie_with_a_poster():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as db:
+        empty = await et.sample_context(db)
+        db.add_all(
+            [
+                Movie(title="No Poster", tmdb_id=1),
+                Movie(
+                    title="Alpha",
+                    tmdb_id=2,
+                    year=2001,
+                    poster_url="/a.jpg",
+                    size=5,
+                    genres=[{"id": 1, "name": "Drama"}],
+                ),
+                Movie(title="Beta", tmdb_id=3, poster_url="/b.jpg"),
+            ]
+        )
+        await db.commit()
+
+        first = await et.sample_context(db, seed=0)
+        again = await et.sample_context(db, seed=0)
+        other = await et.sample_context(db, seed=1)
+        wrapped = await et.sample_context(db, seed=2)
+    await engine.dispose()
+
+    assert empty["media_title"] == "Example Movie" and "poster_path" not in empty
+    assert first["media_title"] == "Alpha" and first == again
+    assert first["request_id"] != other["request_id"]  # so the wording varies too
+    assert first["poster_path"] == "/a.jpg" and first["genres"] == ["Drama"]
+    assert other["media_title"] == "Beta"
+    assert wrapped["media_title"] == "Alpha"  # the seed wraps around
+    # missing details fall back to the fake ones instead of leaving gaps
+    assert other["genres"] == et.SAMPLE_CONTEXT["genres"]
