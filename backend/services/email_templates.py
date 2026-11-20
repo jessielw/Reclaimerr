@@ -265,5 +265,10 @@ TEMPLATE_EVENTS: dict[str, str] = {
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "email_examples"
 
 
+def example_template(event: str) -> str:
+    """The starter template shipped with Reclaimerr for this event."""
+    return (EXAMPLES_DIR / f"{event}.html").read_text(encoding="utf-8")
+
+
 def example_voices() -> str:
     return (EXAMPLES_DIR / "voices.json").read_text(encoding="utf-8")

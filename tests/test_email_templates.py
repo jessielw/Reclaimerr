@@ -242,3 +242,89 @@ def test_template_is_only_a_valid_choice_for_templatable_events():
 
     assert prefs[EVENT]["detail"] == "template"
     assert prefs["task_failure"]["detail"] == "standard"
+
+
+SAMPLE_CONTEXT = {
+    "request_id": 1,
+    "actor": "Sam",
+    "media_title": "Example Movie",
+    "media_year": 2024,
+    "media_type": "movie",
+    "scope": "Entire movie",
+    "media_size_bytes": 4_200_000_000,
+    "genres": ["Drama", "Comedy"],
+    "overview": "A short synopsis of the title appears here.",
+    "reason": "Not watched in a year",
+    "requested_at": datetime(2026, 11, 8, tzinfo=UTC),
+    "scheduled_at": datetime(2026, 11, 27, tzinfo=UTC),
+    "admin_notes": "Fine to remove.",
+    "error": "The file is in use by another process.",
+    "executed_at": datetime(2026, 11, 20, tzinfo=UTC),
+}
+
+
+def _render_preview(event, *, recipient=None, directory, context=None):
+    source = (directory / f"{event}.html").read_text(encoding="utf-8")
+    values = et.build_values(
+        event=event,
+        context=context or SAMPLE_CONTEXT,
+        recipient=recipient,
+        total_reclaimed_bytes=1_250_000_000_000,
+        directory=directory,
+    )
+    return et.render_template(source, values, default_subject=event)
+
+
+def test_every_shipped_example_renders_with_sample_data(tmp_path):
+    for event in et.TEMPLATE_EVENTS:
+        (tmp_path / f"{event}.html").write_text(
+            (EXAMPLES / f"{event}.html").read_text(encoding="utf-8")
+        )
+
+        subject, html = _render_preview(
+            event, recipient=SimpleNamespace(display_name="Alex"), directory=tmp_path
+        )
+
+        assert "Example Movie" in subject
+        assert "{{" not in html, event
+        assert ("Sam" if event.startswith("admin_") else "Alex") in html, event
+
+
+def test_the_succeeded_example_shows_size_and_total_reclaimed(tmp_path):
+    (tmp_path / f"{EVENT}.html").write_text(
+        (EXAMPLES / f"{EVENT}.html").read_text(encoding="utf-8")
+    )
+    _, html = _render_preview(EVENT, directory=tmp_path)
+    assert "GB freed" in html and "Total reclaimed" in html
+
+
+def test_the_examples_carry_no_personal_branding():
+    text = " ".join(p.read_text(encoding="utf-8") for p in EXAMPLES.iterdir()).lower()
+    for word in ("skynet", "n00bcodr", "pavan"):
+        assert word not in text
+
+
+def test_templates_work_without_a_voices_file(tmp_path):
+    (tmp_path / f"{EVENT}.html").write_text(
+        (EXAMPLES / f"{EVENT}.html").read_text(encoding="utf-8")
+    )
+    assert not (tmp_path / "voices.json").exists()
+    assert _render_preview(EVENT, directory=tmp_path) is not None
+
+
+def test_approved_and_declined_examples_handle_protection_requests(tmp_path):
+    protection = {**SAMPLE_CONTEXT, "request_type": "Protection"}
+    protection.pop("scheduled_at")
+    for event in ("request_approved", "request_declined"):
+        (tmp_path / f"{event}.html").write_text(
+            (EXAMPLES / f"{event}.html").read_text(encoding="utf-8")
+        )
+
+        _, deletion = _render_preview(event, directory=tmp_path)
+        _, protect = _render_preview(event, directory=tmp_path, context=protection)
+
+        assert "delete request" in deletion and "protection request" not in deletion
+        assert "protection request" in protect and "delete request" not in protect
+        assert "{{" not in protect and "{{" not in deletion
+        if event == "request_approved":
+            assert "will be deleted on 27 Nov 2026" in deletion
