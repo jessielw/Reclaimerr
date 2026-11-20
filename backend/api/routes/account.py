@@ -14,6 +14,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
@@ -68,6 +69,7 @@ from backend.services.media_user_import import (
     import_providers,
     stage_media_identity,
 )
+from backend.services.seerr_emails import fill_missing_user_emails
 from backend.services.smtp import auto_enable_system_email
 from backend.services.user_import import (
     CSV_TEMPLATE,
@@ -524,6 +526,29 @@ async def import_users_from_media_server(
 ) -> MediaUserImportResponse:
     return await import_media_users(
         db, body, preview=preview, actor=actor, actor_label=f"user {actor.id}"
+    )
+
+
+class FillEmailsResponse(BaseModel):
+    updated: list[str]
+    skipped_no_match: list[str]
+    skipped_conflict: list[str]
+
+
+@router.post("/users/fill-missing-emails-from-seerr", response_model=FillEmailsResponse)
+async def fill_missing_emails_from_seerr(
+    actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    db: AsyncSession = Depends(get_db),
+) -> FillEmailsResponse:
+    """Fill the email of accounts that have none from Seerr. Never overwrites."""
+    result = await fill_missing_user_emails(db)
+    LOG.info(
+        f"User manager {actor.username} filled {len(result.updated)} emails from Seerr"
+    )
+    return FillEmailsResponse(
+        updated=result.updated,
+        skipped_no_match=result.skipped_no_match,
+        skipped_conflict=result.skipped_conflict,
     )
 
 
