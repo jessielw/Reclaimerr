@@ -70,6 +70,8 @@
     available: false,
     account_email: null,
     already_configured: false,
+    template_events: [],
+    template_event_types: [],
   });
 
   const isEmail = (n: NotificationConfig) =>
@@ -1064,7 +1066,10 @@
                                     {notification.preferences[notifType.type]
                                       ?.detail === "compact"
                                       ? "Compact"
-                                      : "Standard"}
+                                      : notification.preferences[notifType.type]
+                                            ?.detail === "template"
+                                        ? "Template"
+                                        : "Standard"}
                                   </Select.Trigger>
                                   <Select.Content>
                                     <Select.Item value="compact">
@@ -1073,6 +1078,20 @@
                                     <Select.Item value="standard">
                                       Standard
                                     </Select.Item>
+                                    {#if isEmail(notification) && emailStatus.template_event_types.includes(notifType.type)}
+                                      <Select.Item
+                                        value="template"
+                                        disabled={!emailStatus.template_events.includes(
+                                          notifType.type,
+                                        )}
+                                      >
+                                        {emailStatus.template_events.includes(
+                                          notifType.type,
+                                        )
+                                          ? "Template"
+                                          : "Template (none saved yet)"}
+                                      </Select.Item>
+                                    {/if}
                                   </Select.Content>
                                 </Select.Root>
                               </div>

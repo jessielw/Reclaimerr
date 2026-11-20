@@ -21,6 +21,7 @@ from backend.models.settings import (
     RestrictedDestination,
     normalize_notification_preferences,
 )
+from backend.services import email_templates
 from backend.services.notification_destinations import (
     EMAIL_RECIPIENT_ERROR,
     approval_error,
@@ -120,6 +121,12 @@ async def get_notification_email_status(
         available=smtp is not None,
         account_email=current_user.email,
         already_configured=result.scalars().first() is not None,
+        template_events=[
+            event
+            for event in email_templates.TEMPLATE_EVENTS
+            if email_templates.find_template(event) is not None
+        ],
+        template_event_types=list(email_templates.TEMPLATE_EVENTS),
     )
 
 
