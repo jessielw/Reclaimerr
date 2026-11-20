@@ -16,13 +16,20 @@ from backend.database.models import (
     DeleteRequest,
     Episode,
     GeneralSettings,
+    MovieVersion,
     ProtectedMedia,
     ReclaimCandidate,
     ScheduledDeletion,
     Season,
     Series,
 )
-from backend.enums import MediaType, Permission, ProtectionRequestStatus, UserRole
+from backend.enums import (
+    MediaType,
+    Permission,
+    ProtectionRequestStatus,
+    Service,
+    UserRole,
+)
 from backend.jobs import candidate_file_ops
 from backend.jobs import scheduled_deletions as execution
 from backend.models.jobs import CandidateFileOpJobPayload
@@ -302,6 +309,101 @@ def test_scheduled_request_execution_and_outcomes(monkeypatch, notifications, ou
             assert candidate_file_ops.notify_user.await_count == int(
                 outcome != "deferred"
             )
+
+    asyncio.run(run())
+
+
+def test_rescheduling_approved_request_adopts_changed_files(monkeypatch, notifications):
+    """#529: new files during the grace period must not strand an approval."""
+
+    async def run():
+        async with database(monkeypatch) as factory, factory() as db:
+            user, request, _, _ = await seed_request(
+                db,
+                days=2,
+                scope="movie",
+                permissions=[Permission.MANAGE_REQUESTS.value],
+            )
+            response = await requests.approve_delete_request(
+                request.id, ApproveDeleteRequest(), user, db
+            )
+            schedule = await db.get(ScheduledDeletion, response.scheduled_deletion_id)
+            job = await due_job(db, schedule.id)
+            db.add(
+                MovieVersion(
+                    movie_id=request.movie_id,
+                    service=Service.PLEX,
+                    service_item_id="movie",
+                    service_media_id="upgrade",
+                    library_id="movies",
+                    library_name="Movies",
+                    path="/movies/upgrade.mkv",
+                    size=500,
+                )
+            )
+            await db.commit()
+
+            worker = AsyncMock(return_value={"succeeded": 1})
+            monkeypatch.setattr(
+                candidate_file_ops, "_run_candidate_file_op_job_unlocked", worker
+            )
+            await execution.run_scheduled_deletion(
+                job.id, CandidateFileOpJobPayload.model_validate(job.payload)
+            )
+            await db.refresh(schedule)
+            assert schedule.state == "blocked"
+            assert "reschedule to confirm" in schedule.last_error
+            worker.assert_not_awaited()
+
+            when = datetime.now(UTC) + timedelta(days=1)
+            await schedules.reschedule_deletion(
+                schedule.id, RescheduleDeletionRequest(scheduled_at=when), user, db
+            )
+            await db.refresh(schedule)
+            assert schedule.state == "scheduled"
+            assert set(schedule.target["inventory"]["files"]) == {
+                "/movies/original.mkv",
+                "/movies/upgrade.mkv",
+            }
+            assert schedule.target["estimated_space_bytes"] == 1500
+
+            job = await due_job(db, schedule.id)
+            await execution.run_scheduled_deletion(
+                job.id, CandidateFileOpJobPayload.model_validate(job.payload)
+            )
+            await db.refresh(schedule)
+            await db.refresh(request)
+            assert schedule.state == "completed"
+            assert request.executed_at is not None
+            worker.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_rescheduling_approved_request_keeps_its_scope(monkeypatch, notifications):
+    """Re-snapshotting adopts new files, never a replaced movie version."""
+
+    async def run():
+        async with database(monkeypatch) as factory, factory() as db:
+            user, request, _, _ = await seed_request(
+                db, days=2, permissions=[Permission.MANAGE_REQUESTS.value]
+            )
+            response = await requests.approve_delete_request(
+                request.id, ApproveDeleteRequest(), user, db
+            )
+            schedule = await db.get(ScheduledDeletion, response.scheduled_deletion_id)
+            version = await db.get(MovieVersion, request.movie_version_id)
+            version.path = "/movies/replaced.mkv"
+            await db.commit()
+            with pytest.raises(HTTPException, match="version is no longer available"):
+                await schedules.reschedule_deletion(
+                    schedule.id,
+                    RescheduleDeletionRequest(
+                        scheduled_at=datetime.now(UTC) + timedelta(days=1)
+                    ),
+                    user,
+                    db,
+                )
 
     asyncio.run(run())
 

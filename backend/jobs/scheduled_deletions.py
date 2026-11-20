@@ -78,7 +78,9 @@ async def run_scheduled_deletion(
                         409, "The user who scheduled this deletion no longer exists"
                     )
                 await require_schedule_permission(db, user, schedule)
-            candidate = await resolve_target(db, schedule.target)
+            candidate = await resolve_target(
+                db, schedule.target, approved_request=delete_request_id is not None
+            )
             candidate.delete_request_id = delete_request_id
             candidate.matched_criteria = {"scheduled_deletion_id": schedule.id}
             blockers = await candidate_deletion_blockers(db, candidate)

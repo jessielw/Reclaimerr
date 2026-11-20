@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
@@ -192,16 +192,23 @@ async def _get_delete_request_media(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="The requested movie version is no longer available; create a new request",
                 )
-        result = await db.execute(select(Movie).where(Movie.id == request.movie_id))
-        movie = result.scalar_one_or_none()
+        # get() reuses rows already eager-loaded by list queries
+        movie = (
+            await db.get(Movie, request.movie_id)
+            if request.movie_id is not None
+            else None
+        )
         if movie is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found"
             )
         return movie, request.movie_id or 0
 
-    result = await db.execute(select(Series).where(Series.id == request.series_id))
-    series = result.scalar_one_or_none()
+    series = (
+        await db.get(Series, request.series_id)
+        if request.series_id is not None
+        else None
+    )
     if series is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Series not found"
@@ -512,6 +519,30 @@ async def load_delete_request_item_refs(
     }
 
 
+async def load_request_schedules(
+    db: AsyncSession, requests: Sequence[DeleteRequest]
+) -> dict[int, ScheduledDeletion]:
+    """Batch-load request schedules and their jobs for list responses."""
+    if not requests:
+        return {}
+    schedules = (
+        await db.scalars(
+            select(ScheduledDeletion).where(
+                ScheduledDeletion.delete_request_id.in_([r.id for r in requests])
+            )
+        )
+    ).all()
+    job_ids = [s.job_id for s in schedules if s.job_id]
+    if job_ids:
+        # Loads the jobs into the session so schedule_execution_state's get() is free.
+        (
+            await db.scalars(select(BackgroundJob).where(BackgroundJob.id.in_(job_ids)))
+        ).all()
+    return {
+        s.delete_request_id: s for s in schedules if s.delete_request_id is not None
+    }
+
+
 async def build_delete_request_response(
     db: AsyncSession,
     request: DeleteRequest,
@@ -520,6 +551,7 @@ async def build_delete_request_response(
     version: MovieVersion | None = None,
     requested_by_media_identities: list[LinkedMediaIdentity] | None = None,
     media_server_items: list[MediaServerItem] | None = None,
+    schedules_by_request_id: Mapping[int, ScheduledDeletion] | None = None,
 ) -> DeleteRequestResponse:
     """Build a DeleteRequestResponse from a DeleteRequest, looking up related media and user info as needed."""
     # Reading/reviewing a stale request must remain possible even after its
@@ -567,9 +599,13 @@ async def build_delete_request_response(
         season_number_snapshot=request.season_number_snapshot,
         episode_number_snapshot=request.episode_number_snapshot,
     )
-    schedule = await db.scalar(
-        select(ScheduledDeletion).where(
-            ScheduledDeletion.delete_request_id == request.id
+    schedule = (
+        schedules_by_request_id.get(request.id)
+        if schedules_by_request_id is not None
+        else await db.scalar(
+            select(ScheduledDeletion).where(
+                ScheduledDeletion.delete_request_id == request.id
+            )
         )
     )
     schedule_state, schedule_error = (
@@ -685,6 +721,7 @@ async def list_requests(
         db, (req.requested_by_user_id for req in requests)
     )
     item_refs = await load_delete_request_item_refs(db, requests)
+    schedules = await load_request_schedules(db, requests)
 
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
@@ -701,6 +738,7 @@ async def list_requests(
             req,
             requested_by_media_identities=identities[req.requested_by_user_id],
             media_server_items=item_refs[req.id],
+            schedules_by_request_id=schedules,
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,

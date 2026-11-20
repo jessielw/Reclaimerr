@@ -51,6 +51,7 @@ from backend.services.delete_request_workflow import (
     deny_request,
     list_requests,
     load_delete_request_item_refs,
+    load_request_schedules,
     request_target_scope,
     retry_request,
 )
@@ -411,6 +412,7 @@ async def get_my_delete_requests(
         db, (req.requested_by_user_id for req in requests)
     )
     item_refs = await load_delete_request_item_refs(db, requests)
+    schedules = await load_request_schedules(db, requests)
 
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
@@ -428,6 +430,7 @@ async def get_my_delete_requests(
             requested_by_username=user.username,
             requested_by_media_identities=identities[req.requested_by_user_id],
             media_server_items=item_refs[req.id],
+            schedules_by_request_id=schedules,
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,

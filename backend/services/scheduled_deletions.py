@@ -574,9 +574,23 @@ async def blocking_schedule(
     return None
 
 
-async def resolve_target(db: AsyncSession, target: dict[str, Any]) -> ReclaimCandidate:
-    """Rebuild only the saved scope. Never reinterpret missing child IDs as parents."""
+async def resolve_target(
+    db: AsyncSession,
+    target: dict[str, Any],
+    *,
+    approved_request: bool = False,
+    verify_snapshot: bool = True,
+) -> ReclaimCandidate:
+    """Rebuild only the saved scope. Never reinterpret missing child IDs as parents.
+
+    With verify_snapshot=False, only the scope must still exist; the caller
+    re-snapshots files, rule actions and routing (approved-request reschedules).
+    """
     media_type = MediaType(target["media_type"])
+    # Approved requests can't be scheduled again after canceling (#529).
+    request_remedy = (
+        "reschedule to confirm the current selection" if approved_request else None
+    )
     media = await db.get(
         Movie if media_type is MediaType.MOVIE else Series, target["media_id"]
     )
@@ -638,26 +652,24 @@ async def resolve_target(db: AsyncSession, target: dict[str, Any]) -> ReclaimCan
         approved_for_deletion=True,
         estimated_space_bytes=target.get("estimated_space_bytes"),
     )
+    if not verify_snapshot:
+        return candidate
     if await target_inventory(db, candidate) != target["inventory"]:
         raise HTTPException(
             409,
-            "The scheduled file inventory changed; cancel and schedule the current files again",
+            "The scheduled file inventory changed; "
+            + (request_remedy or "cancel and schedule the current files again"),
         )
+    remedy = request_remedy or "cancel and schedule again to confirm the new behavior"
     rules = (
         await db.scalars(
             select(ReclaimRule).where(ReclaimRule.id.in_(target["matched_rule_ids"]))
         )
     ).all()
     if {str(r.id): r.action for r in rules} != target["rule_actions"]:
-        raise HTTPException(
-            409,
-            "The deletion rule actions changed; cancel and schedule again to confirm the new behavior",
-        )
+        raise HTTPException(409, f"The deletion rule actions changed; {remedy}")
     if await routing_settings(db, media_type) != target["routing_settings"]:
-        raise HTTPException(
-            409,
-            "The deletion routing settings changed; cancel and schedule again to confirm the new behavior",
-        )
+        raise HTTPException(409, f"The deletion routing settings changed; {remedy}")
     return candidate
 
 

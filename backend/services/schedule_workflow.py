@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select, update
@@ -24,6 +25,7 @@ from backend.services.deletion_actor import DeletionActor
 from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 from backend.services.scheduled_deletions import (
     ACTIVE_SCHEDULE_STATES,
+    active_schedules,
     add_schedule_job,
     blocking_schedule,
     future_time,
@@ -64,6 +66,40 @@ async def create_media_schedule(
     async with candidate_workflow_lock:
         schedules = await create_schedules(db, actor, [stand_in], when)
         return schedules[0]
+
+
+async def _attach_media_server_items(
+    db: AsyncSession, targets: list[dict[str, Any]]
+) -> None:
+    item_targets = [MediaItemTarget.from_schedule(target) for target in targets]
+    media_server_items = await load_media_server_items(db, item_targets)
+    for target, item_target in zip(targets, item_targets, strict=True):
+        if items := media_server_items[item_target]:
+            target["media_server_items"] = [
+                item.model_dump(mode="json") for item in items
+            ]
+
+
+async def _refreshed_request_target(
+    db: AsyncSession, schedule: ScheduledDeletion
+) -> dict[str, Any]:
+    """Re-snapshot an approved request's unchanged scope (#529).
+
+    The request's scope is the approved intent. Files added or replaced during
+    the grace period, or changed routing, would otherwise block it forever:
+    canceling is final for a request, and retry defers to its schedule.
+    """
+    candidate = await resolve_target(
+        db, schedule.target, approved_request=True, verify_snapshot=False
+    )
+    others = [s for s in await active_schedules(db) if s.id != schedule.id]
+    if await blocking_schedule(db, candidate, others):
+        raise HTTPException(409, "The current files overlap another scheduled deletion")
+    # Size the current files, not the files from the original snapshot.
+    candidate.estimated_space_bytes = None
+    target = await snapshot_target(db, candidate)
+    await _attach_media_server_items(db, [target])
+    return target
 
 
 async def create_schedules(
@@ -133,15 +169,9 @@ async def create_schedules(
             raise HTTPException(
                 409, "An overlapping delete or move operation is already queued"
             )
-    item_targets = [MediaItemTarget.from_schedule(target) for target in targets]
-    media_server_items = await load_media_server_items(db, item_targets)
+    await _attach_media_server_items(db, targets)
     schedules = []
-    for target, item_target in zip(targets, item_targets, strict=True):
-        items = media_server_items[item_target]
-        if items:
-            target["media_server_items"] = [
-                item.model_dump(mode="json") for item in items
-            ]
+    for target in targets:
         schedule = ScheduledDeletion(
             scheduled_at=when,
             target=target,
@@ -220,7 +250,10 @@ async def reschedule_schedule(
     when = future_time(request.scheduled_at)
     async with candidate_workflow_lock:
         schedule = await _editable_schedule(db, schedule_id, authorized_actor)
-        await resolve_target(db, schedule.target)
+        if schedule.delete_request_id is None:
+            await resolve_target(db, schedule.target)
+        else:
+            schedule.target = await _refreshed_request_target(db, schedule)
         schedule.scheduled_at = when
         schedule.created_by_user_id = actor.user_id
         schedule.created_by_username = actor.label

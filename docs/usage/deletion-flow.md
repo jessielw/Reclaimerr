@@ -18,7 +18,7 @@ In **Settings → General → Approved Deletion Requests**, set the **Deletion r
 
 When approving a request, choose **Use configured grace period**, **Delete now**, or **Choose date/time**. Delayed approvals appear in the existing Leaving Soon views and collections. Existing requester warning settings and linked-account requirements still apply; approval does not broadcast a notification to all users.
 
-Request details show the scheduled time and execution state. Request managers can **Reschedule deletion** or **Cancel deletion** before execution starts. Canceling preserves the approval history and stops that scheduled deletion; it does not protect the item from normal cleanup rules. Blocked or failed scheduled requests require explicit rescheduling.
+Request details show the scheduled time and execution state. Request managers can **Reschedule deletion** or **Cancel deletion** before execution starts. Canceling preserves the approval history and stops that scheduled deletion for good; it does not protect the item from normal cleanup rules. Blocked or failed scheduled requests require explicit rescheduling. If files were added or replaced, or deletion routing changed, during the grace period, rescheduling confirms the current files within the approved scope. A replaced movie version is never substituted for the approved one.
 
 API clients can send `scheduled_at` to `POST /api/delete-requests/{id}/approve`: omit it to use the configured grace period, send `null` to delete now, or send a future ISO 8601 timestamp with a timezone. The response includes `scheduled_deletion_id`, `scheduled_at`, and `schedule_state`. Direct manual deletion actions retain their own timing controls.
 

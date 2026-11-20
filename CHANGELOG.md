@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fix OpenAPI drift and add regression tests to ensure it doesn't drift again.
+- Rescheduling a blocked approved deletion request now confirms its current files and routing instead of failing. Previously, new or replaced files during the grace period left the request approved but unable to run. #529
+- Faster delete request lists: schedules and their jobs now load in one batch instead of several queries per request. #535
 
 ## [0.6.14] - 2026-11-17
 
