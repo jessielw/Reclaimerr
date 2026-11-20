@@ -72,9 +72,10 @@
         <dd class="min-w-0 break-words whitespace-pre-wrap">
           {current.state === "disabled"
             ? "Not evaluated"
-            : current.state === "unknown"
-              ? "Data unavailable"
-              : valueLabel(current.actual, current.field)}
+            : (current.actual_label ??
+              (current.state === "unknown"
+                ? "Data unavailable"
+                : valueLabel(current.actual, current.field)))}
         </dd>
       </dl>
     {/if}

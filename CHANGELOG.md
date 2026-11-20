@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Why doesn’t this match?** now shows **No playback activity recorded** when playback sources report none and **Playback date unavailable** when activity is known but its date is missing. To include items with no recorded playback, put **Playback activity is false** and the playback age condition in an **OR** group.
 - Tautulli history can recover movie and episode plays after Plex rating keys change. Reclaimerr matches Plex GUIDs on the bound server and replays older imports on the next refresh. Plays whose identity cannot be verified still leave affected rule totals unknown. #542
 
 ## [0.6.15] - 2026-11-20

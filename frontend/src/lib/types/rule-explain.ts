@@ -23,6 +23,7 @@ export type RuleExplainNode = {
   operator_label: string | null;
   expected: unknown;
   actual: unknown;
+  actual_label?: string | null;
   children: RuleExplainNode[];
 };
 export type RuleExplainSnapshot = {
