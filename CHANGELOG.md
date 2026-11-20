@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Importing users from Jellyfin now fills a missing email from a connected Seerr, matched on the media server user ID and then the username, and `POST /api/users/fill-missing-emails-from-seerr` does the same for existing accounts. Existing emails are never overwritten, and imported accounts keep their media server username.
 - Leaving Soon, delete requests, and scheduled deletions now expose scoped media server item and movie source IDs so integrations can open the exact item or version. #534
 - Scoped API tokens can review delete requests and create or manage scheduled deletions. Movie lookups now include individual versions and their paths, so integrations can schedule one copy. Deletion jobs recheck the authorizing token before execution. #535
 - A unified `GET /api/v1/leaving-soon` endpoint for automatic cleanup, manual schedules, and delayed deletion approvals, with deletion dates, scope, version IDs, sizes, filtering, and pagination. #534
