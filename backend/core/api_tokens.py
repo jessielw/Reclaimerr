@@ -19,26 +19,38 @@ from backend.database.models import ApiToken
 
 API_TOKEN_CANDIDATES_READ_SCOPE = "candidates:read"
 API_TOKEN_CANDIDATES_MANAGE_SCOPE = "candidates:manage"
+API_TOKEN_DELETE_REQUESTS_READ_SCOPE = "delete_requests:read"
+API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE = "delete_requests:manage"
 API_TOKEN_EVENTS_READ_SCOPE = "events:read"
 API_TOKEN_MEDIA_READ_SCOPE = "media:read"
 API_TOKEN_PROTECTIONS_READ_SCOPE = "protections:read"
 API_TOKEN_PROTECTIONS_MANAGE_SCOPE = "protections:manage"
 API_TOKEN_RULES_READ_SCOPE = "rules:read"
+API_TOKEN_SCHEDULED_DELETIONS_READ_SCOPE = "scheduled_deletions:read"
+API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE = "scheduled_deletions:manage"
 API_TOKEN_SYSTEM_READ_SCOPE = "system:read"
 API_TOKEN_TASKS_READ_SCOPE = "tasks:read"
 API_TOKEN_TASKS_RUN_SCOPE = "tasks:run"
+API_TOKEN_USERS_READ_SCOPE = "users:read"
+API_TOKEN_USERS_MANAGE_SCOPE = "users:manage"
 
 API_TOKEN_SCOPES = {
     API_TOKEN_CANDIDATES_READ_SCOPE,
     API_TOKEN_CANDIDATES_MANAGE_SCOPE,
+    API_TOKEN_DELETE_REQUESTS_READ_SCOPE,
+    API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE,
     API_TOKEN_EVENTS_READ_SCOPE,
     API_TOKEN_MEDIA_READ_SCOPE,
     API_TOKEN_PROTECTIONS_READ_SCOPE,
     API_TOKEN_PROTECTIONS_MANAGE_SCOPE,
     API_TOKEN_RULES_READ_SCOPE,
+    API_TOKEN_SCHEDULED_DELETIONS_READ_SCOPE,
+    API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE,
     API_TOKEN_SYSTEM_READ_SCOPE,
     API_TOKEN_TASKS_READ_SCOPE,
     API_TOKEN_TASKS_RUN_SCOPE,
+    API_TOKEN_USERS_READ_SCOPE,
+    API_TOKEN_USERS_MANAGE_SCOPE,
 }
 API_TOKEN_LAST_USED_TOUCH_INTERVAL = timedelta(hours=1)
 
@@ -56,8 +68,11 @@ class ApiPrincipal:
             return True
         implied_scopes = {
             API_TOKEN_CANDIDATES_READ_SCOPE: API_TOKEN_CANDIDATES_MANAGE_SCOPE,
+            API_TOKEN_DELETE_REQUESTS_READ_SCOPE: API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE,
             API_TOKEN_PROTECTIONS_READ_SCOPE: API_TOKEN_PROTECTIONS_MANAGE_SCOPE,
+            API_TOKEN_SCHEDULED_DELETIONS_READ_SCOPE: API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE,
             API_TOKEN_TASKS_READ_SCOPE: API_TOKEN_TASKS_RUN_SCOPE,
+            API_TOKEN_USERS_READ_SCOPE: API_TOKEN_USERS_MANAGE_SCOPE,
         }
         return implied_scopes.get(scope) in self.scopes
 
@@ -149,3 +164,18 @@ def require_api_scope(scope: str) -> Callable[..., Awaitable[ApiPrincipal]]:
         return principal
 
     return dependency
+
+
+def deletion_token_error(token: ApiToken | None, scope: str) -> str | None:
+    """Recheck a stored execution grant without needing the bearer secret."""
+    if token is None:
+        return "The API token authorizing this deletion no longer exists"
+    if token.revoked_at is not None:
+        return "The API token authorizing this deletion has been revoked"
+    if token.expires_at is not None and ensure_utc(token.expires_at) <= datetime.now(
+        UTC
+    ):
+        return "The API token authorizing this deletion has expired"
+    if scope not in token.scopes:
+        return f"The API token authorizing this deletion requires the {scope} scope"
+    return None

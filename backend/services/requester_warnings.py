@@ -1,11 +1,11 @@
-"""Warn Seerr requesters before their titles are deleted automatically.
+"""Warn Seerr requesters before automatic or approved scheduled deletion.
 
 After each cleanup scan, a candidate whose automatic deletion falls inside the
 warning window gets its requesters looked up in Seerr. Each requester is
 matched to a Reclaimerr account through an exact media-server identity (Plex
 or Jellyfin/Emby account, or email); display names are never matched. Every
 matched account gets one notification per scan listing its titles, and each
-candidate is warned only once.
+candidate or approved request schedule is warned only once.
 
 Only whole movies, whole series, and seasons warn. Losing one version or one
 episode doesn't take away what someone asked for.
@@ -29,6 +29,7 @@ from backend.database.models import (
     MediaUserIdentity,
     Movie,
     ReclaimCandidate,
+    ScheduledDeletion,
     Season,
     Series,
     TaskSchedule,
@@ -49,7 +50,7 @@ from backend.services.seerr_cache import SeerrRequestSnapshot, seerr_snapshot_ca
 
 @dataclass(frozen=True, slots=True)
 class LeavingTitle:
-    candidate_id: int
+    candidate_id: int | None
     label: str
     media_type: MediaType
     scope: str
@@ -194,8 +195,6 @@ async def warn_requesters_before_deletion(
         .scalars()
         .all()
     )
-    if not candidates:
-        return result
     inputs = await load_auto_delete_inputs(
         db,
         (rule_id for c in candidates for rule_id in (c.matched_rule_ids or [])),
@@ -204,12 +203,23 @@ async def warn_requesters_before_deletion(
     due: list[ReclaimCandidate] = []
     deadlines: dict[int, datetime] = {}
     manual_schedules = await active_schedules(db)
+    request_schedules: dict[int, ScheduledDeletion] = {}
+    due_schedules = [
+        schedule
+        for schedule in manual_schedules
+        if schedule.delete_request_id is not None
+        and schedule.state == "scheduled"
+        and schedule.requester_warned_at is None
+        and ensure_utc(schedule.scheduled_at) <= window_end
+    ]
     manual_cache = await inventory_cache(db, candidates, manual_schedules)
     for candidate in candidates:
         schedule = await blocking_schedule(
             db, candidate, manual_schedules, manual_cache
         )
         if schedule is not None:
+            if schedule.delete_request_id is not None:
+                request_schedules[candidate.id] = schedule
             # a manual schedule replaces the automatic date; blocked or failed
             # schedules will not run on their own, so they are not warned about
             when = ensure_utc(schedule.scheduled_at)
@@ -234,7 +244,7 @@ async def warn_requesters_before_deletion(
         if policy.is_enabled and policy.eligible_at <= window_end:
             due.append(candidate)
             deadlines[candidate.id] = policy.eligible_at
-    if not due:
+    if not due and not due_schedules:
         return result
 
     snapshot, error = await seerr_snapshot_cache.get_request_snapshot(
@@ -251,31 +261,55 @@ async def warn_requesters_before_deletion(
     )
     titles_by_user: dict[int, list[LeavingTitle]] = defaultdict(list)
     unmatched: set[str] = set()
-    for candidate in due:
-        candidate.requester_warned_at = now
-        described = await _describe(db, candidate)
-        if described is None:
-            continue
+    seen: set[tuple[int, MediaType, int, str, int | None]] = set()
+
+    def add_warning(
+        described: tuple[int, str, str, int | None],
+        media_type: MediaType,
+        deadline: datetime,
+        candidate_id: int | None = None,
+    ) -> None:
         tmdb_id, label, scope, season_number = described
-        title = LeavingTitle(
-            candidate_id=candidate.id,
-            label=label,
-            media_type=cast(MediaType, candidate.media_type),
-            scope=scope,
-            deletes_at=deadlines[candidate.id],
-        )
+        title = LeavingTitle(candidate_id, label, media_type, scope, deadline)
         warned = False
-        for key in _requester_keys(
-            snapshot, cast(MediaType, candidate.media_type), tmdb_id, season_number
-        ):
+        for key in _requester_keys(snapshot, media_type, tmdb_id, season_number):
             requester = snapshot.requester_users_by_id.get(key)
             user_ids = accounts.match(requester) if requester else set()
             if len(user_ids) != 1:
                 unmatched.add(key)
                 continue
-            titles_by_user[next(iter(user_ids))].append(title)
+            user_id = next(iter(user_ids))
+            identity = (user_id, media_type, tmdb_id, scope, season_number)
+            if identity not in seen:
+                titles_by_user[user_id].append(title)
+                seen.add(identity)
             warned = True
         result.warned_candidates += int(warned)
+
+    for candidate in due:
+        candidate.requester_warned_at = now
+        if candidate.id in request_schedules:
+            # The schedule owns the warning even if a rule candidate appears later.
+            continue
+        described = await _describe(db, candidate)
+        if described is None:
+            continue
+        add_warning(
+            described, candidate.media_type, deadlines[candidate.id], candidate.id
+        )
+    for schedule in due_schedules:
+        target = schedule.target
+        schedule.requester_warned_at = now
+        scope = {"movie": "Movie", "series": "Series", "season": "Season"}.get(
+            target["scope"]
+        )
+        if scope is None or target.get("tmdb_id") is None:
+            continue
+        add_warning(
+            (target["tmdb_id"], target["title"], scope, target.get("season_number")),
+            MediaType(target["media_type"]),
+            ensure_utc(schedule.scheduled_at),
+        )
     await db.commit()
 
     for user_id, titles in titles_by_user.items():

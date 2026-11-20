@@ -204,6 +204,15 @@ def paths_equivalent(
     return bool(left_variants & right_variants)
 
 
+def path_tail(path: str | None, depth: int) -> str | None:
+    """Return the last path segments, normalized for cross-server matching."""
+    if not path:
+        return None
+    normalized = normalize_fpath(path, strip_ending_slash=True, lower=True)
+    parts = [part for part in normalized.split("/") if part]
+    return "/".join(parts[-depth:]) if len(parts) >= depth else None
+
+
 def normalize_fpath(
     path: str | PathLike[str],
     strip_ending_slash: bool = False,

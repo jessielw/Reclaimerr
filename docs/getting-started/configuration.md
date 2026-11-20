@@ -26,6 +26,50 @@ See the [environment variable reference](../reference/environment-variables.md) 
 
 Email notifications are configured under Settings - Notifications, in the **Email server (SMTP)** panel, which only administrators see. Enter the host, port, encryption mode (STARTTLS, SSL/TLS or none), optional credentials and a from address, then use **Send Test Email** to confirm it works. The password is encrypted at rest with `ENCRYPTION_KEY` and is never returned to the browser; leaving the field blank on a later save keeps the stored one. Once it is enabled, each user can add an **Email** destination from the same page, and it is delivered to the address on their account unless they enter a different one.
 
+### Webhook payload
+
+An Apprise destination that uses the `json://` or `jsons://` scheme receives its usual `title` and `message`, plus a structured `reclaimerr` object, so a receiver can build its own message without parsing the text. Other destinations are unchanged, and existing `json://` receivers keep working because the field is additive.
+
+```json
+{
+  "version": "1.0",
+  "title": "Deletion Completed",
+  "message": "Deletion completed for Perfect Crown",
+  "type": "success",
+  "reclaimerr": {
+    "version": 1,
+    "event": "delete_request_execution_succeeded",
+    "url": "https://reclaimerr.example.com/#/requests",
+    "recipient": {
+      "username": "alex",
+      "display_name": "Alex",
+      "email": "alex@example.com"
+    },
+    "context": {
+      "request_id": 4,
+      "request_type": "Deletion",
+      "media_title": "Perfect Crown",
+      "media_year": 2026,
+      "media_type": "series",
+      "scope": "Series",
+      "reason": "Requested by Alex",
+      "admin_notes": null,
+      "error": null,
+      "poster_path": "/ocXkHSslrSWMz2ZJGl5MjF6dQr3.jpg",
+      "media_size_bytes": 29291190541,
+      "tmdb_id": 123456,
+      "imdb_id": "tt1234567",
+      "genres": ["Comedy", "Drama"],
+      "overview": "A short synopsis.",
+      "requested_at": "2026-11-18T19:07:21",
+      "executed_at": "2026-11-18T21:25:52"
+    }
+  }
+}
+```
+
+`event` is the notification type, and `recipient` is the account the destination belongs to. `context` holds whatever Reclaimerr knows about the event, so the fields differ by event type; `poster_path` is a TMDB image path and `media_size_bytes` is the size of the whole title. `url` is the matching page in Reclaimerr and is `null` when no Application URL is set. Non-admin users still need an administrator to approve a `json://` destination before anything is sent to it.
+
 Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy, and it is what lets notifications link back into Reclaimerr. When it is unset, notifications are still delivered but contain no links.
 
 ## Login Background
@@ -54,6 +98,24 @@ If an external provider fails or your admin identity cannot sign in:
 4. Remove `AUTH_FORCE_LOCAL_LOGIN` and restart/recreate again. A recovery notice remains visible while the override is active.
 
 A trusted proxy that rejects requests before they reach Reclaimerr still needs its own recovery path. For an unrecognized proxy username, see `FORWARD_AUTH_ALLOW_LOCAL_FALLBACK` below; `AUTH_FORCE_LOCAL_LOGIN` does not bypass proxy identity checks.
+
+## Import Users from a Media Server
+
+Users with **Manage users** permission can import accounts under **Settings → Users → Import from media server**.
+
+1. Select an enabled Jellyfin, Emby, or Plex server and choose **Preview users**.
+2. Review the proposed local usernames. New accounts are selected by default; already linked identities, disabled server users, and unsupported Plex profiles are skipped.
+3. Check any suggested existing-account links you want to confirm. For a conflict, choose **Add to identity links**, close the dialog, and select its local account in **Sign-In Identity Links**. Refresh the import preview after resolving it.
+4. Expand **Access for new accounts** to change the role, permissions, or page access. Choose **Review selection** to check the selected users and open a confirmation screen showing each account action and the access new accounts will receive. **Back to selection** preserves your choices.
+5. Choose **Confirm import** to apply the selected changes together. Reviewing does not change any accounts. If any selected user has changed or a write fails, none of the selected changes are applied; refresh the preview before retrying.
+
+New accounts default to the **User** role, **Request** permission, and configured default page access. They have no local password and are linked to their media-server identity immediately. Enable media sign-in to let users log in through their server. Trusted proxy sign-in requires the exact displayed local username, which may differ from the media-server username. Email is optional for Jellyfin and Emby and is never invented from a username. Plex import requires a sign-in-capable account with an email; managed profiles are not supported.
+
+Existing accounts keep their password, profile, role, permissions, page access, and enabled/disabled state. Matching ignores case and checks both email and username. A match is a suggestion, not an automatic link. Multiple matches, or a username belonging to an account with a different email, require manual resolution. Media-server administrator status does not automatically grant administrator access in Reclaimerr.
+
+User managers can only grant access they hold, except for administrator-configured default page access, and cannot link accounts with access exceeding their own. Only administrators can provision or link administrator accounts. Import supports directories of up to 1,000 users. Repeating an import skips identities that are already linked.
+
+Import establishes accounts and identity attribution; it does not acquire user tokens, backfill ownership, send invitations, or change login settings. Plex features that require a user's token still require that user to sign in. Integrations can use the scoped [External API](../reference/api.md#user-import).
 
 ## Import Users from CSV
 

@@ -457,6 +457,7 @@ class GeneralSettings(Base):
     )
     auto_delete_movie_delay_days: Mapped[int] = mapped_column(Integer, default=14)
     auto_delete_series_delay_days: Mapped[int] = mapped_column(Integer, default=7)
+    delete_request_grace_period_days: Mapped[int] = mapped_column(Integer, default=0)
     application_url: Mapped[str | None] = mapped_column(String(500), default=None)
 
     # minimum playback event duration (seconds) before it counts as activity;
@@ -2227,6 +2228,12 @@ class DeleteRequest(Base):
     reviewed_by: Mapped[User | None] = relationship(
         foreign_keys=[reviewed_by_user_id], init=False, lazy="noload", repr=False
     )
+    reviewed_by_api_token_id: Mapped[int | None] = mapped_column(
+        ForeignKey("api_tokens.id", ondelete="SET NULL"), default=None
+    )
+    reviewed_by_api_token_name: Mapped[str | None] = mapped_column(
+        String(100), default=None
+    )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     admin_notes: Mapped[str | None] = mapped_column(Text, default=None)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -2245,13 +2252,30 @@ class ScheduledDeletion(Base):
     """Durable manual intent, independent of rule-generated candidate rows."""
 
     __tablename__ = "scheduled_deletions"
+    __table_args__ = (
+        UniqueConstraint(
+            "delete_request_id", name="uq_scheduled_deletions_delete_request_id"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, init=False)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     target: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_by_username: Mapped[str] = mapped_column(String(255))
+    delete_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "delete_requests.id",
+            ondelete="CASCADE",
+            name="fk_scheduled_deletions_delete_request_id",
+        ),
+        default=None,
+    )
+    requester_warned_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    created_by_api_token_id: Mapped[int | None] = mapped_column(
+        ForeignKey("api_tokens.id", ondelete="SET NULL"), default=None
     )
     job_id: Mapped[int | None] = mapped_column(
         ForeignKey("background_jobs.id", ondelete="SET NULL"), default=None

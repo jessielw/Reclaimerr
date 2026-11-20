@@ -18,6 +18,7 @@ from backend.core.utils.misc import normalize_genre_names
 from backend.database import get_db
 from backend.database.models import (
     Movie,
+    MovieVersion,
     ProtectedMedia,
     ReclaimCandidate,
     Series,
@@ -25,6 +26,11 @@ from backend.database.models import (
 from backend.enums import MediaType
 from backend.models.api_v1 import MediaListResponse, MediaResponse
 from backend.models.api_v1.common import total_pages
+from backend.models.api_v1.media import (
+    MovieListResponse,
+    MovieResponse,
+    MovieVersionResponse,
+)
 
 router = APIRouter(tags=["v1:media"])
 
@@ -72,8 +78,9 @@ def _movie_response(
     movie: Movie,
     candidate_ids: dict[int, list[int]],
     protection_ids: dict[int, list[int]],
-) -> MediaResponse:
-    return MediaResponse(
+    versions: list[MovieVersionResponse],
+) -> MovieResponse:
+    return MovieResponse(
         id=movie.id,
         media_type=MediaType.MOVIE,
         title=movie.title,
@@ -92,7 +99,32 @@ def _movie_response(
         removed_at=movie.removed_at,
         candidate_ids=candidate_ids.get(movie.id, []),
         protection_ids=protection_ids.get(movie.id, []),
+        versions=versions,
     )
+
+
+async def _movie_versions(
+    db: AsyncSession, movie_ids: list[int]
+) -> dict[int, list[MovieVersionResponse]]:
+    versions: dict[int, list[MovieVersionResponse]] = defaultdict(list)
+    if movie_ids:
+        rows = await db.scalars(
+            select(MovieVersion)
+            .where(MovieVersion.movie_id.in_(movie_ids))
+            .order_by(MovieVersion.id)
+        )
+        for row in rows:
+            versions[row.movie_id].append(
+                MovieVersionResponse(
+                    id=row.id,
+                    path=row.path,
+                    service_item_id=row.service_item_id,
+                    service_media_id=row.service_media_id,
+                    size_bytes=row.size,
+                    resolution=row.video_resolution,
+                )
+            )
+    return versions
 
 
 def _series_response(
@@ -123,7 +155,7 @@ def _series_response(
     )
 
 
-@router.get("/movies", response_model=MediaListResponse)
+@router.get("/movies", response_model=MovieListResponse)
 async def list_movies(
     _principal: Annotated[
         ApiPrincipal, Depends(require_api_scope(API_TOKEN_MEDIA_READ_SCOPE))
@@ -138,7 +170,7 @@ async def list_movies(
     include_removed: bool = False,
     sort_by: Literal["title", "year", "added_at", "size"] = "title",
     sort_order: Literal["asc", "desc"] = "asc",
-) -> MediaListResponse:
+) -> MovieListResponse:
     filters: list[ColumnElement[bool]] = []
     if not include_removed:
         filters.append(Movie.removed_at.is_(None))
@@ -172,11 +204,14 @@ async def list_movies(
         .scalars()
         .all()
     )
-    candidates, protections = await _related_ids(
-        db, MediaType.MOVIE, [row.id for row in rows]
-    )
-    return MediaListResponse(
-        items=[_movie_response(row, candidates, protections) for row in rows],
+    movie_ids = [row.id for row in rows]
+    candidates, protections = await _related_ids(db, MediaType.MOVIE, movie_ids)
+    versions = await _movie_versions(db, movie_ids)
+    return MovieListResponse(
+        items=[
+            _movie_response(row, candidates, protections, versions.get(row.id, []))
+            for row in rows
+        ],
         total=total,
         page=page,
         per_page=per_page,
@@ -184,21 +219,22 @@ async def list_movies(
     )
 
 
-@router.get("/movies/{media_id}", response_model=MediaResponse)
+@router.get("/movies/{media_id}", response_model=MovieResponse)
 async def get_movie(
     media_id: int,
     _principal: Annotated[
         ApiPrincipal, Depends(require_api_scope(API_TOKEN_MEDIA_READ_SCOPE))
     ],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> MediaResponse:
+) -> MovieResponse:
     movie = await db.get(Movie, media_id)
     if movie is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found"
         )
     candidates, protections = await _related_ids(db, MediaType.MOVIE, [movie.id])
-    return _movie_response(movie, candidates, protections)
+    versions = await _movie_versions(db, [movie.id])
+    return _movie_response(movie, candidates, protections, versions.get(movie.id, []))
 
 
 @router.get("/series", response_model=MediaListResponse)

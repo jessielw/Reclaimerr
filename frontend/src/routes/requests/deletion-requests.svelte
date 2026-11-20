@@ -9,6 +9,13 @@
   import PosterThumb from "$lib/components/requests/poster-thumb.svelte";
   import RequestStatusBadge from "$lib/components/requests/request-status-badge.svelte";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import DeletionTiming from "$lib/components/candidates/deletion-timing.svelte";
+  import {
+    localDateTime,
+    scheduledDeletionError,
+    scheduledDeletionTime,
+  } from "$lib/utils/scheduled-deletion-time.js";
   import RequestsFilterBar from "$lib/components/requests/requests-filter-bar.svelte";
   import { toast } from "svelte-sonner";
   import { auth } from "$lib/stores/auth";
@@ -17,7 +24,7 @@
     ProtectionRequestStatus,
     Permission,
   } from "$lib/types/shared";
-  import { formatDate } from "$lib/utils/date";
+  import { formatDate, formatDateTimeToLocaleString } from "$lib/utils/date";
   import { formatFileSize } from "$lib/utils/formatters";
   import CheckCircle from "@lucide/svelte/icons/check-circle";
   import XCircle from "@lucide/svelte/icons/x-circle";
@@ -44,6 +51,19 @@
   let approveTarget = $state<DeleteRequest | null>(null);
   let approveNotes = $state("");
   let approveSubmitting = $state(false);
+  let approveMode = $state<"default" | "now" | "later">("default");
+  let approveTime = $state("");
+  let approveGraceDays = $state(0);
+  let approveDefaultTime = $state("");
+  let approveValidationRequested = $state(false);
+  let approvalOptionsLoading = $state(false);
+
+  let scheduleDialogOpen = $state(false);
+  let scheduleTarget = $state<DeleteRequest | null>(null);
+  let scheduleAction = $state<"reschedule" | "cancel">("reschedule");
+  let scheduleTime = $state("");
+  let scheduleSubmitting = $state(false);
+  let scheduleValidationRequested = $state(false);
 
   let denyDialogOpen = $state(false);
   let denyTarget = $state<DeleteRequest | null>(null);
@@ -122,6 +142,8 @@
         request.status === ProtectionRequestStatus.Approved &&
         request.executed_at == null &&
         request.execution_error == null &&
+        (!request.schedule_state ||
+          ["scheduled", "running"].includes(request.schedule_state)) &&
         request.target_available !== false &&
         !request.playback_deferral,
     ),
@@ -137,10 +159,80 @@
     }
   });
 
-  const openApprove = (req: DeleteRequest) => {
-    approveTarget = req;
-    approveNotes = "";
-    approveDialogOpen = true;
+  const openApprove = async (req: DeleteRequest) => {
+    approvalOptionsLoading = true;
+    try {
+      const options = await get_api<{
+        delete_request_grace_period_days: number;
+      }>("/api/delete-requests/approval-options");
+      approveGraceDays = options.delete_request_grace_period_days;
+      approveDefaultTime = new Date(
+        Date.now() + approveGraceDays * 86400000,
+      ).toISOString();
+      approveTarget = req;
+      approveNotes = "";
+      approveMode = "default";
+      approveTime = "";
+      approveValidationRequested = false;
+      approveDialogOpen = true;
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to load approval options.");
+    } finally {
+      approvalOptionsLoading = false;
+    }
+  };
+
+  const openSchedule = (
+    request: DeleteRequest,
+    action: "reschedule" | "cancel",
+  ) => {
+    scheduleTarget = request;
+    scheduleAction = action;
+    scheduleTime = request.scheduled_at
+      ? localDateTime(new Date(request.scheduled_at))
+      : "";
+    scheduleValidationRequested = false;
+    scheduleDialogOpen = true;
+  };
+
+  function validateTime(form: HTMLFormElement, value: string): boolean {
+    const error = scheduledDeletionError(value);
+    const input = form.querySelector<HTMLInputElement>(
+      'input[type="datetime-local"]',
+    );
+    if (input) {
+      input.setCustomValidity(error);
+      if (error) input.reportValidity();
+    }
+    return !error;
+  }
+
+  const submitSchedule = async (form: HTMLFormElement) => {
+    if (!scheduleTarget?.scheduled_deletion_id || scheduleSubmitting) return;
+    scheduleValidationRequested = true;
+    if (scheduleAction === "reschedule" && !validateTime(form, scheduleTime))
+      return;
+    scheduleSubmitting = true;
+    try {
+      await post_api(
+        `/api/media/scheduled-deletions/${scheduleTarget.scheduled_deletion_id}/${scheduleAction}`,
+        scheduleAction === "reschedule"
+          ? { scheduled_at: scheduledDeletionTime(scheduleTime) }
+          : {},
+      );
+      toast.success(
+        scheduleAction === "cancel"
+          ? "Scheduled deletion canceled. Normal cleanup rules apply again."
+          : "Deletion rescheduled.",
+      );
+      scheduleDialogOpen = false;
+      await loadRequests(false);
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to update scheduled deletion.");
+      await loadRequests(false);
+    } finally {
+      scheduleSubmitting = false;
+    }
   };
 
   const openDeny = (req: DeleteRequest) => {
@@ -182,14 +274,31 @@
   const hasTargetDetails = (req: DeleteRequest): boolean =>
     ["movie_version", "season", "episode"].includes(requestScope(req));
 
-  const submitApprove = async () => {
-    if (!approveTarget) return;
+  const submitApprove = async (form: HTMLFormElement) => {
+    if (!approveTarget || approveSubmitting) return;
+    approveValidationRequested = true;
+    if (approveMode === "later" && !validateTime(form, approveTime)) return;
     approveSubmitting = true;
     try {
-      await post_api(`/api/delete-requests/${approveTarget.id}/approve`, {
-        admin_notes: approveNotes.trim() || null,
-      });
-      toast.success("Delete request approved and queued.");
+      const result = await post_api<DeleteRequest>(
+        `/api/delete-requests/${approveTarget.id}/approve`,
+        {
+          admin_notes: approveNotes.trim() || null,
+          ...(approveMode === "default"
+            ? {}
+            : {
+                scheduled_at:
+                  approveMode === "now"
+                    ? null
+                    : scheduledDeletionTime(approveTime),
+              }),
+        },
+      );
+      toast.success(
+        result.scheduled_at
+          ? `Deletion scheduled for ${formatDateTimeToLocaleString(result.scheduled_at)}.`
+          : "Delete request approved and queued.",
+      );
       approveDialogOpen = false;
       await loadRequests();
     } catch (e: any) {
@@ -247,9 +356,12 @@
     if (queuedExecutionRefreshInterval) {
       clearInterval(queuedExecutionRefreshInterval);
     }
-    queuedExecutionRefreshInterval = window.setInterval(() => {
-      void loadRequests(false);
-    }, 10000);
+    queuedExecutionRefreshInterval = window.setInterval(
+      () => {
+        void loadRequests(false);
+      },
+      requests.some((request) => request.scheduled_deletion_id) ? 30000 : 10000,
+    );
 
     return () => {
       if (queuedExecutionRefreshInterval) {
@@ -325,6 +437,12 @@
                       {req.playback_deferral.message}
                     </p>
                   {/if}
+                  {#if req.schedule_state}
+                    <p class="mt-2 text-sm text-muted-foreground">
+                      Deletion: {req.schedule_state}{#if req.scheduled_at && req.schedule_state === "scheduled"}
+                        · {formatDateTimeToLocaleString(req.scheduled_at)}{/if}
+                    </p>
+                  {/if}
                   {#if req.target_available === false}
                     <p class="mt-2 text-sm text-amber-500">
                       Requested version unavailable
@@ -369,6 +487,13 @@
                   <p class="text-sm text-muted-foreground">
                     {#if selectedRequest.executed_at}
                       Deleted {formatDate(selectedRequest.executed_at)}
+                    {:else if selectedRequest.schedule_state}
+                      Deletion {selectedRequest.schedule_state}
+                      {#if selectedRequest.scheduled_at && selectedRequest.schedule_state === "scheduled"}
+                        for {formatDateTimeToLocaleString(
+                          selectedRequest.scheduled_at,
+                        )}
+                      {/if}
                     {:else if selectedRequest.status === ProtectionRequestStatus.Approved}
                       Approved, not completed
                     {:else}
@@ -488,7 +613,7 @@
                 </p>
               </div>
 
-              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.executed_at && !selectedRequest.execution_error && !selectedRequest.playback_deferral && selectedRequest.target_available !== false}
+              {#if selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.scheduled_deletion_id && !selectedRequest.executed_at && !selectedRequest.execution_error && !selectedRequest.playback_deferral && selectedRequest.target_available !== false}
                 <div>
                   <p class="mb-2 text-sm font-medium text-amber-500">
                     Execution Status
@@ -528,15 +653,6 @@
                       selectedRequest.playback_deferral.checked_at,
                     )}. Retry when playback has ended.
                   </p>
-                  {#if canManageRequests}
-                    <Button
-                      class="mt-3"
-                      disabled={retrySubmitting ||
-                        selectedRequest.target_available === false}
-                      onclick={() => retryRequest(selectedRequest)}
-                      >Retry deletion</Button
-                    >
-                  {/if}
                 </div>
               {/if}
 
@@ -554,10 +670,30 @@
               {/if}
 
               <div class="flex flex-wrap gap-3">
+                {#if canManageRequests && selectedRequest.status === ProtectionRequestStatus.Approved && !selectedRequest.scheduled_deletion_id && !selectedRequest.executed_at && (selectedRequest.execution_error || selectedRequest.playback_deferral)}
+                  <Button
+                    disabled={retrySubmitting ||
+                      selectedRequest.target_available === false}
+                    onclick={() => retryRequest(selectedRequest)}
+                    >Retry deletion</Button
+                  >
+                {/if}
+                {#if canManageRequests && selectedRequest.scheduled_deletion_id && ["scheduled", "blocked", "failed"].includes(selectedRequest.schedule_state ?? "")}
+                  <Button
+                    onclick={() => openSchedule(selectedRequest, "reschedule")}
+                    >Reschedule deletion</Button
+                  >
+                  <Button
+                    variant="secondary"
+                    onclick={() => openSchedule(selectedRequest, "cancel")}
+                    >Cancel deletion</Button
+                  >
+                {/if}
                 {#if canManageRequests && selectedRequest.status === ProtectionRequestStatus.Pending}
                   <!-- approve delete request -->
                   <Button
-                    disabled={selectedRequest.target_available === false}
+                    disabled={approvalOptionsLoading ||
+                      selectedRequest.target_available === false}
                     onclick={() => openApprove(selectedRequest)}
                   >
                     <CheckCircle class="size-4" /> Approve
@@ -597,35 +733,150 @@
 <!-- modals -->
 <!-- approve delete request -->
 <Dialog.Root bind:open={approveDialogOpen}>
-  <Dialog.Content class="sm:max-w-xl text-foreground">
+  <Dialog.Content
+    class="max-h-[90dvh] overflow-y-auto sm:max-w-xl text-foreground"
+  >
     <Dialog.Header>
       <Dialog.Title>Approve Delete Request</Dialog.Title>
       <Dialog.Description>
         {#if approveTarget}
-          Approving deletion for <strong>{approveTarget.media_title}</strong> will
-          execute the deletion immediately.
+          Choose when to delete <strong>{approveTarget.media_title}</strong>.
         {/if}
       </Dialog.Description>
     </Dialog.Header>
-    <div class="space-y-3 py-4">
-      <Textarea
-        bind:value={approveNotes}
-        placeholder="Admin notes (optional)"
-        rows={4}
-      />
-    </div>
-    <Dialog.Footer>
-      <Button variant="secondary" onclick={() => (approveDialogOpen = false)}
-        >Cancel</Button
+    <form
+      method="post"
+      action={approveTarget
+        ? `/api/delete-requests/${approveTarget.id}/approve`
+        : undefined}
+      onsubmit={(event) => {
+        event.preventDefault();
+        void submitApprove(event.currentTarget);
+      }}
+    >
+      <div class="space-y-3 py-4">
+        <fieldset class="space-y-2">
+          <legend class="mb-2 font-medium">Deletion timing</legend>
+          <label class="flex min-h-10 items-center gap-2"
+            ><input
+              type="radio"
+              name="approval-timing"
+              value="default"
+              bind:group={approveMode}
+            />
+            Use configured grace period ({approveGraceDays} days)</label
+          >
+          <label class="flex min-h-10 items-center gap-2"
+            ><input
+              type="radio"
+              name="approval-timing"
+              value="now"
+              bind:group={approveMode}
+            /> Delete now</label
+          >
+          <label class="flex min-h-10 items-center gap-2"
+            ><input
+              type="radio"
+              name="approval-timing"
+              value="later"
+              bind:group={approveMode}
+            /> Choose date/time</label
+          >
+        </fieldset>
+        {#if approveMode === "later"}
+          <DeletionTiming
+            mode="later"
+            allowNow={false}
+            bind:value={approveTime}
+            validationRequested={approveValidationRequested}
+          />
+        {:else if approveMode === "default" && approveGraceDays > 0}
+          <p class="text-sm text-muted-foreground">
+            Deletion will run at or after approximately {formatDateTimeToLocaleString(
+              approveDefaultTime,
+            )} in your local timezone. The grace period starts on approval.
+          </p>
+        {:else}
+          <p class="text-sm text-muted-foreground">
+            Deletion will be queued immediately after approval.
+          </p>
+        {/if}
+        <Label for="approve-notes">Admin notes (optional)</Label>
+        <Textarea
+          id="approve-notes"
+          name="admin_notes"
+          bind:value={approveNotes}
+          placeholder="Admin notes (optional)"
+          rows={4}
+        />
+      </div>
+      <Dialog.Footer>
+        <Button
+          type="button"
+          variant="secondary"
+          onclick={() => (approveDialogOpen = false)}>Cancel</Button
+        >
+        <Button
+          variant="destructive"
+          type="submit"
+          disabled={approveSubmitting}
+        >
+          {approveSubmitting ? "Approving..." : "Approve deletion"}
+        </Button>
+      </Dialog.Footer>
+    </form>
+  </Dialog.Content>
+</Dialog.Root>
+
+<Dialog.Root bind:open={scheduleDialogOpen}>
+  <Dialog.Content
+    class="max-h-[90dvh] overflow-y-auto sm:max-w-xl text-foreground"
+  >
+    <Dialog.Header>
+      <Dialog.Title
+        >{scheduleAction === "cancel"
+          ? "Cancel scheduled deletion"
+          : "Reschedule deletion"}</Dialog.Title
       >
-      <Button
-        variant="destructive"
-        onclick={submitApprove}
-        disabled={approveSubmitting}
-      >
-        {approveSubmitting ? "Approving..." : "Approve and Delete"}
-      </Button>
-    </Dialog.Footer>
+      <Dialog.Description>
+        {scheduleTarget?.media_title}. {scheduleAction === "cancel"
+          ? "Approval history will be kept. Normal cleanup rules apply again; canceling does not protect the media."
+          : "Choose a future deletion time. Protection and playback will be checked when it runs."}
+      </Dialog.Description>
+    </Dialog.Header>
+    <form
+      method="post"
+      action={`/api/media/scheduled-deletions/${scheduleTarget?.scheduled_deletion_id}/${scheduleAction}`}
+      onsubmit={(event) => {
+        event.preventDefault();
+        void submitSchedule(event.currentTarget);
+      }}
+    >
+      {#if scheduleAction === "reschedule"}
+        <div class="py-4">
+          <DeletionTiming
+            mode="later"
+            allowNow={false}
+            bind:value={scheduleTime}
+            validationRequested={scheduleValidationRequested}
+          />
+        </div>
+      {/if}
+      <Dialog.Footer>
+        <Button
+          type="button"
+          variant="secondary"
+          onclick={() => (scheduleDialogOpen = false)}>Back</Button
+        >
+        <Button type="submit" disabled={scheduleSubmitting}
+          >{scheduleSubmitting
+            ? "Saving..."
+            : scheduleAction === "cancel"
+              ? "Cancel deletion"
+              : "Reschedule deletion"}</Button
+        >
+      </Dialog.Footer>
+    </form>
   </Dialog.Content>
 </Dialog.Root>
 

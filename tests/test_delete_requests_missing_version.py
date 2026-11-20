@@ -18,6 +18,7 @@ from backend.database.models import (
 )
 from backend.enums import MediaType, ProtectionRequestStatus, Service, UserRole
 from backend.models.requests import ReviewDeleteRequest
+from backend.services import delete_request_workflow
 
 
 @asynccontextmanager
@@ -121,7 +122,7 @@ async def test_missing_version_does_not_break_request_lists(admin_list, historic
 @pytest.mark.anyio
 async def test_manager_can_deny_missing_version_request(monkeypatch):
     notify = AsyncMock()
-    monkeypatch.setattr(routes, "notify_user", notify)
+    monkeypatch.setattr(delete_request_workflow, "notify_user", notify)
     async with seeded_requests() as (db, _, manager, stale, _, _):
         response = await routes.deny_delete_request(
             stale.id, ReviewDeleteRequest(admin_notes="Version removed"), manager, db
@@ -157,7 +158,7 @@ async def test_other_user_cannot_cancel_missing_version_request():
 @pytest.mark.parametrize("retry", [False, True])
 async def test_missing_version_cannot_queue_deletion(monkeypatch, retry):
     queue = AsyncMock()
-    monkeypatch.setattr(routes, "queue_candidate_file_op_job", queue)
+    monkeypatch.setattr(delete_request_workflow, "queue_candidate_file_op_job", queue)
     async with seeded_requests() as (db, _, manager, stale, _, _):
         if retry:
             stale.status = ProtectionRequestStatus.APPROVED
@@ -183,6 +184,7 @@ async def test_missing_version_cannot_queue_deletion(monkeypatch, retry):
         assert caught.value.status_code == 409
         queue.assert_not_awaited()
         if not retry:
+            await db.refresh(stale)
             assert stale.status is ProtectionRequestStatus.PENDING
             assert not (await db.scalars(select(ReclaimCandidate))).all()
 

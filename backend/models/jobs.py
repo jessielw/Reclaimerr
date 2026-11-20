@@ -35,8 +35,9 @@ class WebhookDeliveryJobPayload(BaseModel):
 class CandidateFileOpJobPayload(BaseModel):
     operation: CandidateFileOpOperation
     candidate_ids: list[int]
-    requested_by_user_id: int
+    requested_by_user_id: int | None = None
     requested_by_username: str
+    requested_by_api_token_id: int | None = None
     delete_request_id: int | None = None
     scheduled_deletion_id: int | None = None
     item_labels: list[str] = []

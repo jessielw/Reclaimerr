@@ -56,7 +56,7 @@
     {
       value: "media:read",
       label: "Media",
-      description: "Movies and series catalog",
+      description: "Movies, series, and movie version paths",
     },
     {
       value: "candidates:read",
@@ -67,6 +67,27 @@
       value: "candidates:manage",
       label: "Manage candidates",
       description: "Cancel, postpone and reset",
+    },
+    {
+      value: "delete_requests:read",
+      label: "Delete requests",
+      description: "View requests, review history, and execution status",
+    },
+    {
+      value: "delete_requests:manage",
+      label: "Manage delete requests",
+      description:
+        "Approve, deny, retry, and manage approved request schedules",
+    },
+    {
+      value: "scheduled_deletions:read",
+      label: "Scheduled deletions",
+      description: "View deletion schedules and history",
+    },
+    {
+      value: "scheduled_deletions:manage",
+      label: "Manage scheduled deletions",
+      description: "Create, reschedule, and cancel manual deletions",
     },
     {
       value: "events:read",
@@ -98,15 +119,28 @@
       label: "Run tasks",
       description: "Trigger enabled tasks",
     },
+    {
+      value: "users:read",
+      label: "Users",
+      description: "Account lookup and media user import previews",
+    },
+    {
+      value: "users:manage",
+      label: "Import users",
+      description:
+        "Create and link non-admin media accounts; includes user lookup",
+    },
   ];
 
   const readOnlyScopes: ApiTokenScope[] = [
     "system:read",
     "media:read",
     "candidates:read",
+    "delete_requests:read",
     "events:read",
     "protections:read",
     "rules:read",
+    "scheduled_deletions:read",
     "tasks:read",
   ];
 

@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Importing users from Jellyfin now fills a missing email from a connected Seerr, matched on the media server user ID and then the username, and `POST /api/users/fill-missing-emails-from-seerr` does the same for existing accounts. Existing emails are never overwritten, and imported accounts keep their media server username.
+- Leaving Soon, delete requests, and scheduled deletions now expose scoped media server item and movie source IDs so integrations can open the exact item or version. #534
+- Scoped API tokens can review delete requests and create or manage scheduled deletions. Movie lookups now include individual versions and their paths, so integrations can schedule one copy. Deletion jobs recheck the authorizing token before execution. #535
+- A unified `GET /api/v1/leaving-soon` endpoint for automatic cleanup, manual schedules, and delayed deletion approvals, with deletion dates, scope, version IDs, sizes, filtering, and pagination. #534
+- Cleanup candidate API responses and lifecycle events now include `size_bytes` for the selected movie version, movie, series, season, or episode, so integrations can display estimated space savings. #533
+- Account and delete-request API responses now include linked Jellyfin, Plex, and Emby identities with server configuration IDs, provider user IDs, usernames, and display names, so integrations can match users across services. #532
+- Import users from Jellyfin, Emby, and Plex with user selection, a confirmation screen, explicit existing-account links, configurable access for new accounts, and atomic batches. Available in Settings → Users and through scoped `/api/v1/users` endpoints; API imports are restricted to non-admin accounts. #530
+- A configurable grace period for approved deletion requests. Request managers can use the configured delay, delete immediately, or choose a future date and time when approving. The default is 0 days, preserving immediate deletion. #529
+- Apprise `json://` and `jsons://` notification destinations now also receive a structured `reclaimerr` object (event type, recipient, deep link, and the event context including poster path and media size) so webhook receivers no longer need to parse the message text. The existing payload fields are unchanged. #536
+- Reschedule and cancel controls for approved scheduled deletions, with the deletion time and execution state shown in request details. Delayed approvals appear in Leaving Soon views and collections and use existing requester warning settings, even without a cleanup-rule candidate.
+
+### Fixed
+
+- Fix OpenAPI drift and add regression tests to ensure it doesn't drift again.
+- Rescheduling a blocked approved deletion request now confirms its current files and routing instead of failing. Previously, new or replaced files during the grace period left the request approved but unable to run. #529
+- Faster delete request lists: schedules and their jobs now load in one batch instead of several queries per request. #535
+
 ## [0.6.14] - 2026-11-17
 
 ### Changed

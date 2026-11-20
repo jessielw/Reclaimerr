@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.api_tokens import (
+    API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE,
+    API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE,
+    ApiPrincipal,
+)
 from backend.core.auth import has_permission
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.core.utils.filesystem import mapped_path_variants, normalize_fpath
 from backend.database.models import (
     BackgroundJob,
+    DeleteRequest,
     Episode,
     EpisodeVersion,
     GeneralSettings,
@@ -34,10 +41,13 @@ from backend.enums import (
     CandidateFileOpOperation,
     MediaType,
     Permission,
+    ProtectionRequestStatus,
     UserRole,
 )
 from backend.models.jobs import CandidateFileOpJobPayload
+from backend.models.media_identity import MediaServerItem
 from backend.models.scheduled_deletions import ScheduledDeletionResponse
+from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 
 ACTIVE_SCHEDULE_STATES = ("scheduled", "running", "blocked", "failed")
 executing_schedule_id: ContextVar[int | None] = ContextVar(
@@ -63,6 +73,43 @@ def future_time(value: datetime) -> datetime:
     if value <= datetime.now(UTC):
         raise HTTPException(422, "Deletion time must be in the future")
     return value
+
+
+async def require_schedule_permission(
+    db: AsyncSession, actor: User | ApiPrincipal, schedule: ScheduledDeletion
+) -> None:
+    """Request approvals retain their own permission boundary throughout execution."""
+    if isinstance(actor, ApiPrincipal):
+        scope = schedule_manage_scope(schedule)
+        if not actor.has_scope(scope):
+            raise HTTPException(403, f"API token requires the {scope} scope")
+    elif schedule.delete_request_id is None:
+        require_delete_permission(actor)
+    elif not actor.is_active or not has_permission(actor, Permission.MANAGE_REQUESTS):
+        raise HTTPException(403, "Manage requests permission required")
+    await require_waiting_request(db, schedule)
+
+
+def schedule_manage_scope(schedule: ScheduledDeletion) -> str:
+    if schedule.delete_request_id is not None:
+        return API_TOKEN_DELETE_REQUESTS_MANAGE_SCOPE
+    return API_TOKEN_SCHEDULED_DELETIONS_MANAGE_SCOPE
+
+
+async def require_waiting_request(
+    db: AsyncSession, schedule: ScheduledDeletion
+) -> None:
+    if schedule.delete_request_id is None:
+        return
+    request = await db.get(DeleteRequest, schedule.delete_request_id)
+    if (
+        request is None
+        or request.status != ProtectionRequestStatus.APPROVED
+        or request.executed_at
+    ):
+        raise HTTPException(
+            409, "The deletion request is no longer approved and waiting"
+        )
 
 
 def _path(value: str) -> str:
@@ -527,9 +574,23 @@ async def blocking_schedule(
     return None
 
 
-async def resolve_target(db: AsyncSession, target: dict[str, Any]) -> ReclaimCandidate:
-    """Rebuild only the saved scope. Never reinterpret missing child IDs as parents."""
+async def resolve_target(
+    db: AsyncSession,
+    target: dict[str, Any],
+    *,
+    approved_request: bool = False,
+    verify_snapshot: bool = True,
+) -> ReclaimCandidate:
+    """Rebuild only the saved scope. Never reinterpret missing child IDs as parents.
+
+    With verify_snapshot=False, only the scope must still exist; the caller
+    re-snapshots files, rule actions and routing (approved-request reschedules).
+    """
     media_type = MediaType(target["media_type"])
+    # Approved requests can't be scheduled again after canceling (#529).
+    request_remedy = (
+        "reschedule to confirm the current selection" if approved_request else None
+    )
     media = await db.get(
         Movie if media_type is MediaType.MOVIE else Series, target["media_id"]
     )
@@ -591,26 +652,24 @@ async def resolve_target(db: AsyncSession, target: dict[str, Any]) -> ReclaimCan
         approved_for_deletion=True,
         estimated_space_bytes=target.get("estimated_space_bytes"),
     )
+    if not verify_snapshot:
+        return candidate
     if await target_inventory(db, candidate) != target["inventory"]:
         raise HTTPException(
             409,
-            "The scheduled file inventory changed; cancel and schedule the current files again",
+            "The scheduled file inventory changed; "
+            + (request_remedy or "cancel and schedule the current files again"),
         )
+    remedy = request_remedy or "cancel and schedule again to confirm the new behavior"
     rules = (
         await db.scalars(
             select(ReclaimRule).where(ReclaimRule.id.in_(target["matched_rule_ids"]))
         )
     ).all()
     if {str(r.id): r.action for r in rules} != target["rule_actions"]:
-        raise HTTPException(
-            409,
-            "The deletion rule actions changed; cancel and schedule again to confirm the new behavior",
-        )
+        raise HTTPException(409, f"The deletion rule actions changed; {remedy}")
     if await routing_settings(db, media_type) != target["routing_settings"]:
-        raise HTTPException(
-            409,
-            "The deletion routing settings changed; cancel and schedule again to confirm the new behavior",
-        )
+        raise HTTPException(409, f"The deletion routing settings changed; {remedy}")
     return candidate
 
 
@@ -620,9 +679,11 @@ async def add_schedule_job(
     payload = CandidateFileOpJobPayload(
         operation=CandidateFileOpOperation.DELETE,
         candidate_ids=[],
-        requested_by_user_id=schedule.created_by_user_id or 0,
+        requested_by_user_id=schedule.created_by_user_id,
         requested_by_username=schedule.created_by_username,
+        requested_by_api_token_id=schedule.created_by_api_token_id,
         scheduled_deletion_id=schedule.id,
+        delete_request_id=schedule.delete_request_id,
         item_labels=[schedule.target["title"]],
         item_label_total=1,
     ).model_dump(mode="json")
@@ -639,9 +700,31 @@ async def add_schedule_job(
     return job
 
 
-async def schedule_response(
+_media_server_items_adapter = TypeAdapter(list[MediaServerItem])
+
+
+async def scheduled_media_server_items(
+    db: AsyncSession, schedules: Sequence[ScheduledDeletion]
+) -> dict[int, list[MediaServerItem]]:
+    legacy = {
+        schedule.id: MediaItemTarget.from_schedule(schedule.target)
+        for schedule in schedules
+        if "media_server_items" not in schedule.target
+    }
+    items = await load_media_server_items(db, legacy.values())
+    return {
+        schedule.id: items[legacy[schedule.id]]
+        if schedule.id in legacy
+        else _media_server_items_adapter.validate_python(
+            schedule.target["media_server_items"]
+        )
+        for schedule in schedules
+    }
+
+
+async def schedule_execution_state(
     db: AsyncSession, schedule: ScheduledDeletion
-) -> ScheduledDeletionResponse:
+) -> tuple[str, str | None]:
     job = await db.get(BackgroundJob, schedule.job_id) if schedule.job_id else None
     state = schedule.state
     error = schedule.last_error
@@ -658,11 +741,41 @@ async def schedule_response(
                 "blocked",
                 "The execution job was canceled; reschedule or cancel this deletion",
             )
+    return state, error
+
+
+async def schedule_response(
+    db: AsyncSession,
+    schedule: ScheduledDeletion,
+    media_server_items: list[MediaServerItem] | None = None,
+) -> ScheduledDeletionResponse:
+    state, error = await schedule_execution_state(db, schedule)
+    if media_server_items is None:
+        media_server_items = (await scheduled_media_server_items(db, [schedule]))[
+            schedule.id
+        ]
     return ScheduledDeletionResponse(
         id=schedule.id,
         scheduled_at=ensure_utc(schedule.scheduled_at),
         state=state,
-        target=schedule.target,
+        delete_request_id=schedule.delete_request_id,
+        target={
+            **schedule.target,
+            "media_server_items": [
+                item.model_dump(mode="json") for item in media_server_items
+            ],
+        },
         created_by_username=schedule.created_by_username,
+        created_by_api_token_id=schedule.created_by_api_token_id,
         last_error=error,
     )
+
+
+async def schedule_responses(
+    db: AsyncSession, schedules: Sequence[ScheduledDeletion]
+) -> list[ScheduledDeletionResponse]:
+    items = await scheduled_media_server_items(db, schedules)
+    return [
+        await schedule_response(db, schedule, items[schedule.id])
+        for schedule in schedules
+    ]

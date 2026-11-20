@@ -8,9 +8,19 @@ Scheduled automatic deletion only applies to candidates from rules that explicit
 
 Users with permission to delete cleanup candidates can choose **Delete on…** in the single-item or bulk deletion dialog. Pick a future date and time in your local timezone, check the displayed timezone, and select **Schedule deletion**. Existing **Move Instead of Delete** actions still apply and are shown before confirmation.
 
-The **Scheduled manual deletions** panel on Candidates shows the date, operation, and current state. Use **Reschedule** or **Cancel scheduled deletion** before execution starts. Calendar also shows manual schedules and links to their controls on Candidates. Regular deletion requests retain their existing approval flow.
+The **Scheduled manual deletions** panel on Candidates shows the date, operation, and current state. Use **Reschedule** or **Cancel scheduled deletion** before execution starts. Calendar also shows manual schedules.
 
 Schedules survive restarts, cleanup rescans, and changes to candidate rows. An overlapping automatic deletion or manual delete/move is held until the schedule finishes or is canceled. Canceling a schedule restores normal cleanup rules, including any automatic deletion date that has already passed.
+
+## Approve a Deletion Request for Later
+
+In **Settings → General → Approved Deletion Requests**, set the **Deletion request grace period (days)**. The default is **0**, which keeps immediate deletion. Each day is 24 elapsed hours from approval, and changes apply only to future approvals.
+
+When approving a request, choose **Use configured grace period**, **Delete now**, or **Choose date/time**. Delayed approvals appear in the existing Leaving Soon views and collections. Existing requester warning settings and linked-account requirements still apply; approval does not broadcast a notification to all users.
+
+Request details show the scheduled time and execution state. Request managers can **Reschedule deletion** or **Cancel deletion** before execution starts. Canceling preserves the approval history and stops that scheduled deletion for good; it does not protect the item from normal cleanup rules. Blocked or failed scheduled requests require explicit rescheduling. If files were added or replaced, or deletion routing changed, during the grace period, rescheduling confirms the current files within the approved scope. A replaced movie version is never substituted for the approved one.
+
+API clients can send `scheduled_at` to `POST /api/delete-requests/{id}/approve`: omit it to use the configured grace period, send `null` to delete now, or send a future ISO 8601 timestamp with a timezone. The response includes `scheduled_deletion_id`, `scheduled_at`, and `schedule_state`. Direct manual deletion actions retain their own timing controls.
 
 Execution starts **at or after** the chosen time. If Reclaimerr is offline or another operation holds the required services, the job waits. Before execution, Reclaimerr checks the scheduling user's current deletion permission, the original scope and file inventory, deletion rule actions, active protections, pending requests, and active playback. A missing version, changed inventory, or changed rule action blocks execution instead of broadening or changing the operation. The selected files must have identifiable paths to be scheduled.
 
@@ -36,7 +46,7 @@ When Leaving Soon collections are enabled, Reclaimerr first removes the affected
 
 Affected candidates display **Deferred: currently playing**. If unavailable-status protection is enabled and a relevant server cannot report valid playback data, they display **Deferred: playback status unavailable**. Deferral does not restart the review period, count as a failed deletion, or remove the candidate. Initial deferrals happen before collection pruning or monitoring changes. Unrelated cleanup can continue.
 
-Scheduled candidates retry on the next eligible cleanup run. Manual actions require another explicit attempt. Approved requests keep their approval and expose **Retry deletion** to request managers. Disabling protection does not automatically execute a deferred request; its last deferral stays visible until retry.
+Scheduled automatic cleanup candidates retry on the next eligible cleanup run. Manual actions require another explicit attempt. Immediately approved requests keep their approval and expose **Retry deletion** to request managers; delayed approvals use **Reschedule deletion**. Disabling protection does not automatically execute a deferred request; its last deferral stays visible until retry or rescheduling.
 
 Reclaimerr matches server-qualified media identities and physical paths, including playing episodes beneath a season or series. Configure path mappings when servers expose shared files under different prefixes. Supplemental media associations help identify relevant servers; unavailable servers block associated files when unavailable-status protection is enabled. If a file-only operation has no known server association, an unavailable configured server is treated conservatively as potentially relevant.
 

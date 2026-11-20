@@ -208,6 +208,7 @@ async def update_general_settings(
     )
     settings.auto_delete_movie_delay_days = request.auto_delete_movie_delay_days
     settings.auto_delete_series_delay_days = request.auto_delete_series_delay_days
+    settings.delete_request_grace_period_days = request.delete_request_grace_period_days
     settings.application_url = request.application_url
     settings.playback_movie_min_seconds = request.playback_movie_min_seconds
     settings.playback_episode_min_seconds = request.playback_episode_min_seconds

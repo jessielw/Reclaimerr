@@ -420,6 +420,7 @@ class GeneralSettingsResponse(BaseModel):
     add_arr_import_exclusions_on_delete: bool = True
     auto_delete_movie_delay_days: int = Field(default=14, ge=0, le=3650)
     auto_delete_series_delay_days: int = Field(default=7, ge=0, le=3650)
+    delete_request_grace_period_days: int = Field(default=0, ge=0, le=3650)
     application_url: str | None = None
 
     # minimum playback event duration (seconds) before it counts as activity

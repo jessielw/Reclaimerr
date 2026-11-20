@@ -353,7 +353,7 @@ def test_approve_delete_request_queues_execution(monkeypatch) -> None:
         )
         _patch_job_sessions(monkeypatch, session_maker)
         monkeypatch.setattr(
-            "backend.api.routes.delete_requests.notify_user", AsyncMock()
+            "backend.services.delete_request_workflow.notify_user", AsyncMock()
         )
 
         async with session_maker() as db_session:

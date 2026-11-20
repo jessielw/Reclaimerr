@@ -14,6 +14,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
@@ -54,8 +55,21 @@ from backend.models.auth import (
     UserInfo,
     UserSessionInfo,
 )
+from backend.models.media_user_import import (
+    MediaIdentityDiscoveryRequest,
+    MediaImportProvider,
+    MediaUserImportRequest,
+    MediaUserImportResponse,
+)
 from backend.services.admin_notices import resolve_singleton_notice
 from backend.services.media_auth import media_auth_conflict_notice_key_for_source
+from backend.services.media_user_import import (
+    can_link_media_account,
+    import_media_users,
+    import_providers,
+    stage_media_identity,
+)
+from backend.services.seerr_emails import fill_missing_user_emails
 from backend.services.smtp import auto_enable_system_email
 from backend.services.user_import import (
     CSV_TEMPLATE,
@@ -315,6 +329,18 @@ async def list_media_identities(
     return MediaIdentityListResponse(items=items, total=len(items))
 
 
+@router.post("/users/media-identities/discover")
+async def discover_media_identity_for_linking(
+    body: MediaIdentityDiscoveryRequest,
+    _actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    identity_id = await stage_media_identity(
+        db, service_config_id=body.service_config_id, source_user_id=body.source_user_id
+    )
+    return {"identity_id": identity_id}
+
+
 @router.post(
     "/users/media-identities/{identity_id}/link",
     response_model=MediaIdentityItem,
@@ -333,6 +359,15 @@ async def link_media_identity(
     target_user = await db.get(User, body.target_user_id)
     if target_user is None:
         raise HTTPException(status_code=404, detail="Target user not found")
+
+    current_user = await db.get(User, identity.user_id) if identity.user_id else None
+    if not can_link_media_account(_actor, target_user) or (
+        current_user is not None and not can_link_media_account(_actor, current_user)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot link accounts with access exceeding your own",
+        )
 
     identity.user_id = target_user.id
     if identity.linked_at is None:
@@ -376,6 +411,13 @@ async def unlink_media_identity(
     identity = await db.get(MediaUserIdentity, identity_id)
     if identity is None:
         raise HTTPException(status_code=404, detail="Media identity not found")
+
+    current_user = await db.get(User, identity.user_id) if identity.user_id else None
+    if current_user is not None and not can_link_media_account(_actor, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot unlink accounts with access exceeding your own",
+        )
 
     identity.user_id = None
     await db.commit()
@@ -462,6 +504,52 @@ async def import_users_csv(
         f"User manager {actor.username} imported {summarize_import(entries).created} users"
     )
     return summarize_import(entries)
+
+
+@router.get(
+    "/users/import-from-media-server/providers",
+    response_model=list[MediaImportProvider],
+)
+async def media_import_providers(
+    _actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    db: AsyncSession = Depends(get_db),
+) -> list[MediaImportProvider]:
+    return await import_providers(db)
+
+
+@router.post("/users/import-from-media-server", response_model=MediaUserImportResponse)
+async def import_users_from_media_server(
+    body: MediaUserImportRequest,
+    actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    preview: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db),
+) -> MediaUserImportResponse:
+    return await import_media_users(
+        db, body, preview=preview, actor=actor, actor_label=f"user {actor.id}"
+    )
+
+
+class FillEmailsResponse(BaseModel):
+    updated: list[str]
+    skipped_no_match: list[str]
+    skipped_conflict: list[str]
+
+
+@router.post("/users/fill-missing-emails-from-seerr", response_model=FillEmailsResponse)
+async def fill_missing_emails_from_seerr(
+    actor: Annotated[User, Depends(require_permission(Permission.MANAGE_USERS))],
+    db: AsyncSession = Depends(get_db),
+) -> FillEmailsResponse:
+    """Fill the email of accounts that have none from Seerr. Never overwrites."""
+    result = await fill_missing_user_emails(db)
+    LOG.info(
+        f"User manager {actor.username} filled {len(result.updated)} emails from Seerr"
+    )
+    return FillEmailsResponse(
+        updated=result.updated,
+        skipped_no_match=result.skipped_no_match,
+        skipped_conflict=result.skipped_conflict,
+    )
 
 
 @router.post("/users", response_model=UserInfo)

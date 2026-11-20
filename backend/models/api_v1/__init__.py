@@ -6,6 +6,7 @@ from backend.models.api_v1.candidates import (
     CandidateStatusResponse,
 )
 from backend.models.api_v1.events import EventFeedResponse, EventResponse
+from backend.models.api_v1.leaving_soon import LeavingSoonItem, LeavingSoonListResponse
 from backend.models.api_v1.media import MediaListResponse, MediaResponse
 from backend.models.api_v1.protections import (
     ProtectionCreateRequest,
@@ -27,6 +28,7 @@ from backend.models.api_v1.tasks import (
     TaskRunResponse,
     TaskRunTriggerResponse,
 )
+from backend.models.api_v1.users import UserAccountResponse
 
 __all__ = [
     "ApiDiscoveryResponse",
@@ -37,6 +39,8 @@ __all__ = [
     "CandidateStatusResponse",
     "EventFeedResponse",
     "EventResponse",
+    "LeavingSoonItem",
+    "LeavingSoonListResponse",
     "MediaListResponse",
     "MediaResponse",
     "ProtectionCreateRequest",
@@ -53,4 +57,5 @@ __all__ = [
     "TaskRunListResponse",
     "TaskRunResponse",
     "TaskRunTriggerResponse",
+    "UserAccountResponse",
 ]

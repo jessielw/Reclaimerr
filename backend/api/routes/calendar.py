@@ -36,7 +36,7 @@ from backend.services.scheduled_deletions import (
     active_schedules,
     blocking_schedule,
     inventory_cache,
-    schedule_response,
+    schedule_execution_state,
 )
 
 router = APIRouter(prefix="/api", tags=["calendar"])
@@ -232,7 +232,7 @@ async def get_calendar(
         if not start <= day <= end:
             continue
         target = schedule.target
-        response = await schedule_response(db, schedule)
+        state, _ = await schedule_execution_state(db, schedule)
         buckets.setdefault(day, []).append(
             CalendarItem(
                 candidate_id=target.get("candidate_id"),
@@ -250,7 +250,7 @@ async def get_calendar(
                 episode_id=target.get("episode_id"),
                 estimated_space_bytes=target.get("estimated_space_bytes"),
                 operation=target["operation"],
-                state=response.state,
+                state=state,
                 eligible_at=eligible_at,
             )
         )

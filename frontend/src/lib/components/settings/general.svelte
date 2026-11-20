@@ -73,6 +73,7 @@
   let addArrImportExclusionsOnDelete = $state(true);
   let autoDeleteMovieDelayDays = $state(14);
   let autoDeleteSeriesDelayDays = $state(7);
+  let deleteRequestGracePeriodDays = $state(0);
   let applicationUrl = $state("");
   let playbackMovieMinSeconds = $state(15);
   let playbackEpisodeMinSeconds = $state(7);
@@ -197,6 +198,15 @@
         );
       }
       if (
+        !Number.isInteger(deleteRequestGracePeriodDays) ||
+        deleteRequestGracePeriodDays < 0 ||
+        deleteRequestGracePeriodDays > 3650
+      ) {
+        throw new Error(
+          "Deletion request grace period must be a whole number from 0 to 3650",
+        );
+      }
+      if (
         !Number.isInteger(playbackMovieMinSeconds) ||
         playbackMovieMinSeconds < 0 ||
         playbackMovieMinSeconds > 3600 ||
@@ -246,6 +256,7 @@
         add_arr_import_exclusions_on_delete: addArrImportExclusionsOnDelete,
         auto_delete_movie_delay_days: autoDeleteMovieDelayDays,
         auto_delete_series_delay_days: autoDeleteSeriesDelayDays,
+        delete_request_grace_period_days: deleteRequestGracePeriodDays,
         application_url: applicationUrl.trim() || null,
         playback_movie_min_seconds: playbackMovieMinSeconds,
         playback_episode_min_seconds: playbackEpisodeMinSeconds,
@@ -487,6 +498,8 @@
           settings.add_arr_import_exclusions_on_delete ?? true;
         autoDeleteMovieDelayDays = settings.auto_delete_movie_delay_days ?? 14;
         autoDeleteSeriesDelayDays = settings.auto_delete_series_delay_days ?? 7;
+        deleteRequestGracePeriodDays =
+          settings.delete_request_grace_period_days ?? 0;
         applicationUrl = settings.application_url ?? "";
         playbackMovieMinSeconds = settings.playback_movie_min_seconds ?? 15;
         playbackEpisodeMinSeconds = settings.playback_episode_min_seconds ?? 7;
@@ -1301,6 +1314,31 @@
           Select at least one default page.
         </p>
       {/if}
+    </div>
+
+    <div class="bg-muted/50 border rounded-lg p-4 shadow-sm">
+      <h3 class="font-semibold text-foreground mb-3">
+        Approved Deletion Requests
+      </h3>
+      <div class="space-y-2 sm:max-w-xs">
+        <Label for="deleteRequestGracePeriodDays"
+          >Deletion request grace period (days)</Label
+        >
+        <Input
+          id="deleteRequestGracePeriodDays"
+          type="number"
+          min="0"
+          max="3650"
+          step="1"
+          bind:value={deleteRequestGracePeriodDays}
+        />
+      </div>
+      <p class="mt-3 text-sm text-muted-foreground">
+        Start this grace period when a deletion request is approved, giving
+        users time to see it in Leaving Soon. Use 0 for immediate deletion.
+        Admins can override the time for each approval. Changes affect future
+        approvals only; direct delete actions keep their selected timing.
+      </p>
     </div>
 
     <!-- automatic deletion defaults -->

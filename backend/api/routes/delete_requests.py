@@ -20,40 +20,46 @@ from backend.core.protection_scope import (
 )
 from backend.core.utils.datetime_utils import to_utc_isoformat
 from backend.core.utils.resolution import guesstimate_resolution
-from backend.core.workflow_locks import candidate_workflow_lock
 from backend.database import get_db
 from backend.database.models import (
-    BackgroundJob,
     DeleteRequest,
     Episode,
     Movie,
     MovieVersion,
     ProtectedMedia,
-    ReclaimCandidate,
     Season,
     Series,
     User,
 )
 from backend.enums import (
-    BackgroundJobStatus,
-    BackgroundJobType,
-    CandidateFileOpOperation,
     MediaType,
     NotificationType,
     PageAccess,
     Permission,
     ProtectionRequestStatus,
 )
-from backend.jobs.candidate_file_ops import queue_candidate_file_op_job
-from backend.models.jobs import CandidateFileOpJobItem
 from backend.models.requests import (
+    ApproveDeleteRequest,
     CreateDeleteRequest,
     DeleteRequestResponse,
     ReviewDeleteRequest,
 )
+from backend.services.delete_request_workflow import (
+    approval_options,
+    approve_request,
+    build_delete_request_response,
+    deny_request,
+    list_requests,
+    load_delete_request_item_refs,
+    load_request_schedules,
+    request_target_scope,
+    retry_request,
+)
+from backend.services.deletion_actor import DeletionActor
+from backend.services.media_user_identity import linked_media_identities
 from backend.services.notifications import (
+    media_event_context,
     notify_admins,
-    notify_user,
     request_scope_label,
 )
 
@@ -68,81 +74,7 @@ async def retry_delete_request(
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
 ) -> DeleteRequestResponse:
-    """Explicitly retry a deferred approved request without creating another candidate."""
-    if candidate_workflow_lock.locked():
-        raise HTTPException(status_code=409, detail="A cleanup operation is running")
-    async with candidate_workflow_lock:
-        request = await db.get(DeleteRequest, request_id)
-        if request is None:
-            raise HTTPException(status_code=404, detail="Request not found")
-        if (
-            request.status != ProtectionRequestStatus.APPROVED
-            or request.executed_at
-            or not request.playback_deferral
-        ):
-            raise HTTPException(
-                status_code=409, detail="Only deferred approved requests can be retried"
-            )
-        jobs = (
-            await db.scalars(
-                select(BackgroundJob).where(
-                    BackgroundJob.job_type == BackgroundJobType.CANDIDATE_FILE_OP,
-                    BackgroundJob.status.in_(
-                        [BackgroundJobStatus.PENDING, BackgroundJobStatus.RUNNING]
-                    ),
-                )
-            )
-        ).all()
-        if any(
-            (job.payload or {}).get("delete_request_id") == request_id for job in jobs
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="This request already has a queued or running job",
-            )
-        candidate = (
-            await db.scalars(
-                select(ReclaimCandidate).where(
-                    ReclaimCandidate.delete_request_id == request_id
-                )
-            )
-        ).first()
-        if candidate is None:
-            raise HTTPException(
-                status_code=409, detail="The deferred target is no longer available"
-            )
-        media, _ = await _get_delete_request_media(db, request)
-        from backend.services.candidate_lifecycle import candidate_deletion_blockers
-
-        if await candidate_deletion_blockers(db, candidate):
-            raise HTTPException(
-                status_code=409,
-                detail="The target is protected or has a pending request",
-            )
-        item = await _build_delete_request_job_item(
-            db,
-            request,
-            media_title=media.title,
-            media_year=media.year,
-            media_tmdb_id=media.tmdb_id,
-            candidate_id=candidate.id,
-        )
-        # Queue before clearing the visible deferral, so a failed enqueue is retryable.
-        await queue_candidate_file_op_job(
-            operation=CandidateFileOpOperation.DELETE,
-            candidate_ids=[candidate.id],
-            requested_by_user_id=manager.id,
-            requested_by_username=manager.username,
-            delete_request_id=request.id,
-            item_labels=[item.display_label],
-            item_label_total=1,
-            item_details=[item],
-        )
-        request.playback_deferral = None
-        request.execution_error = None
-        await db.commit()
-        await db.refresh(request)
-        return await _build_delete_request_response(db, request)
+    return await retry_request(db, request_id, DeletionActor.from_user(manager))
 
 
 async def _resolve_series_scope(
@@ -190,387 +122,6 @@ async def _resolve_series_scope(
         return season, None
 
     return None, None
-
-
-async def _get_delete_request_media(
-    db: AsyncSession,
-    request: DeleteRequest,
-    *,
-    require_available_version: bool = True,
-) -> tuple[Movie | Series, int]:
-    """Get the media (movie or series) associated with a delete request."""
-    if request.media_type is MediaType.MOVIE:
-        if require_available_version and (
-            request.target_scope == "movie_version"
-            or request.movie_version_id is not None
-        ):
-            version = (
-                await db.get(MovieVersion, request.movie_version_id)
-                if request.movie_version_id is not None
-                else None
-            )
-            if version is None or version.movie_id != request.movie_id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="The requested movie version is no longer available; create a new request",
-                )
-        result = await db.execute(select(Movie).where(Movie.id == request.movie_id))
-        movie = result.scalar_one_or_none()
-        if movie is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found"
-            )
-        return movie, request.movie_id or 0
-
-    result = await db.execute(select(Series).where(Series.id == request.series_id))
-    series = result.scalar_one_or_none()
-    if series is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Series not found"
-        )
-    return series, request.series_id or 0
-
-
-async def _lookup_season_number(
-    db: AsyncSession,
-    season_id: int | None,
-    season: Season | None = None,
-    season_number_snapshot: int | None = None,
-) -> int | None:
-    """Lookup season number by season_id, with optional short-circuit if season already provided."""
-    if season is not None:
-        return season.season_number
-    if season_number_snapshot is not None:
-        return season_number_snapshot
-    if not season_id:
-        return None
-    result = await db.execute(
-        select(Season.season_number).where(Season.id == season_id)
-    )
-    return result.scalar_one_or_none()
-
-
-async def _lookup_episode_fields(
-    db: AsyncSession,
-    episode_id: int | None,
-    episode: Episode | None = None,
-    episode_number_snapshot: int | None = None,
-    episode_name_snapshot: str | None = None,
-) -> tuple[int | None, str | None]:
-    if episode is not None:
-        return episode.episode_number, episode.name
-    if episode_number_snapshot is not None or episode_name_snapshot is not None:
-        return episode_number_snapshot, episode_name_snapshot
-    if not episode_id:
-        return None, None
-    result = await db.execute(
-        select(Episode.episode_number, Episode.name).where(Episode.id == episode_id)
-    )
-    row = result.one_or_none()
-    if row is None:
-        return None, None
-    return row.episode_number, row.name
-
-
-def _quality_suffix(
-    resolution: str | None,
-    hdr: bool | None,
-    dolby_vision: bool | None,
-) -> str:
-    parts: list[str] = []
-    if resolution:
-        parts.append(resolution)
-    if hdr:
-        parts.append("HDR")
-    if dolby_vision:
-        parts.append("DV")
-    return f" - {' '.join(parts)}" if parts else ""
-
-
-async def _build_delete_request_job_item(
-    db: AsyncSession,
-    request: DeleteRequest,
-    *,
-    media_title: str,
-    media_year: int | None,
-    media_tmdb_id: int | None,
-    candidate_id: int,
-) -> CandidateFileOpJobItem:
-    """Build a CandidateFileOpJobItem for a delete request, looking up any additional
-    metadata needed for the job item."""
-    titled_media = (
-        f"{media_title} ({media_year})" if media_year is not None else media_title
-    )
-
-    if request.media_type is MediaType.MOVIE:
-        if request.movie_version_id is None:
-            return CandidateFileOpJobItem(
-                candidate_id=candidate_id,
-                media_type=MediaType.MOVIE,
-                scope="movie",
-                title=media_title,
-                year=media_year,
-                tmdb_id=media_tmdb_id,
-                display_label=titled_media,
-            )
-
-        version_result = await db.execute(
-            select(
-                MovieVersion.video_resolution,
-                MovieVersion.video_hdr,
-                MovieVersion.video_dolby_vision,
-            ).where(MovieVersion.id == request.movie_version_id)
-        )
-        version_row = version_result.one_or_none()
-        resolution = version_row.video_resolution if version_row else None
-        hdr = version_row.video_hdr if version_row else None
-        dolby_vision = version_row.video_dolby_vision if version_row else None
-        return CandidateFileOpJobItem(
-            candidate_id=candidate_id,
-            media_type=MediaType.MOVIE,
-            scope="version",
-            title=media_title,
-            year=media_year,
-            tmdb_id=media_tmdb_id,
-            resolution=resolution,
-            hdr=hdr,
-            dolby_vision=dolby_vision,
-            display_label=f"{titled_media}{_quality_suffix(resolution, hdr, dolby_vision)}",
-        )
-
-    if request.episode_id is not None or request.episode_number_snapshot is not None:
-        season_number = await _lookup_season_number(
-            db,
-            request.season_id,
-            season_number_snapshot=request.season_number_snapshot,
-        )
-        episode_number, episode_name = await _lookup_episode_fields(
-            db,
-            request.episode_id,
-            episode_number_snapshot=request.episode_number_snapshot,
-            episode_name_snapshot=request.episode_name_snapshot,
-        )
-        season_result = await db.execute(
-            select(
-                Season.max_video_width,
-                Season.max_video_height,
-                Season.has_hdr,
-                Season.has_dolby_vision,
-            ).where(Season.id == request.season_id)
-        )
-        season_row = season_result.one_or_none()
-        resolution = (
-            guesstimate_resolution(
-                season_row.max_video_width,
-                season_row.max_video_height,
-                None,
-            )
-            if season_row
-            else None
-        )
-        hdr = season_row.has_hdr if season_row else None
-        dolby_vision = season_row.has_dolby_vision if season_row else None
-        episode_tag = f"S{int(season_number or 0):02d}E{int(episode_number or 0):02d}"
-        title = f"{titled_media} - {episode_tag}"
-        if episode_name:
-            title = f"{title} - {episode_name}"
-        return CandidateFileOpJobItem(
-            candidate_id=candidate_id,
-            media_type=MediaType.SERIES,
-            scope="episode",
-            title=media_title,
-            year=media_year,
-            tmdb_id=media_tmdb_id,
-            season_number=season_number,
-            episode_number=episode_number,
-            episode_name=episode_name,
-            resolution=resolution,
-            hdr=hdr,
-            dolby_vision=dolby_vision,
-            display_label=f"{title}{_quality_suffix(resolution, hdr, dolby_vision)}",
-        )
-
-    if request.season_id is not None or request.season_number_snapshot is not None:
-        season_number = await _lookup_season_number(
-            db,
-            request.season_id,
-            season_number_snapshot=request.season_number_snapshot,
-        )
-        season_result = await db.execute(
-            select(
-                Season.max_video_width,
-                Season.max_video_height,
-                Season.has_hdr,
-                Season.has_dolby_vision,
-            ).where(Season.id == request.season_id)
-        )
-        season_row = season_result.one_or_none()
-        resolution = (
-            guesstimate_resolution(
-                season_row.max_video_width,
-                season_row.max_video_height,
-                None,
-            )
-            if season_row
-            else None
-        )
-        hdr = season_row.has_hdr if season_row else None
-        dolby_vision = season_row.has_dolby_vision if season_row else None
-        title = (
-            f"{titled_media} - Season {int(season_number)}"
-            if season_number is not None
-            else titled_media
-        )
-        return CandidateFileOpJobItem(
-            candidate_id=candidate_id,
-            media_type=MediaType.SERIES,
-            scope="season",
-            title=media_title,
-            year=media_year,
-            tmdb_id=media_tmdb_id,
-            season_number=season_number,
-            resolution=resolution,
-            hdr=hdr,
-            dolby_vision=dolby_vision,
-            display_label=f"{title}{_quality_suffix(resolution, hdr, dolby_vision)}",
-        )
-
-    return CandidateFileOpJobItem(
-        candidate_id=candidate_id,
-        media_type=MediaType.SERIES,
-        scope="series",
-        title=media_title,
-        year=media_year,
-        tmdb_id=media_tmdb_id,
-        display_label=titled_media,
-    )
-
-
-def _request_target_scope(
-    *,
-    media_type: MediaType,
-    movie_version_id: int | None,
-    season_id: int | None,
-    episode_id: int | None,
-    target_scope: str | None,
-    season_number_snapshot: int | None = None,
-    episode_number_snapshot: int | None = None,
-) -> str:
-    if target_scope:
-        return target_scope
-    if media_type is MediaType.MOVIE:
-        return "movie_version" if movie_version_id is not None else "movie"
-    if episode_id is not None or episode_number_snapshot is not None:
-        return "episode"
-    if season_id is not None or season_number_snapshot is not None:
-        return "season"
-    return "series"
-
-
-async def _build_delete_request_response(
-    db: AsyncSession,
-    request: DeleteRequest,
-    requested_by_username: str | None = None,
-    reviewed_by_username: str | None = None,
-    version: MovieVersion | None = None,
-) -> DeleteRequestResponse:
-    """Build a DeleteRequestResponse from a DeleteRequest, looking up related media and user info as needed."""
-    # Reading/reviewing a stale request must remain possible even after its
-    # version disappears. Approval and retry still require the original target.
-    media, media_id = await _get_delete_request_media(
-        db, request, require_available_version=False
-    )
-    if version is None and request.movie_version_id is not None:
-        version = await db.get(MovieVersion, request.movie_version_id)
-    if version is not None and version.movie_id != request.movie_id:
-        version = None
-    if requested_by_username is None:
-        if request.requested_by is not None:
-            requested_by_username = request.requested_by.username
-        else:
-            requester = await db.execute(
-                select(User.username).where(User.id == request.requested_by_user_id)
-            )
-            requested_by_username = requester.scalar_one_or_none() or "unknown"
-
-    if reviewed_by_username is None and request.reviewed_by_user_id is not None:
-        if request.reviewed_by is not None:
-            reviewed_by_username = request.reviewed_by.username
-        else:
-            reviewer = await db.execute(
-                select(User.username).where(User.id == request.reviewed_by_user_id)
-            )
-            reviewed_by_username = reviewer.scalar_one_or_none()
-
-    season = request.season  # may be None if not eager loaded
-    episode = request.episode  # may be None if not eager loaded
-    episode_number, episode_name = await _lookup_episode_fields(
-        db,
-        request.episode_id,
-        episode,
-        request.episode_number_snapshot,
-        request.episode_name_snapshot,
-    )
-    target_scope = _request_target_scope(
-        media_type=request.media_type,
-        movie_version_id=request.movie_version_id,
-        season_id=request.season_id,
-        episode_id=request.episode_id,
-        target_scope=request.target_scope,
-        season_number_snapshot=request.season_number_snapshot,
-        episode_number_snapshot=request.episode_number_snapshot,
-    )
-    return DeleteRequestResponse(
-        id=request.id,
-        media_type=request.media_type,
-        media_id=media_id,
-        media_title=media.title,
-        media_year=media.year,
-        target_scope=target_scope,
-        target_available=target_scope != "movie_version" or version is not None,
-        movie_version_id=request.movie_version_id,
-        season_id=request.season_id,
-        season_number=await _lookup_season_number(
-            db,
-            request.season_id,
-            season,
-            request.season_number_snapshot,
-        ),
-        episode_id=request.episode_id,
-        episode_number=episode_number,
-        episode_name=episode_name,
-        requested_by_user_id=request.requested_by_user_id,
-        requested_by_username=requested_by_username,
-        reason=request.reason,
-        status=request.status,
-        reviewed_by_user_id=request.reviewed_by_user_id,
-        reviewed_by_username=reviewed_by_username,
-        reviewed_at=to_utc_isoformat(request.reviewed_at),
-        admin_notes=request.admin_notes,
-        executed_at=to_utc_isoformat(request.executed_at),
-        execution_error=request.execution_error,
-        playback_deferral=request.playback_deferral,
-        created_at=to_utc_isoformat(request.created_at) or "",
-        updated_at=to_utc_isoformat(request.updated_at) or "",
-        poster_url=media.poster_url,
-        # version specific metadata
-        version_resolution=version.video_resolution if version else None,
-        version_file_name=version.file_name if version else None,
-        version_size=version.size if version else None,
-        version_video_codec=version.video_codec if version else None,
-        version_hdr=version.video_hdr if version else None,
-        version_dolby_vision=version.video_dolby_vision if version else None,
-        # season aggregate metadata
-        season_size=season.size if season else None,
-        season_resolution=guesstimate_resolution(
-            season.max_video_width, season.max_video_height, None
-        )
-        if season
-        else None,
-        season_video_codecs=season.video_codec_families if season else None,
-        season_hdr=season.has_hdr if season else None,
-        season_dolby_vision=season.has_dolby_vision if season else None,
-    )
 
 
 @router.post(
@@ -721,7 +272,7 @@ async def create_delete_request(
             detail="You already have a pending delete request for this media",
         )
 
-    target_scope = _request_target_scope(
+    target_scope = request_target_scope(
         media_type=request_data.media_type,
         movie_version_id=request_data.movie_version_id,
         season_id=season.id if season else None,
@@ -777,6 +328,8 @@ async def create_delete_request(
                     delete_request.episode_number_snapshot,
                     delete_request.episode_name_snapshot,
                 ),
+                "requested_at": delete_request.created_at,
+                **media_event_context(media),
             },
         )
     except Exception as e:
@@ -786,6 +339,9 @@ async def create_delete_request(
         id=delete_request.id,
         media_type=delete_request.media_type,
         media_id=request_data.media_id,
+        media_server_items=(await load_delete_request_item_refs(db, [delete_request]))[
+            delete_request.id
+        ],
         media_title=media.title,
         media_year=media.year,
         target_scope=target_scope,
@@ -797,6 +353,9 @@ async def create_delete_request(
         episode_name=episode.name if episode else None,
         requested_by_user_id=user.id,
         requested_by_username=user.username,
+        requested_by_media_identities=(await linked_media_identities(db, [user.id]))[
+            user.id
+        ],
         reason=delete_request.reason,
         status=delete_request.status,
         reviewed_by_user_id=None,
@@ -852,6 +411,12 @@ async def get_my_delete_requests(
     result = await db.execute(query)
     requests = result.scalars().all()
 
+    identities = await linked_media_identities(
+        db, (req.requested_by_user_id for req in requests)
+    )
+    item_refs = await load_delete_request_item_refs(db, requests)
+    schedules = await load_request_schedules(db, requests)
+
     version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
     versions_by_id: dict[int, MovieVersion] = {}
     if version_ids:
@@ -862,10 +427,13 @@ async def get_my_delete_requests(
             versions_by_id[v.id] = v
 
     return [
-        await _build_delete_request_response(
+        await build_delete_request_response(
             db,
             req,
             requested_by_username=user.username,
+            requested_by_media_identities=identities[req.requested_by_user_id],
+            media_server_items=item_refs[req.id],
+            schedules_by_request_id=schedules,
             version=versions_by_id.get(req.movie_version_id)
             if req.movie_version_id
             else None,
@@ -882,43 +450,16 @@ async def get_all_delete_requests(
     status_filter: ProtectionRequestStatus | None = Query(None),
 ) -> list[DeleteRequestResponse]:
     """Get all delete requests, optionally filtered by status. Manager permission required."""
-    query = (
-        select(DeleteRequest)
-        .options(
-            selectinload(DeleteRequest.movie),
-            selectinload(DeleteRequest.series),
-            selectinload(DeleteRequest.season),
-            selectinload(DeleteRequest.episode),
-            selectinload(DeleteRequest.requested_by),
-            selectinload(DeleteRequest.reviewed_by),
-        )
-        .order_by(DeleteRequest.created_at.desc())
-    )
-    if status_filter:
-        query = query.where(DeleteRequest.status == status_filter)
+    items, _ = await list_requests(db, status_filter)
+    return items
 
-    result = await db.execute(query)
-    requests = result.scalars().all()
 
-    version_ids = [r.movie_version_id for r in requests if r.movie_version_id]
-    versions_by_id: dict[int, MovieVersion] = {}
-    if version_ids:
-        vr = await db.execute(
-            select(MovieVersion).where(MovieVersion.id.in_(version_ids))
-        )
-        for v in vr.scalars().all():
-            versions_by_id[v.id] = v
-
-    return [
-        await _build_delete_request_response(
-            db,
-            req,
-            version=versions_by_id.get(req.movie_version_id)
-            if req.movie_version_id
-            else None,
-        )
-        for req in requests
-    ]
+@router.get("/delete-requests/approval-options")
+async def delete_request_approval_options(
+    _manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    return await approval_options(db)
 
 
 @router.post(
@@ -926,121 +467,13 @@ async def get_all_delete_requests(
 )
 async def approve_delete_request(
     request_id: int,
-    review_data: ReviewDeleteRequest,
+    review_data: ApproveDeleteRequest,
     manager: Annotated[User, Depends(require_permission(Permission.MANAGE_REQUESTS))],
     db: AsyncSession = Depends(get_db),
 ) -> DeleteRequestResponse:
-    """Approve a delete request and queue it for background execution."""
-    result = await db.execute(
-        select(DeleteRequest).where(DeleteRequest.id == request_id)
-    )
-    request = result.scalar_one_or_none()
-    if request is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
-        )
-    if request.status != ProtectionRequestStatus.PENDING:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Request has already been {request.status.value}",
-        )
-
-    media, _ = await _get_delete_request_media(db, request)
-    media_year = getattr(media, "year", None)
-    media_tmdb_id = getattr(media, "tmdb_id", None)
-
-    request.status = ProtectionRequestStatus.APPROVED
-    request.reviewed_by_user_id = manager.id
-    request.reviewed_at = datetime.now(UTC)
-    request.admin_notes = review_data.admin_notes
-    request.execution_error = None
-
-    candidate = ReclaimCandidate(
-        media_type=request.media_type,
-        matched_rule_ids=[],
-        matched_criteria={},
-        delete_request_id=request.id,
-        reason=f"Approved delete request: {request.reason or 'No reason provided'}",
-        reason_data=None,
-        movie_id=request.movie_id,
-        movie_version_id=request.movie_version_id,
-        series_id=request.series_id,
-        season_id=request.season_id,
-        episode_id=request.episode_id,
-        reviewed=True,
-        approved_for_deletion=True,
-        tagged_in_arr=False,
-        estimated_space_bytes=None,
-    )
-    db.add(candidate)
-    await db.commit()
-    await db.refresh(candidate)
-
-    item_detail = await _build_delete_request_job_item(
-        db,
-        request,
-        media_title=media.title,
-        media_year=media_year,
-        media_tmdb_id=media_tmdb_id,
-        candidate_id=candidate.id,
-    )
-    item_label = item_detail.display_label
-
-    await queue_candidate_file_op_job(
-        operation=CandidateFileOpOperation.DELETE,
-        candidate_ids=[candidate.id],
-        requested_by_user_id=manager.id,
-        requested_by_username=manager.username,
-        delete_request_id=request.id,
-        item_labels=[item_label],
-        item_label_total=1,
-        item_details=[item_detail],
-    )
-
-    tracked_request = await db.get(DeleteRequest, request_id)
-    if tracked_request is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
-        )
-    await db.refresh(tracked_request)
-
-    LOG.info(
-        f"User {manager.username} approved delete request {request_id} "
-        f"for {request.media_type.value} '{media.title}'"
-    )
-
-    try:
-        await notify_user(
-            user_id=tracked_request.requested_by_user_id,
-            notification_type=NotificationType.REQUEST_APPROVED,
-            title="Delete Request Approved",
-            message=f"Your delete request for {media.title} was approved and queued for execution",
-            context={
-                "media_title": media.title,
-                "media_year": media.year,
-                "media_type": tracked_request.media_type.value,
-                "scope": request_scope_label(
-                    tracked_request.target_scope,
-                    tracked_request.season_number_snapshot,
-                    tracked_request.episode_number_snapshot,
-                    tracked_request.episode_name_snapshot,
-                ),
-                "request_id": tracked_request.id,
-                "request_type": "Deletion",
-                "reason": tracked_request.reason,
-                "admin_notes": tracked_request.admin_notes,
-            },
-        )
-    except Exception as e:
-        LOG.error(f"Failed to send notification: {e}")
-
-    return await _build_delete_request_response(
-        db,
-        tracked_request,
-        reviewed_by_username=manager.username,
-        version=await db.get(MovieVersion, tracked_request.movie_version_id)
-        if tracked_request.movie_version_id
-        else None,
+    """Approve a deletion for immediate or scheduled background execution."""
+    return await approve_request(
+        db, request_id, review_data, DeletionActor.from_user(manager)
     )
 
 
@@ -1052,68 +485,8 @@ async def deny_delete_request(
     db: AsyncSession = Depends(get_db),
 ) -> DeleteRequestResponse:
     """Deny a delete request. Manager permission required."""
-    result = await db.execute(
-        select(DeleteRequest).where(DeleteRequest.id == request_id)
-    )
-    request = result.scalar_one_or_none()
-    if request is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
-        )
-    if request.status != ProtectionRequestStatus.PENDING:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Request has already been {request.status.value}",
-        )
-
-    media, _ = await _get_delete_request_media(
-        db, request, require_available_version=False
-    )
-    request.status = ProtectionRequestStatus.DENIED
-    request.reviewed_by_user_id = manager.id
-    request.reviewed_at = datetime.now(UTC)
-    request.admin_notes = review_data.admin_notes
-
-    await db.commit()
-    await db.refresh(request)
-
-    LOG.info(
-        f"User {manager.username} denied delete request {request_id} "
-        f"for {request.media_type.value} '{media.title}'"
-    )
-
-    try:
-        await notify_user(
-            user_id=request.requested_by_user_id,
-            notification_type=NotificationType.REQUEST_DECLINED,
-            title="Delete Request Denied",
-            message=f"Your delete request for {media.title} has been denied",
-            context={
-                "media_title": media.title,
-                "media_year": media.year,
-                "media_type": request.media_type.value,
-                "scope": request_scope_label(
-                    request.target_scope,
-                    request.season_number_snapshot,
-                    request.episode_number_snapshot,
-                    request.episode_name_snapshot,
-                ),
-                "request_id": request.id,
-                "request_type": "Deletion",
-                "reason": request.reason,
-                "admin_notes": review_data.admin_notes,
-            },
-        )
-    except Exception as e:
-        LOG.error(f"Failed to send notification: {e}")
-
-    return await _build_delete_request_response(
-        db,
-        request,
-        reviewed_by_username=manager.username,
-        version=await db.get(MovieVersion, request.movie_version_id)
-        if request.movie_version_id
-        else None,
+    return await deny_request(
+        db, request_id, review_data, DeletionActor.from_user(manager)
     )
 
 
@@ -1161,6 +534,7 @@ async def cancel_delete_request(
             request.episode_name_snapshot,
         ),
         "reason": request.reason,
+        **media_event_context(media),
     }
     await db.delete(request)
     await db.commit()

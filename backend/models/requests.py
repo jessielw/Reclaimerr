@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 
 from backend.enums import MediaType, ProtectionRequestStatus
+from backend.models.media_identity import LinkedMediaIdentity, MediaServerItem
 
 
 class CreateProtectionRequest(BaseModel):
@@ -99,12 +100,19 @@ class ReviewDeleteRequest(BaseModel):
     admin_notes: str | None = None
 
 
+class ApproveDeleteRequest(ReviewDeleteRequest):
+    """Omit scheduled_at for the default grace period; null means delete now."""
+
+    scheduled_at: AwareDatetime | None = None
+
+
 class DeleteRequestResponse(BaseModel):
     """Delete request with details and execution status."""
 
     id: int
     media_type: MediaType
     media_id: int
+    media_server_items: list[MediaServerItem] = Field(default_factory=list)
     media_title: str
     media_year: int | None
     target_scope: str | None = None
@@ -118,15 +126,24 @@ class DeleteRequestResponse(BaseModel):
 
     requested_by_user_id: int
     requested_by_username: str
+    requested_by_media_identities: list[LinkedMediaIdentity] = Field(
+        default_factory=list,
+        description="The requester's current persisted media-server identity links.",
+    )
     reason: str | None
 
     status: ProtectionRequestStatus
     reviewed_by_user_id: int | None
     reviewed_by_username: str | None
+    reviewed_by_api_token_id: int | None = None
+    reviewed_by_api_token_name: str | None = None
     reviewed_at: str | None
     admin_notes: str | None
 
     executed_at: str | None = None
+    scheduled_deletion_id: int | None = None
+    scheduled_at: str | None = None
+    schedule_state: str | None = None
     playback_deferral: dict[str, Any] | None = None
     execution_error: str | None = None
 

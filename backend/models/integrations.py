@@ -10,14 +10,20 @@ from backend.enums import MediaType
 ApiTokenScope = Literal[
     "candidates:read",
     "candidates:manage",
+    "delete_requests:read",
+    "delete_requests:manage",
     "events:read",
     "media:read",
     "protections:read",
     "protections:manage",
     "rules:read",
+    "scheduled_deletions:read",
+    "scheduled_deletions:manage",
     "system:read",
     "tasks:read",
     "tasks:run",
+    "users:read",
+    "users:manage",
 ]
 LifecycleEventType = Literal[
     "candidate.scheduled",

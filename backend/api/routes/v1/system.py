@@ -55,11 +55,16 @@ async def get_system(
         last_candidate_scan_at=await _last_success(db, Task.SCAN_CLEANUP_CANDIDATES),
         capabilities=[
             "candidate-lifecycle",
+            "leaving-soon",
             "event-feed",
             "media-catalog",
             "protections",
             "task-observability",
             "task-triggering",
             "durable-webhooks",
+            "media-user-import",
+            "delete-requests",
+            "scheduled-deletions",
+            "movie-versions",
         ],
     )

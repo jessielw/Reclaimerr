@@ -201,13 +201,13 @@ def test_schedule_atomicity_timezone_and_future_claim(monkeypatch):
 
 def test_failed_enqueue_rolls_back_intent(monkeypatch):
     async def run():
-        from backend.api.routes import scheduled_deletions as routes
+        from backend.services import schedule_workflow
 
         async with database(monkeypatch) as factory:
             async with factory() as db:
                 user, _, _, candidate, _ = await seed(db)
                 monkeypatch.setattr(
-                    routes,
+                    schedule_workflow,
                     "add_schedule_job",
                     AsyncMock(side_effect=RuntimeError("queue failed")),
                 )
@@ -914,32 +914,52 @@ def test_migration_matches_schedule_model_and_preserves_existing_rows():
 
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
-        Base.metadata.create_all(
-            connection,
-            tables=[
-                table
-                for table in Base.metadata.sorted_tables
-                if table.name != "scheduled_deletions"
-            ],
-        )
+        config = Config()
+        config.set_main_option("script_location", "backend/alembic")
+        config.attributes["connection"] = connection
+        command.upgrade(config, "c5e0a3b7d942")
         connection.execute(
             User.__table__.insert().values(
+                id=1,
                 username="existing",
                 password_hash="x",
                 role=UserRole.ADMIN,
                 permissions=[],
             )
         )
-        config = Config()
-        config.set_main_option("script_location", "backend/alembic")
-        config.attributes["connection"] = connection
-        command.stamp(config, "e6a1c3d8f540")
+        connection.execute(
+            text(
+                "INSERT INTO delete_requests (id, media_type, requested_by_user_id, status) "
+                "VALUES (1, 'MOVIE', 1, 'APPROVED')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO scheduled_deletions "
+                "(id, scheduled_at, target, created_by_username, created_by_user_id, delete_request_id, state) "
+                "VALUES (1, '2099-01-01', '{}', 'existing', 1, 1, 'scheduled')"
+            )
+        )
         command.upgrade(config, "head")
         assert {
             column["name"]
             for column in inspect(connection).get_columns("scheduled_deletions")
         } == set(ScheduledDeletion.__table__.columns.keys())
-        assert connection.scalar(text("SELECT username FROM users")) == "existing"
+        assert connection.execute(
+            text(
+                "SELECT reviewed_by_api_token_id, reviewed_by_api_token_name FROM delete_requests"
+            )
+        ).one() == (None, None)
+        assert connection.execute(
+            text(
+                "SELECT created_by_user_id, delete_request_id, created_by_api_token_id FROM scheduled_deletions"
+            )
+        ).one() == (1, 1, None)
+        command.downgrade(config, "c5e0a3b7d942")
+        assert (
+            connection.scalar(text("SELECT delete_request_id FROM scheduled_deletions"))
+            == 1
+        )
     engine.dispose()
 
 

@@ -38,6 +38,15 @@ Like the external API docs, these pages load Swagger UI and ReDoc from `/docs-as
 
 ## Settings
 
+User provisioning also has internal UI routes:
+
+- `GET /api/account/users/import-from-media-server/providers`
+- `POST /api/account/users/import-from-media-server?preview=true` (the default)
+- `POST /api/account/users/import-from-media-server?preview=false`
+- `POST /api/account/users/media-identities/discover` stages one explicitly selected media identity for manual linking, using `{service_config_id, source_user_id}`; it does not create an account or change an existing link.
+
+These require **Manage users** permission and use the same request/response contract as the external user import API, with administrator roles available only to administrators using the UI. Integrations should use the scoped `/api/v1/users` endpoints documented under [User Import](api.md#user-import).
+
 - `GET /api/settings/general`
 - `PUT /api/settings/general`
 - `GET /api/settings/services`
@@ -89,6 +98,8 @@ The candidate list accepts `rule_id` to match exact membership in a candidate's 
 - `POST /api/protected`
 - `PUT /api/protected/{entry_id}/duration`
 - `DELETE /api/protected/{entry_id}`
+
+Delete-request responses include `requested_by_media_identities` alongside the local `requested_by_user_id` and `requested_by_username`. This array uses the same linked identity fields as [`GET /api/v1/users`](api.md#user-import), including the server configuration ID, provider user ID, username, and display name. It reflects the requester's current persisted links and is empty when there are none. Creation, listing (including `/api/delete-requests/my`), and review responses all include it; existing session authentication and permissions still apply.
 
 ## Rules
 
