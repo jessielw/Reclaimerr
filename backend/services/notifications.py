@@ -58,6 +58,7 @@ __all__ = [
     "notify_users",
     "notify_all_users",
     "notify_admins",
+    "media_event_context",
     "request_scope_label",
 ]
 
@@ -161,6 +162,35 @@ def _notification_url(
     if not target:
         return None
     return f"{base}/#{target[0]}"
+
+
+def _genre_names(genres: Any) -> list[str]:
+    """Genre names from the stored list, which holds names or {id, name} objects."""
+    names: list[str] = []
+    for genre in genres or []:
+        name = genre.get("name") if isinstance(genre, dict) else genre
+        if name:
+            names.append(str(name))
+    return names
+
+
+def media_event_context(media: Movie | Series | None) -> dict[str, Any]:
+    """Machine-readable media fields for a notification context.
+
+    These are not shown in the text body. They only reach destinations that
+    can use structured data (see `build_event_payload`). `media_size_bytes`
+    is the size of the whole title, not of a single season or episode.
+    """
+    if media is None:
+        return {}
+    return {
+        "poster_path": media.poster_url,
+        "media_size_bytes": media.size,
+        "tmdb_id": media.tmdb_id,
+        "imdb_id": media.imdb_id,
+        "genres": _genre_names(media.genres),
+        "overview": media.overview,
+    }
 
 
 def _json_safe(value: Any) -> Any:

@@ -58,6 +58,7 @@ from backend.services.delete_request_workflow import (
 from backend.services.deletion_actor import DeletionActor
 from backend.services.media_user_identity import linked_media_identities
 from backend.services.notifications import (
+    media_event_context,
     notify_admins,
     request_scope_label,
 )
@@ -327,6 +328,8 @@ async def create_delete_request(
                     delete_request.episode_number_snapshot,
                     delete_request.episode_name_snapshot,
                 ),
+                "requested_at": delete_request.created_at,
+                **media_event_context(media),
             },
         )
     except Exception as e:
@@ -531,6 +534,7 @@ async def cancel_delete_request(
             request.episode_name_snapshot,
         ),
         "reason": request.reason,
+        **media_event_context(media),
     }
     await db.delete(request)
     await db.commit()

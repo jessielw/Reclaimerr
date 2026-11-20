@@ -22,6 +22,35 @@ def _user(**overrides):
     return SimpleNamespace(**values)
 
 
+def test_media_event_context_exposes_machine_readable_fields():
+    media = SimpleNamespace(
+        poster_url="/poster.jpg",
+        size=1_234_567,
+        tmdb_id=42,
+        imdb_id="tt0000042",
+        genres=[{"id": 18, "name": "Drama"}, {"id": 35, "name": "Comedy"}],
+        overview="A short synopsis.",
+    )
+
+    assert notifications.media_event_context(media) == {
+        "poster_path": "/poster.jpg",
+        "media_size_bytes": 1_234_567,
+        "tmdb_id": 42,
+        "imdb_id": "tt0000042",
+        "genres": ["Drama", "Comedy"],
+        "overview": "A short synopsis.",
+    }
+    assert notifications.media_event_context(None) == {}
+
+
+def test_media_event_context_tolerates_missing_genres():
+    media = SimpleNamespace(
+        poster_url=None, size=None, tmdb_id=1, imdb_id=None, genres=None, overview=None
+    )
+
+    assert notifications.media_event_context(media)["genres"] == []
+
+
 def test_event_payload_is_json_safe_and_names_the_recipient():
     payload = notifications.build_event_payload(
         notification_type=NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED,

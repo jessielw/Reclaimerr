@@ -47,6 +47,7 @@ from backend.services.deletion_actor import DeletionActor
 from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 from backend.services.media_user_identity import linked_media_identities
 from backend.services.notifications import (
+    media_event_context,
     notify_user,
     request_scope_label,
 )
@@ -923,6 +924,8 @@ async def _approve_delete_request_unlocked(
                 "scheduled_at": to_utc_isoformat(when),
                 "reason": tracked_request.reason,
                 "admin_notes": tracked_request.admin_notes,
+                "requested_at": tracked_request.created_at,
+                **media_event_context(media),
             },
         )
     except Exception as e:
@@ -1004,6 +1007,8 @@ async def _deny_request_unlocked(
                 "request_type": "Deletion",
                 "reason": request.reason,
                 "admin_notes": review_data.admin_notes,
+                "requested_at": request.created_at,
+                **media_event_context(media),
             },
         )
     except Exception as e:

@@ -41,6 +41,7 @@ from backend.services.candidate_lifecycle import (
     candidate_scope,
 )
 from backend.services.notifications import (
+    media_event_context,
     notify_admins,
     notify_user,
     request_scope_label,
@@ -179,6 +180,9 @@ async def _finalize_delete_request_job(
             "reason": delete_request.reason,
             "admin_notes": delete_request.admin_notes,
             "error": delete_request.execution_error,
+            "requested_at": delete_request.created_at,
+            "executed_at": delete_request.executed_at,
+            **media_event_context(media),
         }
         await db.commit()
 
