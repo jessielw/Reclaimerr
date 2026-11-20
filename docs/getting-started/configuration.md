@@ -26,6 +26,50 @@ See the [environment variable reference](../reference/environment-variables.md) 
 
 Email notifications are configured under Settings - Notifications, in the **Email server (SMTP)** panel, which only administrators see. Enter the host, port, encryption mode (STARTTLS, SSL/TLS or none), optional credentials and a from address, then use **Send Test Email** to confirm it works. The password is encrypted at rest with `ENCRYPTION_KEY` and is never returned to the browser; leaving the field blank on a later save keeps the stored one. Once it is enabled, each user can add an **Email** destination from the same page, and it is delivered to the address on their account unless they enter a different one.
 
+### Webhook payload
+
+An Apprise destination that uses the `json://` or `jsons://` scheme receives its usual `title` and `message`, plus a structured `reclaimerr` object, so a receiver can build its own message without parsing the text. Other destinations are unchanged, and existing `json://` receivers keep working because the field is additive.
+
+```json
+{
+  "version": "1.0",
+  "title": "Deletion Completed",
+  "message": "Deletion completed for Perfect Crown",
+  "type": "success",
+  "reclaimerr": {
+    "version": 1,
+    "event": "delete_request_execution_succeeded",
+    "url": "https://reclaimerr.example.com/#/requests",
+    "recipient": {
+      "username": "alex",
+      "display_name": "Alex",
+      "email": "alex@example.com"
+    },
+    "context": {
+      "request_id": 4,
+      "request_type": "Deletion",
+      "media_title": "Perfect Crown",
+      "media_year": 2026,
+      "media_type": "series",
+      "scope": "Series",
+      "reason": "Requested by Alex",
+      "admin_notes": null,
+      "error": null,
+      "poster_path": "/ocXkHSslrSWMz2ZJGl5MjF6dQr3.jpg",
+      "media_size_bytes": 29291190541,
+      "tmdb_id": 123456,
+      "imdb_id": "tt1234567",
+      "genres": ["Comedy", "Drama"],
+      "overview": "A short synopsis.",
+      "requested_at": "2026-11-18T19:07:21",
+      "executed_at": "2026-11-18T21:25:52"
+    }
+  }
+}
+```
+
+`event` is the notification type, and `recipient` is the account the destination belongs to. `context` holds whatever Reclaimerr knows about the event, so the fields differ by event type; `poster_path` is a TMDB image path and `media_size_bytes` is the size of the whole title. `url` is the matching page in Reclaimerr and is `null` when no Application URL is set. Non-admin users still need an administrator to approve a `json://` destination before anything is sent to it.
+
 Application URL is configured in General Settings. It is used for Plex and OIDC callback generation behind a reverse proxy, and it is what lets notifications link back into Reclaimerr. When it is unset, notifications are still delivered but contain no links.
 
 ## Login Background
