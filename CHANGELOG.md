@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Account and delete-request API responses now include linked Jellyfin, Plex, and Emby identities with server configuration IDs, provider user IDs, usernames, and display names, so integrations can match users across services. #532
 - Import users from Jellyfin, Emby, and Plex with user selection, a confirmation screen, explicit existing-account links, configurable access for new accounts, and atomic batches. Available in Settings → Users and through scoped `/api/v1/users` endpoints; API imports are restricted to non-admin accounts. #530
 - A configurable grace period for approved deletion requests. Request managers can use the configured delay, delete immediately, or choose a future date and time when approving. The default is 0 days, preserving immediate deletion. #529
+- Apprise `json://` and `jsons://` notification destinations now also receive a structured `reclaimerr` object (event type, recipient, deep link, and the event context including poster path and media size) so webhook receivers no longer need to parse the message text. The existing payload fields are unchanged. #536
 - Reschedule and cancel controls for approved scheduled deletions, with the deletion time and execution state shown in request details. Delayed approvals appear in Leaving Soon views and collections and use existing requester warning settings, even without a cleanup-rule candidate.
 
 ### Fixed
