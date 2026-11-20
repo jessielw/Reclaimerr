@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import apprise
+from apprise.plugins.custom_json import NotifyJSON
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -61,6 +62,9 @@ __all__ = [
 ]
 
 _DEFAULT_BODY_FORMAT = apprise.NotifyFormat.MARKDOWN
+
+# Extra field added to the payload of `json://` destinations.
+EVENT_PAYLOAD_KEY = "reclaimerr"
 
 # Separates facts on a single line, e.g. "The Matrix (1999) · Season 2 · 8.4 GB".
 _SEPARATOR = " · "
@@ -138,14 +142,71 @@ def _notification_link(
     Returns None when no public application URL is configured; every transport
     Apprise supports renders markdown links natively, so no HTML is needed.
     """
+    url = _notification_url(notification_type, application_url)
+    target = _NOTIFICATION_LINKS.get(notification_type)
+    if not url or not target:
+        return None
+    return f"[{target[1]}]({url})"
+
+
+def _notification_url(
+    notification_type: NotificationType,
+    application_url: str | None,
+) -> str | None:
+    """Plain deep link URL for a notification type, or None without an app URL."""
     base = (application_url or "").strip().rstrip("/")
     if not base:
         return None
     target = _NOTIFICATION_LINKS.get(notification_type)
     if not target:
         return None
-    route, label = target
-    return f"[{label}]({base}/#{route})"
+    return f"{base}/#{target[0]}"
+
+
+def _json_safe(value: Any) -> Any:
+    """Reduce a context value to plain JSON types."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None:
+        return _json_safe(enum_value)
+    return str(value)
+
+
+def build_event_payload(
+    *,
+    notification_type: NotificationType,
+    context: dict[str, Any] | None,
+    application_url: str | None,
+    recipient: User | None,
+) -> dict[str, Any]:
+    """Structured version of a notification, sent to `json://` destinations.
+
+    Apprise's JSON plugin only carries a title and a text message. This is added
+    next to them under `reclaimerr`, so a receiver does not have to parse the
+    text. The shape is additive: existing receivers keep working untouched.
+    """
+    return {
+        "version": 1,
+        "event": notification_type.value,
+        "url": _notification_url(notification_type, application_url),
+        "recipient": (
+            {
+                "username": recipient.username,
+                "display_name": recipient.display_name,
+                "email": recipient.email,
+            }
+            if recipient is not None
+            else None
+        ),
+        "context": _json_safe(context or {}),
+    }
 
 
 def request_scope_label(
@@ -923,8 +984,12 @@ async def send_notification(
     *,
     log_label: str,
     follow_redirects: bool = True,
+    event: dict[str, Any] | None = None,
 ) -> bool:
     """Send a single notification to a specific URL with automatic retry logic.
+
+    `event` is a structured payload (see `build_event_payload`). Only Apprise's
+    `json://` / `jsons://` destinations use it, as an extra `reclaimerr` field.
 
     Non-admin destinations pass `follow_redirects=False`: Apprise follows HTTP
     redirects by default, which would let an approved public host bounce the
@@ -935,9 +1000,12 @@ async def send_notification(
     """
     ap = apprise.Apprise(asset=_APPRISE_ASSET)
     ap.add(url)
-    if not follow_redirects:
+    if not follow_redirects or event is not None:
         for plugin in ap:
-            plugin.redirects = False
+            if not follow_redirects:
+                plugin.redirects = False
+            if event is not None and isinstance(plugin, NotifyJSON):
+                plugin.payload_extras[EVENT_PAYLOAD_KEY] = event
     label = log_label or "notification destination"
     if body_format == apprise.NotifyFormat.MARKDOWN and _is_telegram_url(url):
         message = _telegram_bullets(message)
@@ -1080,6 +1148,12 @@ async def notify_user(
                 notify_type=_notify_type_for(notification_type),
                 log_label=log_label,
                 follow_redirects=_follows_redirects(setting.user),
+                event=build_event_payload(
+                    notification_type=notification_type,
+                    context=context,
+                    application_url=application_url,
+                    recipient=setting.user,
+                ),
             )
 
             if success:
@@ -1257,6 +1331,12 @@ async def notify_all_users(
                 notify_type=_notify_type_for(notification_type),
                 log_label=log_label,
                 follow_redirects=_follows_redirects(user),
+                event=build_event_payload(
+                    notification_type=notification_type,
+                    context=context,
+                    application_url=application_url,
+                    recipient=user,
+                ),
             )
 
             if success:
