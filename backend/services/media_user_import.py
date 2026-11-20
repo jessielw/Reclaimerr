@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from xml.etree import ElementTree
 
@@ -48,6 +48,7 @@ from backend.services.media_auth import (
     normalize_username,
     upsert_media_identity,
 )
+from backend.services.seerr_emails import load_seerr_email_directory
 from backend.services.smtp import auto_enable_system_email
 
 MAX_IMPORT_USERS = 1000
@@ -57,6 +58,9 @@ MAX_IMPORT_USERS = 1000
 class ImportSource:
     identity: DiscoveredMediaUser
     skip_reason: str | None = None
+    # The email came from Seerr, so the media server username should stay the
+    # account name instead of the part of the email before the "@".
+    email_from_seerr: bool = False
 
 
 def account_summary(user: User) -> MediaImportAccount:
@@ -125,6 +129,27 @@ def _source(
         ),
         skip_reason,
     )
+
+
+async def _with_seerr_emails(sources: list[ImportSource]) -> list[ImportSource]:
+    """Fill in missing emails from Seerr, which knows them when Jellyfin does not."""
+    if all(source.identity.email for source in sources):
+        return sources
+    directory = await load_seerr_email_directory()
+    filled: list[ImportSource] = []
+    for source in sources:
+        item = source.identity
+        email = None
+        if not item.email:
+            email = directory.lookup(
+                media_user_id=item.source_user_id, username=item.username
+            )
+        filled.append(
+            replace(source, identity=replace(item, email=email), email_from_seerr=True)
+            if email
+            else source
+        )
+    return filled
 
 
 async def discover_import_users(
@@ -203,6 +228,7 @@ async def discover_import_users(
                         and str(user.get("id")) != sources[0].identity.source_user_id
                     ):
                         sources.append(_source(provider, dict(user.attrib), plex=True))
+        sources = await _with_seerr_emails(sources)
         ids = [source.identity.source_user_id for source in sources]
         if len(ids) != len(set(ids)):
             raise ValueError("Media server returned duplicate user IDs")
@@ -378,7 +404,11 @@ def _rows(
                     "Matching account exceeds your linking authority",
                 )
         else:
-            base = item.email.split("@", 1)[0] if item.email else item.username
+            base = (
+                item.email.split("@", 1)[0]
+                if item.email and not source.email_from_seerr
+                else item.username
+            )
             row.local_username = _safe_unique_username(base, used_names)
             used_names.add(normalize_username(row.local_username))
         if row.account:
