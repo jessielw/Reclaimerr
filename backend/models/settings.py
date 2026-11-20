@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 from backend.database.models import User
+from backend.services.email_templates import TEMPLATE_EVENTS
 from backend.enums import (
     LeavingSoonCollectionSort,
     MediaType,
@@ -237,7 +238,11 @@ def normalize_notification_preferences(
         if not isinstance(raw, dict):
             continue
         detail = str(raw.get("detail") or "").strip().lower()
-        if detail in {"compact", "standard"}:
+        # "template" sends the admin's custom email template, where one exists
+        allowed = {"compact", "standard"} | (
+            {"template"} if key in TEMPLATE_EVENTS else set()
+        )
+        if detail in allowed:
             normalized[key]["detail"] = detail
 
     return normalized
@@ -785,6 +790,13 @@ class NotificationEmailStatus(BaseModel):
     available: bool = False
     account_email: str | None = None
     already_configured: bool = False
+    # events an admin has written an email template for; a destination can
+    # choose "Template" for these
+    template_events: list[str] = Field(default_factory=list)
+    # events that can have a template at all
+    template_event_types: list[str] = Field(default_factory=list)
+    # events an admin sends to every Email destination, whatever its dropdown says
+    template_everyone: list[str] = Field(default_factory=list)
 
 
 class DatabaseBackupInfo(BaseModel):

@@ -5,6 +5,7 @@
   import { NotificationChannel, NotificationType } from "$lib/types/shared";
   import type { NotificationEmailStatus } from "$lib/types/shared";
   import SmtpSettings from "./notifications/smtp-settings.svelte";
+  import EmailTemplates from "./notifications/email-templates.svelte";
   import RestrictedDestinations from "./notifications/restricted-destinations.svelte";
   import Mail from "@lucide/svelte/icons/mail";
   import MessageSquare from "@lucide/svelte/icons/message-square";
@@ -70,10 +71,17 @@
     available: false,
     account_email: null,
     already_configured: false,
+    template_events: [],
+    template_event_types: [],
+    template_everyone: [],
   });
 
   const isEmail = (n: NotificationConfig) =>
     n.channel === NotificationChannel.SystemEmail;
+  // an administrator sent this event's template to every Email destination, so
+  // the dropdown no longer decides what is sent
+  const isTemplateForced = (n: NotificationConfig, type: string) =>
+    isEmail(n) && emailStatus.template_everyone.includes(type);
   // The server allows one email destination per user, so the add button goes
   // away once the list already holds one (saved or not).
   let hasEmailDestination = $derived(notifications.some(isEmail));
@@ -585,6 +593,10 @@
   {:else}
     {#if isAdmin}
       <SmtpSettings onChanged={refreshAfterSmtpChange} />
+      <!-- templates only apply to email, so wait until email is set up -->
+      {#if emailStatus.available}
+        <EmailTemplates />
+      {/if}
       <RestrictedDestinations />
     {/if}
 
@@ -1048,6 +1060,10 @@
                               <div class="mt-2">
                                 <Select.Root
                                   type="single"
+                                  disabled={isTemplateForced(
+                                    notification,
+                                    notifType.type,
+                                  )}
                                   value={notification.preferences[
                                     notifType.type
                                   ]?.detail ?? "standard"}
@@ -1061,10 +1077,19 @@
                                   }}
                                 >
                                   <Select.Trigger class="h-8 min-w-28 text-xs ">
-                                    {notification.preferences[notifType.type]
-                                      ?.detail === "compact"
-                                      ? "Compact"
-                                      : "Standard"}
+                                    {isTemplateForced(
+                                      notification,
+                                      notifType.type,
+                                    )
+                                      ? "Template (set by admin)"
+                                      : notification.preferences[notifType.type]
+                                            ?.detail === "compact"
+                                        ? "Compact"
+                                        : notification.preferences[
+                                              notifType.type
+                                            ]?.detail === "template"
+                                          ? "Template"
+                                          : "Standard"}
                                   </Select.Trigger>
                                   <Select.Content>
                                     <Select.Item value="compact">
@@ -1073,6 +1098,20 @@
                                     <Select.Item value="standard">
                                       Standard
                                     </Select.Item>
+                                    {#if isEmail(notification) && emailStatus.template_event_types.includes(notifType.type)}
+                                      <Select.Item
+                                        value="template"
+                                        disabled={!emailStatus.template_events.includes(
+                                          notifType.type,
+                                        )}
+                                      >
+                                        {emailStatus.template_events.includes(
+                                          notifType.type,
+                                        )
+                                          ? "Template"
+                                          : "Template (none saved yet)"}
+                                      </Select.Item>
+                                    {/if}
                                   </Select.Content>
                                 </Select.Root>
                               </div>

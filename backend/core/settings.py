@@ -29,6 +29,17 @@ class Settings(BaseSettings):
         default=Path("./data"), description="Directory for database, logs, cache."
     )
 
+    # base URL custom email templates use for poster images
+    email_poster_base_url: str = Field(
+        default="https://image.tmdb.org/t/p/w342",
+        description=(
+            "Where {{poster_url}} in custom email templates points. Defaults to "
+            "TMDB's image CDN, which recipients can load even when Reclaimerr "
+            "is not reachable from the internet. Set it to your own image proxy "
+            "if you prefer."
+        ),
+    )
+
     # database backups directory (defaults to <data_dir>/backups)
     backup_dir: Path | None = Field(
         default=None,
