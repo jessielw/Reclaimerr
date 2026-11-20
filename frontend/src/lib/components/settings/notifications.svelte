@@ -5,6 +5,7 @@
   import { NotificationChannel, NotificationType } from "$lib/types/shared";
   import type { NotificationEmailStatus } from "$lib/types/shared";
   import SmtpSettings from "./notifications/smtp-settings.svelte";
+  import EmailTemplates from "./notifications/email-templates.svelte";
   import RestrictedDestinations from "./notifications/restricted-destinations.svelte";
   import Mail from "@lucide/svelte/icons/mail";
   import MessageSquare from "@lucide/svelte/icons/message-square";
@@ -587,6 +588,10 @@
   {:else}
     {#if isAdmin}
       <SmtpSettings onChanged={refreshAfterSmtpChange} />
+      <!-- templates only apply to email, so wait until email is set up -->
+      {#if emailStatus.available}
+        <EmailTemplates />
+      {/if}
       <RestrictedDestinations />
     {/if}
 
