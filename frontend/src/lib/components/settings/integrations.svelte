@@ -76,7 +76,8 @@
     {
       value: "delete_requests:manage",
       label: "Manage delete requests",
-      description: "Approve, deny, retry, and manage approved request schedules",
+      description:
+        "Approve, deny, retry, and manage approved request schedules",
     },
     {
       value: "scheduled_deletions:read",
