@@ -59,6 +59,7 @@ from backend.services.playback_selection import (
     resolve_history_sources,
     tautulli_server_id,
 )
+from backend.services.plex import PlexService, normalize_plex_history_guid
 from backend.services.tautulli import TautulliClient
 from backend.services.tracearr import TracearrClient
 
@@ -68,7 +69,7 @@ PLAYBACK_EPISODE_MIN_SECONDS = 7
 PLAYBACK_TARGET_SCOPES = ("movie_version", "series", "season", "episode")
 PLAYBACK_PREVIEW_REFRESH_INTERVAL = timedelta(minutes=5)
 PLAYBACK_EVENT_INSERT_BATCH_SIZE = 50
-PLAYBACK_EVENT_FORMAT_VERSION = 2
+PLAYBACK_EVENT_FORMAT_VERSION = 3
 # 2: events resolve against the server they were observed on rather than every
 # server of that type, so retained history has to be re-resolved and rebuilt.
 PLAYBACK_AGGREGATE_FORMAT_VERSION = 2
@@ -928,6 +929,7 @@ def _normalize_tautulli_events(
             media_type,
             duration,
         )
+        guid = normalize_plex_history_guid(row.get("guid"), media_type)
         events.append(
             _NormalizedEvent(
                 source_event_key=event_key,
@@ -938,6 +940,7 @@ def _normalize_tautulli_events(
                 source_user_id=user_id,
                 source_username=username,
                 completed=completed,
+                identity_evidence={"plex_guid": guid} if guid else None,
             )
         )
     return events
@@ -988,6 +991,13 @@ def _positive_id(value: object) -> int | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+def _tautulli_movie_tmdb_id(media_type: str, guid: str) -> int | None:
+    scheme, _, item_id = guid.partition("://")
+    if media_type == "movie" and scheme in {"tmdb", "com.plexapp.agents.themoviedb"}:
+        return _positive_id(item_id)
+    return None
 
 
 def _identity_conflicted(event: PlaybackHistoryEvent | _NormalizedEvent) -> bool:
@@ -1358,6 +1368,58 @@ async def _identity_maps(
     return movie_map, episode_map
 
 
+def _resolve_tautulli_guid(
+    event: _NormalizedEvent,
+    existing: PlaybackHistoryEvent | None,
+    guid_keys: Mapping[tuple[str, str], set[str]],
+    movie_map: Mapping[str, tuple[int, int]],
+    episode_map: Mapping[str, list[tuple[int, int, int, int, int, int]]],
+) -> None:
+    retained = (existing.identity_evidence or {}) if existing else {}
+    guid = (event.identity_evidence or {}).get("plex_guid") or retained.get("plex_guid")
+    if not isinstance(guid, str):
+        return
+
+    legacy_tmdb = _tautulli_movie_tmdb_id(event.provider_media_type, guid)
+    if legacy_tmdb is not None:
+        event.tmdb_id = legacy_tmdb
+        event.identity_evidence = {"plex_guid": guid, "resolution": "tautulli_guid"}
+        return
+
+    rating_keys = guid_keys.get((event.provider_media_type, guid), set())
+    identities: set[tuple[int | None, int | None, int | None]]
+    if event.provider_media_type == "movie":
+        identities = {
+            (movie_map[key][1], None, None) for key in rating_keys & movie_map.keys()
+        }
+        all_mapped = rating_keys <= movie_map.keys()
+    else:
+        identities = {
+            identity[3:] for key in rating_keys for identity in episode_map.get(key, [])
+        }
+        all_mapped = rating_keys <= episode_map.keys()
+
+    if len(identities) == 1 and all_mapped:
+        identity = next(iter(identities))
+    elif (
+        existing is not None
+        and retained.get("resolution") == "tautulli_guid"
+        and retained.get("plex_guid") == guid
+        and _has_stable_history_identity(existing)
+    ):
+        identity = (existing.tmdb_id, existing.season_number, existing.episode_number)
+        if identities - {identity}:
+            event.identity_evidence = {"plex_guid": guid, "unverified": True}
+            return
+    else:
+        # A usable GUID is stronger evidence than a rating key Plex may have reused.
+        event.identity_evidence = {"plex_guid": guid, "unverified": True}
+        return
+
+    event.tmdb_id, event.season_number, event.episode_number = identity
+    event.identity_evidence = {"plex_guid": guid, "resolution": "tautulli_guid"}
+
+
 async def _upsert_events(
     session: AsyncSession,
     *,
@@ -1366,6 +1428,7 @@ async def _upsert_events(
     observed_service: Service,
     observed_config_id: int | None,
     events: list[_NormalizedEvent],
+    tautulli_guid_keys: Mapping[tuple[str, str], set[str]] | None = None,
 ) -> int:
     """Insert new playback events and update existing ones.
 
@@ -1412,6 +1475,10 @@ async def _upsert_events(
     new_values: list[dict[str, object]] = []
     for event in events:
         existing = existing_by_key.get(event.source_event_key)
+        if tautulli_guid_keys is not None:
+            _resolve_tautulli_guid(
+                event, existing, tautulli_guid_keys, movie_map, episode_map
+            )
         evidence = dict(event.identity_evidence or {})
         if existing is not None:
             # Never replace retained stable identity with today's reused item key.
@@ -1755,9 +1822,77 @@ async def _refresh_reporting_config(
             await client.session.close()
 
 
+async def _retry_unverified_tautulli_events(
+    config_id: int, plex_config_id: int, events: list[_NormalizedEvent]
+) -> None:
+    """Retry GUIDs retained before the current Plex item or its local match synced."""
+    incoming = {event.source_event_key: event for event in events}
+    async with async_db() as session:
+        retained = await session.scalars(
+            select(PlaybackHistoryEvent).where(
+                PlaybackHistoryEvent.source_service_config_id == config_id,
+                PlaybackHistoryEvent.observed_service_config_id == plex_config_id,
+                PlaybackHistoryEvent.identity_evidence["unverified"]
+                .as_boolean()
+                .is_(True),
+                func.coalesce(
+                    PlaybackHistoryEvent.identity_evidence["conflict"].as_boolean(),
+                    False,
+                ).is_(False),
+            )
+        )
+        for row in retained:
+            evidence = row.identity_evidence
+            if not evidence or "plex_guid" not in evidence:
+                continue
+            event = incoming.get(row.source_event_key)
+            if event is not None:
+                if event.identity_evidence is None:
+                    event.identity_evidence = evidence
+                continue
+            events.append(
+                _NormalizedEvent(
+                    source_event_key=row.source_event_key,
+                    source_item_id=row.source_item_id,
+                    provider_media_type=cast(
+                        Literal["movie", "episode"], row.provider_media_type
+                    ),
+                    played_at=row.played_at,
+                    duration_seconds=row.duration_seconds,
+                    source_user_id=row.source_user_id,
+                    source_username=row.source_username,
+                    completed=row.completed,
+                    identity_evidence=evidence,
+                )
+            )
+
+
+async def _tautulli_guid_rating_keys(
+    plex_config: ServiceConfig, events: list[_NormalizedEvent]
+) -> dict[tuple[str, str], set[str]]:
+    guids: set[tuple[str, str]] = set()
+    for event in events:
+        guid = (event.identity_evidence or {}).get("plex_guid")
+        if (
+            isinstance(guid, str)
+            and _tautulli_movie_tmdb_id(event.provider_media_type, guid) is None
+        ):
+            guids.add((event.provider_media_type, guid))
+    if not guids:
+        return {}
+    plex = PlexService(
+        token=_config_api_key(plex_config), plex_url=plex_config.base_url
+    )
+    try:
+        return await plex.get_history_guid_rating_keys(guids)
+    finally:
+        await plex.session.close()
+
+
 async def _refresh_tautulli_config(
     config: ServiceConfig,
     *,
+    plex_config: ServiceConfig,
     movie_min_seconds: int = PLAYBACK_MOVIE_MIN_SECONDS,
     episode_min_seconds: int = PLAYBACK_EPISODE_MIN_SECONDS,
 ) -> PlaybackProviderStatus:
@@ -1803,6 +1938,24 @@ async def _refresh_tautulli_config(
                 provider=Service.TAUTULLI,
                 observed_service=Service.PLEX,
                 error=error,
+                observed_config_id=plex_config.id,
+            )
+
+        last_event_at = max((event.played_at for event in events), default=None)
+        await _retry_unverified_tautulli_events(config.id, plex_config.id, events)
+        try:
+            guid_keys = await _tautulli_guid_rating_keys(plex_config, events)
+        except Exception as exc:
+            error = _provider_error_message(exc)
+            LOG.warning(
+                f"Plex GUID lookup failed for Tautulli config {config.id}: {error}"
+            )
+            return await _persist_unavailable_status(
+                config,
+                provider=Service.TAUTULLI,
+                observed_service=Service.PLEX,
+                error=error,
+                observed_config_id=plex_config.id,
             )
 
         async with async_db() as session:
@@ -1812,6 +1965,15 @@ async def _refresh_tautulli_config(
             observed_config_id = tautulli_server_id(
                 db_config, list((await session.scalars(select(ServiceConfig))).all())
             )
+            if observed_config_id != plex_config.id:
+                return PlaybackProviderStatus(
+                    config_id=config.id,
+                    provider=Service.TAUTULLI,
+                    observed_service=Service.PLEX,
+                    observed_config_id=observed_config_id,
+                    available=False,
+                    error="Tautulli's Plex binding changed during history refresh",
+                )
             await _backfill_event_usernames(
                 session,
                 config_id=db_config.id,
@@ -1824,6 +1986,7 @@ async def _refresh_tautulli_config(
                 observed_service=Service.PLEX,
                 observed_config_id=observed_config_id,
                 events=events,
+                tautulli_guid_keys=guid_keys,
             )
             _set_state(
                 db_config,
@@ -1832,7 +1995,7 @@ async def _refresh_tautulli_config(
                 available=True,
                 error=None,
                 imported_events=imported,
-                last_event_at=max((event.played_at for event in events), default=None),
+                last_event_at=last_event_at,
                 observed_config_id=observed_config_id,
             )
             await session.commit()
@@ -2304,9 +2467,14 @@ async def _refresh_playback_history_once(
             )
             refreshed = True
         elif config.service_type == Service.TAUTULLI:
+            plex_config_id = tautulli_server_id(config, media_configs)
+            plex_config = next(
+                server for server in media_configs if server.id == plex_config_id
+            )
             statuses.append(
                 await _refresh_tautulli_config(
                     config,
+                    plex_config=plex_config,
                     movie_min_seconds=movie_min_seconds,
                     episode_min_seconds=episode_min_seconds,
                 )

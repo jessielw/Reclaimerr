@@ -64,6 +64,7 @@ from backend.services.playback_history import (
     rebuild_playback_history_aggregates,
     resolve_unmapped_event_identities,
 )
+from backend.services.plex import PlexService
 from backend.services.tautulli import TautulliClient
 from backend.services.tracearr import _is_supported_version, _retry_after_seconds
 
@@ -256,7 +257,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
             enabled=True,
             extra_settings={
                 "playback_history_sync": {
-                    "format_version": 2,
+                    "format_version": playback_history.PLAYBACK_EVENT_FORMAT_VERSION,
                     "available": True,
                     "last_attempt_at": datetime.now(UTC).isoformat(),
                 }
@@ -268,7 +269,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
 
         config.extra_settings = {
             "playback_history_sync": {
-                "format_version": 2,
+                "format_version": playback_history.PLAYBACK_EVENT_FORMAT_VERSION,
                 "aggregate_format_version": (
                     playback_history.PLAYBACK_AGGREGATE_FORMAT_VERSION
                 ),
@@ -373,6 +374,33 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         self.assertIsNone(events[0].played_at.tzinfo)
         self.assertTrue(events[0].completed)
 
+    def test_tautulli_guid_must_identify_one_movie_across_editions(self) -> None:
+        guid = "plex://movie/m1"
+        [event] = _normalize_tautulli_events(
+            [
+                {
+                    "row_id": 42,
+                    "media_type": "movie",
+                    "rating_key": "10",
+                    "guid": guid,
+                    "play_duration": 120,
+                    "stopped": 1_750_000_000,
+                }
+            ]
+        )
+        rating_keys = {("movie", guid): {"10", "20"}}
+        playback_history._resolve_tautulli_guid(
+            event, None, rating_keys, {"10": (1, 101), "20": (2, 202)}, {}
+        )
+        self.assertIsNone(event.tmdb_id)
+        self.assertTrue(playback_history._history_identity_blocked(event))
+
+        playback_history._resolve_tautulli_guid(
+            event, None, rating_keys, {"10": (1, 101), "20": (1, 101)}, {}
+        )
+        self.assertEqual(event.tmdb_id, 101)
+        self.assertFalse(playback_history._history_identity_blocked(event))
+
     def test_tautulli_completion_fails_closed(self) -> None:
         base_row = {
             "media_type": "movie",
@@ -392,7 +420,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         self.assertFalse(events[0].completed)
         self.assertIsNone(events[1].completed)
 
-    def test_old_tautulli_state_forces_full_completion_backfill(self) -> None:
+    def test_old_tautulli_state_forces_full_history_replay(self) -> None:
         config = ServiceConfig(
             service_type=Service.TAUTULLI,
             base_url="http://tautulli",
@@ -401,7 +429,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
             extra_settings={
                 "playback_history_sync": {
                     "last_success_at": "2026-07-01T12:00:00",
-                    "format_version": 1,
+                    "format_version": 2,
                     "available": True,
                 }
             },
@@ -411,7 +439,7 @@ class PlaybackHistoryNormalizationTests(unittest.TestCase):
         config.extra_settings = {
             "playback_history_sync": {
                 "last_success_at": "2026-07-01T12:00:00",
-                "format_version": 2,
+                "format_version": playback_history.PLAYBACK_EVENT_FORMAT_VERSION,
                 "available": True,
             }
         }
@@ -546,6 +574,25 @@ class TautulliHistoryTests(unittest.IsolatedAsyncioTestCase):
         call = request.await_args_list[0]
         self.assertEqual(call.kwargs["after"], "2026-06-22")
         self.assertNotIn("start_date", call.kwargs)
+
+    async def test_history_records_rejects_a_failed_page(self) -> None:
+        client = TautulliClient(api_key="key", base_url="http://tautulli")
+        responses = [
+            {"response": {"data": {"recordsFiltered": 2, "data": [{"row_id": 1}]}}},
+            {"response": {"result": "error", "data": {}}},
+        ]
+        try:
+            with (
+                patch.object(
+                    TautulliClient,
+                    "_make_request",
+                    new=AsyncMock(side_effect=responses),
+                ),
+                self.assertRaisesRegex(ValueError, "invalid history response"),
+            ):
+                await client.get_history_records(page_size=1)
+        finally:
+            await client.session.close()
 
 
 class PlaybackReportingQueryTests(unittest.IsolatedAsyncioTestCase):
@@ -1190,6 +1237,183 @@ class PlaybackHistoryAggregateTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessionmaker() as db:
             event = (await db.execute(select(PlaybackHistoryEvent))).scalars().one()
             self.assertEqual(event.tmdb_id, 202)
+
+    async def test_tautulli_replays_guids_against_the_bound_plex_server(self) -> None:
+        (
+            tracearr_id,
+            _,
+            plex_id,
+            main_version_id,
+            movie_version_id,
+        ) = await self._two_plex_servers_sharing_a_rating_key()
+        async with self.sessionmaker() as db:
+            tracearr = await db.get(ServiceConfig, tracearr_id)
+            assert tracearr is not None
+            tracearr.enabled = False
+            provider = ServiceConfig(
+                service_type=Service.TAUTULLI,
+                base_url="http://tautulli",
+                api_key="key",
+                enabled=True,
+                extra_settings={
+                    "plex_service_config_id": plex_id,
+                    "playback_history_sync": {
+                        "last_success_at": "2026-07-01T12:00:00",
+                        "format_version": 2,
+                        "available": True,
+                    },
+                },
+            )
+            series = Series(title="Series", tmdb_id=303)
+            db.add_all([provider, series])
+            await db.flush()
+            season = Season(series_id=series.id, season_number=0)
+            db.add(season)
+            await db.flush()
+            episode = Episode(season_id=season.id, episode_number=4)
+            db.add(episode)
+            await db.flush()
+            db.add(
+                PlaybackHistoryEvent(
+                    source_service=Service.TAUTULLI,
+                    observed_service=Service.PLEX,
+                    observed_service_config_id=plex_id,
+                    source_service_config_id=provider.id,
+                    source_event_key="1",
+                    source_item_id="retired-movie",
+                    provider_media_type="movie",
+                    played_at=datetime(2026, 6, 1),
+                    duration_seconds=120,
+                )
+            )
+            await db.commit()
+
+        base_row = {
+            "media_type": "movie",
+            "play_duration": 120,
+            "stopped": 1_750_000_000,
+            "watched_status": 1,
+        }
+        rows = [
+            {
+                **base_row,
+                "row_id": 1,
+                "rating_key": "retired-movie",
+                "guid": "plex://movie/m1",
+            },
+            {
+                **base_row,
+                "row_id": 2,
+                "rating_key": "retired-episode",
+                "media_type": "episode",
+                "guid": "plex://episode/e1",
+            },
+            {
+                **base_row,
+                "row_id": 3,
+                "rating_key": "5001",
+                "guid": "plex://movie/removed",
+            },
+            {
+                **base_row,
+                "row_id": 4,
+                "rating_key": "retired-legacy",
+                "guid": "com.plexapp.agents.themoviedb://202?lang=en",
+            },
+        ]
+        history = AsyncMock(side_effect=[rows, rows, []])
+        catalog_available = False
+
+        async def plex_request(client, endpoint, params=None, **kwargs):
+            self.assertEqual(client.plex_url, "http://plex-linked")
+            if endpoint == "library/sections":
+                return {
+                    "MediaContainer": {
+                        "Directory": [
+                            {"type": "movie", "key": "movies"},
+                            {"type": "show", "key": "shows"},
+                        ]
+                    }
+                }, {}
+            item = (
+                {
+                    "type": "movie",
+                    "guid": "plex://movie/m1/edition/Extended%20Cut",
+                    "ratingKey": "5001",
+                }
+                if endpoint == "library/sections/movies/all"
+                else {
+                    "type": "episode",
+                    "guid": "plex://episode/e1",
+                    "ratingKey": "4242",
+                }
+            )
+            if not catalog_available:
+                if params["X-Plex-Container-Start"]:
+                    return {"MediaContainer": {}}, {}
+                return {"MediaContainer": {"Metadata": [item], "totalSize": 2}}, {}
+            return {"MediaContainer": {"Metadata": [item], "totalSize": 1}}, {}
+
+        with (
+            patch.object(TautulliClient, "get_users", new=AsyncMock(return_value=[])),
+            patch.object(TautulliClient, "get_history_records", new=history),
+            patch.object(PlexService, "_make_request", new=plex_request),
+        ):
+            failed = await playback_history.refresh_playback_history(force=True)
+            self.assertFalse(failed.statuses[0].available)
+            catalog_available = True
+
+            replayed = await playback_history.refresh_playback_history(force=True)
+            self.assertTrue(replayed.statuses[0].available)
+            self.assertEqual(replayed.statuses[0].imported_events, 3)
+            self.assertEqual(
+                [call.kwargs["since"] for call in history.call_args_list], [None, None]
+            )
+            async with self.sessionmaker() as db:
+                events = {
+                    event.source_event_key: event
+                    for event in await db.scalars(select(PlaybackHistoryEvent))
+                }
+                self.assertEqual(events["1"].tmdb_id, 202)
+                self.assertEqual(events["1"].source_item_id, "retired-movie")
+                self.assertTrue(events["2"].identity_evidence["unverified"])
+                self.assertIsNone(events["3"].tmdb_id)
+                self.assertEqual(events["4"].tmdb_id, 202)
+
+                db.add(
+                    SupplementalMediaMatch(
+                        source_service=Service.PLEX,
+                        source_service_config_id=plex_id,
+                        source_item_id="4242",
+                        media_type=MediaType.SERIES,
+                        series_id=series.id,
+                        season_id=season.id,
+                        episode_id=episode.id,
+                    )
+                )
+                await db.commit()
+
+            incremental = await playback_history.refresh_playback_history(force=True)
+            self.assertEqual(incremental.statuses[0].imported_events, 0)
+            self.assertIsNotNone(history.call_args.kwargs["since"])
+
+        aggregates = await self._movie_version_aggregates()
+        self.assertNotIn(main_version_id, aggregates)
+        self.assertEqual(aggregates[movie_version_id].play_count, 2)
+
+        async with self.sessionmaker() as db:
+            recovered = (
+                await db.scalars(
+                    select(PlaybackHistoryEvent).where(
+                        PlaybackHistoryEvent.source_event_key == "2"
+                    )
+                )
+            ).one()
+            self.assertEqual(
+                (recovered.tmdb_id, recovered.season_number, recovered.episode_number),
+                (303, 0, 4),
+            )
+            self.assertEqual(recovered.episode_id, episode.id)
 
     async def test_linked_same_type_server_episode_play_resolves(self) -> None:
         """Episode plays on a second Plex server need a supplemental episode id.
