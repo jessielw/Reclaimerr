@@ -3,8 +3,9 @@
 A template is a plain HTML file named after the notification event, for example
 ``<data dir>/templates/email/delete_request_execution_succeeded.html``. When one
 exists, an Email destination that chooses Template for the event receives it
-instead of the default text body. With no file the email is unchanged, so this is
-strictly opt-in.
+instead of the default text body, and so does every Email destination when an
+administrator turns on Use for everyone. With no file the email is unchanged, so
+this is strictly opt-in.
 
 Templates use ``{{token}}`` placeholders, filled with HTML-escaped values, and
 ``{{#if token}}...{{/if}}`` blocks that are kept only when the token has a value.
@@ -395,6 +396,8 @@ def delete_template(event: str) -> bool:
     if path is None or event not in TEMPLATE_EVENTS:
         return False
     path.unlink()
+    if event in events_for_everyone():
+        set_event_for_everyone(event, False)
     return True
 
 
@@ -432,3 +435,24 @@ def render_source(
         voices=parse_voices(voices_text) if voices_text else None,
     )
     return render_template(source, values, default_subject=event)
+
+
+def _settings_path() -> Path:
+    return template_dir() / "settings.json"
+
+
+def events_for_everyone() -> set[str]:
+    """Events whose template the admin sends to every Email destination."""
+    try:
+        raw = json.loads(_settings_path().read_text(encoding="utf-8"))
+        return {e for e in raw.get("everyone", []) if e in TEMPLATE_EVENTS}
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def set_event_for_everyone(event: str, enabled: bool) -> None:
+    if event not in TEMPLATE_EVENTS:
+        raise ValueError(f"Unknown email event: {event}")
+    events = events_for_everyone()
+    events.add(event) if enabled else events.discard(event)
+    _write(_settings_path(), json.dumps({"everyone": sorted(events)}, indent=2))

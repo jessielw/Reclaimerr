@@ -73,10 +73,15 @@
     already_configured: false,
     template_events: [],
     template_event_types: [],
+    template_everyone: [],
   });
 
   const isEmail = (n: NotificationConfig) =>
     n.channel === NotificationChannel.SystemEmail;
+  // an administrator sent this event's template to every Email destination, so
+  // the dropdown no longer decides what is sent
+  const isTemplateForced = (n: NotificationConfig, type: string) =>
+    isEmail(n) && emailStatus.template_everyone.includes(type);
   // The server allows one email destination per user, so the add button goes
   // away once the list already holds one (saved or not).
   let hasEmailDestination = $derived(notifications.some(isEmail));
@@ -1055,6 +1060,10 @@
                               <div class="mt-2">
                                 <Select.Root
                                   type="single"
+                                  disabled={isTemplateForced(
+                                    notification,
+                                    notifType.type,
+                                  )}
                                   value={notification.preferences[
                                     notifType.type
                                   ]?.detail ?? "standard"}
@@ -1068,13 +1077,19 @@
                                   }}
                                 >
                                   <Select.Trigger class="h-8 min-w-28 text-xs ">
-                                    {notification.preferences[notifType.type]
-                                      ?.detail === "compact"
-                                      ? "Compact"
+                                    {isTemplateForced(
+                                      notification,
+                                      notifType.type,
+                                    )
+                                      ? "Template (set by admin)"
                                       : notification.preferences[notifType.type]
-                                            ?.detail === "template"
-                                        ? "Template"
-                                        : "Standard"}
+                                            ?.detail === "compact"
+                                        ? "Compact"
+                                        : notification.preferences[
+                                              notifType.type
+                                            ]?.detail === "template"
+                                          ? "Template"
+                                          : "Standard"}
                                   </Select.Trigger>
                                   <Select.Content>
                                     <Select.Item value="compact">

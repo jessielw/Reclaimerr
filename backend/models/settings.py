@@ -795,6 +795,8 @@ class NotificationEmailStatus(BaseModel):
     template_events: list[str] = Field(default_factory=list)
     # events that can have a template at all
     template_event_types: list[str] = Field(default_factory=list)
+    # events an admin sends to every Email destination, whatever its dropdown says
+    template_everyone: list[str] = Field(default_factory=list)
 
 
 class DatabaseBackupInfo(BaseModel):

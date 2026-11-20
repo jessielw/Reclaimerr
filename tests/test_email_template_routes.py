@@ -110,3 +110,22 @@ async def test_test_email_needs_smtp(client):
     response = await client.post(f"{BASE}/{EVENT}/test", json={"html": "x"})
     assert response.status_code == 400
     assert "SMTP" in response.json()["detail"]
+
+
+async def test_admin_can_send_a_template_to_everyone(client, tmp_path):
+    url = f"{BASE}/{EVENT}/everyone"
+
+    refused = await client.put(url, json={"enabled": True})
+    await client.put(f"{BASE}/{EVENT}", json={"html": "<title>t</title>hi"})
+    on = await client.put(url, json={"enabled": True})
+    listed = {e["event"]: e for e in (await client.get(BASE)).json()["events"]}
+
+    assert refused.status_code == 400  # nothing saved yet
+    assert on.status_code == 200 and listed[EVENT]["everyone"] is True
+
+    await client.delete(f"{BASE}/{EVENT}")  # removing the template turns it off
+    listed = {e["event"]: e for e in (await client.get(BASE)).json()["events"]}
+    assert listed[EVENT]["everyone"] is False
+    assert (
+        await client.put(f"{BASE}/other/everyone", json={"enabled": True})
+    ).status_code == 404

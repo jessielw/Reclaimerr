@@ -3,6 +3,7 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import TestButton from "$lib/components/test-button.svelte";
   import Save from "@lucide/svelte/icons/save";
@@ -18,6 +19,7 @@
     event: string;
     label: string;
     custom: boolean;
+    everyone: boolean;
   }
   interface TemplateList {
     events: TemplateEvent[];
@@ -55,6 +57,9 @@
   let seed = $state(Math.floor(Math.random() * 1_000_000));
 
   const dirty = $derived(html !== savedHtml);
+  const everyone = $derived(
+    events.find((e) => e.event === selected)?.everyone ?? false,
+  );
   const voicesDirty = $derived(voices !== (savedVoices ?? exampleVoices));
   const message = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
@@ -157,12 +162,28 @@
       savedHtml = "";
       custom = false;
       events = events.map((e) =>
-        e.event === selected ? { ...e, custom: false } : e,
+        e.event === selected ? { ...e, custom: false, everyone: false } : e,
       );
       toast.success("Template removed. This event sends the default email.");
       await refreshPreview();
     } catch (error) {
       toast.error(`Failed to remove template: ${message(error)}`);
+    }
+  }
+
+  async function setEveryone(enabled: boolean) {
+    try {
+      await put_api(`${base}/${selected}/everyone`, { enabled });
+      events = events.map((e) =>
+        e.event === selected ? { ...e, everyone: enabled } : e,
+      );
+      toast.success(
+        enabled
+          ? "Every Email destination now gets this template for this event."
+          : "Only destinations that choose Template get it.",
+      );
+    } catch (error) {
+      toast.error(message(error));
     }
   }
 
@@ -299,6 +320,24 @@
             </Button>
           {/if}
         </div>
+        <label class="flex items-start gap-3 rounded-md border p-3">
+          <Switch
+            checked={everyone}
+            disabled={!custom}
+            onCheckedChange={(value) => setEveryone(value)}
+          />
+          <span>
+            <span class="text-sm font-medium text-foreground">
+              Use for everyone
+            </span>
+            <span class="block text-xs text-muted-foreground">
+              Send this template to every Email destination for this event, no
+              matter what each person's dropdown says. Without this, each person
+              has to choose Template on their own destination.
+              {#if !custom}Save a template first.{/if}
+            </span>
+          </span>
+        </label>
         <p class="text-xs text-muted-foreground">
           {#if custom}
             This event sends your template.

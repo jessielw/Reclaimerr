@@ -133,6 +133,7 @@ async def get_notification_email_status(
             if email_templates.find_template(event) is not None
         ],
         template_event_types=list(email_templates.TEMPLATE_EVENTS),
+        template_everyone=sorted(email_templates.events_for_everyone()),
     )
 
 
@@ -140,6 +141,8 @@ class EmailTemplateEvent(BaseModel):
     event: str
     label: str
     custom: bool
+    # sent to every Email destination, whatever its dropdown says
+    everyone: bool = False
 
 
 class EmailTemplateList(BaseModel):
@@ -182,12 +185,14 @@ async def list_email_templates(
     _admin: Annotated[User, Depends(require_admin)],
 ) -> EmailTemplateList:
     """The events that can have a custom email template, and which have one."""
+    everyone = email_templates.events_for_everyone()
     return EmailTemplateList(
         events=[
             EmailTemplateEvent(
                 event=event,
                 label=label,
                 custom=email_templates.find_template(event) is not None,
+                everyone=event in everyone,
             )
             for event, label in email_templates.TEMPLATE_EVENTS.items()
         ],
@@ -224,6 +229,27 @@ async def save_email_template(
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"message": "Template saved"}
+
+
+class EmailTemplateEveryone(BaseModel):
+    enabled: bool
+
+
+@router.put("/notifications/email-templates/{event}/everyone")
+async def set_email_template_for_everyone(
+    event: str,
+    data: EmailTemplateEveryone,
+    _admin: Annotated[User, Depends(require_admin)],
+) -> dict[str, str]:
+    """Send the template to every Email destination for this event."""
+    _known_event(event)
+    if data.enabled and email_templates.find_template(event) is None:
+        raise HTTPException(status_code=400, detail="Save a template first")
+    try:
+        email_templates.set_event_for_everyone(event, data.enabled)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Saved"}
 
 
 @router.delete("/notifications/email-templates/{event}")

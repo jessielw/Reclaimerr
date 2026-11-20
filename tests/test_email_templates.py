@@ -342,3 +342,38 @@ async def test_sample_context_uses_a_library_movie_with_a_poster():
     assert wrapped["media_title"] == "Alpha"  # the seed wraps around
     # missing details fall back to the fake ones instead of leaving gaps
     assert other["genres"] == et.SAMPLE_CONTEXT["genres"]
+
+
+def test_send_to_everyone_covers_every_destination(monkeypatch, tmp_path):
+    (tmp_path / f"{EVENT}.html").write_text("<title>S</title>x")
+    monkeypatch.setattr(et, "template_dir", lambda: tmp_path)
+
+    def compose(detail):
+        return asyncio.run(
+            notifications._compose_email_template(
+                setting=_setting(NotificationChannel.SYSTEM_EMAIL, detail),
+                notification_type=NotificationType.DELETE_REQUEST_EXECUTION_SUCCEEDED,
+                context={},
+                application_url=None,
+                recipient=None,
+            )
+        )
+
+    assert compose("standard") is None  # off by default
+    et.set_event_for_everyone(EVENT, True)
+    assert compose("standard") is not None
+    assert compose("template") is not None
+    assert compose("compact") is not None  # the admin decides, not the dropdown
+    et.set_event_for_everyone(EVENT, False)
+    assert compose("standard") is None
+
+
+def test_everyone_setting_survives_bad_files_and_unknown_events(tmp_path, monkeypatch):
+    monkeypatch.setattr(et, "template_dir", lambda: tmp_path)
+    assert et.events_for_everyone() == set()
+    (tmp_path / "settings.json").write_text("not json")
+    assert et.events_for_everyone() == set()
+    (tmp_path / "settings.json").write_text('{"everyone": ["nope", "%s"]}' % EVENT)
+    assert et.events_for_everyone() == {EVENT}
+    with pytest.raises(ValueError):
+        et.set_event_for_everyone("nope", True)

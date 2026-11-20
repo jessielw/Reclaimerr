@@ -1117,15 +1117,19 @@ async def _compose_email_template(
 ) -> tuple[str, str, apprise.NotifyFormat] | None:
     """Render the admin's custom HTML email for this event, when one exists.
 
-    Only system email destinations that chose "Template" for the event use it, and
-    only while a template file for the event is present in the data directory;
-    anything else keeps the default body.
+    Only system email destinations use it, and only while a template file for the
+    event is present in the data directory: those that chose "Template", and
+    every one when the admin turned on "everyone" for the event. Anything else
+    keeps the default body.
     """
     if setting.channel != NotificationChannel.SYSTEM_EMAIL:
         return None
     event = notification_type.value
     preferences = normalize_notification_preferences(setting.preferences)
-    if preferences.get(event, {}).get("detail") != "template":
+    # "Template" opts in; an admin can also send it to every Email destination
+    if preferences.get(event, {}).get("detail") != "template" and (
+        event not in email_templates.events_for_everyone()
+    ):
         return None
     path = email_templates.find_template(event)
     if path is None:
