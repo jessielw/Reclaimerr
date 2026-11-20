@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Email templates (@n00bcodr).
 
+### Changed
+
+- Updated platormdirs and apprise.
+
 ### Fixed
 
 - **Why doesn’t this match?** now shows **No playback activity recorded** when playback sources report none and **Playback date unavailable** when activity is known but its date is missing. To include items with no recorded playback, put **Playback activity is false** and the playback age condition in an **OR** group.
