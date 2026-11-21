@@ -45,12 +45,31 @@ def test_if_blocks_are_kept_only_when_the_token_has_a_value():
     assert out == "a [Drama]"
 
 
+def test_unclosed_if_block_keeps_its_text_and_renders_tokens():
+    source = "{{#if genres}}Genres: {{genres}}"
+
+    assert et.render_string(source, _values(genres="Drama"), html=True) == (
+        "{{#if genres}}Genres: Drama"
+    )
+
+
 def test_unknown_tokens_render_as_nothing():
     assert et.render_string("x{{nope}}y", _values(), html=True) == "xy"
 
 
-def test_missing_title_element_falls_back_to_the_default_subject():
-    subject, _ = et.render_template("<p>hi</p>", _values(), default_subject="Default")
+def test_subject_uses_the_first_title_with_mixed_case_and_attributes():
+    source = '<TITLE lang="en"> Gone:\n {{media_title}}</Title><title>Second</title>'
+
+    subject, _ = et.render_template(
+        source, _values(media_title="Dune"), default_subject="x"
+    )
+
+    assert subject == "Gone: Dune"
+
+
+@pytest.mark.parametrize("source", ["<p>hi</p>", "<title>Unfinished"])
+def test_missing_or_unclosed_title_falls_back_to_the_default_subject(source):
+    subject, _ = et.render_template(source, _values(), default_subject="Default")
     assert subject == "Default"
 
 

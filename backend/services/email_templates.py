@@ -69,8 +69,9 @@ TOKENS = (
 )
 
 _TOKEN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
-_IF_BLOCK = re.compile(r"\{\{#if\s+(\w+)\s*\}\}(.*?)\{\{/if\s*\}\}", re.DOTALL)
-_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_IF_MARKER = re.compile(r"\{\{(?:#if\s+(\w+)\s*|/if\s*)\}\}")
+_TITLE_OPEN = re.compile(r"<title", re.IGNORECASE)
+_TITLE_CLOSE = re.compile(r"</title>", re.IGNORECASE)
 _SAFE_EVENT = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -221,14 +222,28 @@ def build_values(
 def render_string(template: str, values: Mapping[str, str], *, html: bool) -> str:
     """Fill ``template``. Unknown tokens render as nothing."""
 
-    def keep(match: re.Match[str]) -> str:
-        return match.group(2) if values.get(match.group(1)) else ""
-
     def fill(match: re.Match[str]) -> str:
         value = values.get(match.group(1), "")
         return escape(value, quote=True) if html else value
 
-    return _TOKEN.sub(fill, _IF_BLOCK.sub(keep, template))
+    # Blocks end at the first closing marker. Leave unmatched markers as text.
+    parts = []
+    previous_end = 0
+    opening: re.Match[str] | None = None
+    for marker in _IF_MARKER.finditer(template):
+        if marker.group(1) is not None:
+            if opening is None:
+                opening = marker
+            continue
+        if opening is None:
+            continue
+        parts.append(template[previous_end : opening.start()])
+        if values.get(opening.group(1)):
+            parts.append(template[opening.end() : marker.start()])
+        previous_end = marker.end()
+        opening = None
+    parts.append(template[previous_end:])
+    return _TOKEN.sub(fill, "".join(parts))
 
 
 def find_template(event: str, directory: Path | None = None) -> Path | None:
@@ -244,14 +259,27 @@ def template_uses(source: str, token: str) -> bool:
     )
 
 
+def _title_text(source: str) -> str:
+    # Search for each delimiter once, even when the title is incomplete.
+    opening = _TITLE_OPEN.search(source)
+    if opening is None:
+        return ""
+    opening_end = source.find(">", opening.end())
+    if opening_end == -1:
+        return ""
+    content_start = opening_end + 1
+    closing = _TITLE_CLOSE.search(source, content_start)
+    return source[content_start : closing.start()] if closing else ""
+
+
 def render_template(
     source: str, values: Mapping[str, str], *, default_subject: str
 ) -> tuple[str, str]:
     """Return ``(subject, html)`` for a template's source."""
     subject = default_subject
-    title = _TITLE.search(source)
+    title = _title_text(source)
     if title:
-        rendered = render_string(title.group(1), values, html=False).strip()
+        rendered = render_string(title, values, html=False).strip()
         subject = re.sub(r"\s+", " ", rendered) or default_subject
     return subject, render_string(source, values, html=True)
 
