@@ -112,6 +112,23 @@ def _history_record_rating_key(record: Mapping[str, object], field: str) -> str:
     return PurePosixPath(path.rstrip("/")).name
 
 
+def normalize_plex_history_guid(value: object, media_type: str) -> str | None:
+    """Normalize matchable Plex GUIDs from history or current library metadata."""
+    if not isinstance(value, str):
+        return None
+    guid = value.strip().partition("?")[0]
+    scheme, _, path = guid.partition("://")
+    if scheme == "plex":
+        if media_type == "movie":
+            path = path.partition("/edition/")[0]
+        kind, _, item_id = path.partition("/")
+        if kind == media_type and item_id.isalnum():
+            return f"plex://{path}"
+    elif path and (scheme == "tmdb" or scheme.startswith("com.plexapp.agents.")):
+        return guid
+    return None
+
+
 class _HistoryAggregate:
     __slots__ = ("account_ids", "last_viewed_at", "view_count")
 
@@ -1055,10 +1072,12 @@ class PlexService:
         params: JsonDict | None = None,
         page_size: int = _SECTION_METADATA_PAGE_SIZE,
         timeout: int = 300,
+        require_complete: bool = False,
     ) -> JsonList:
         """Fetch all metadata items for a Plex library section using pagination."""
         all_items: JsonList = []
         container_start = 0
+        expected_total: int | None = None
         base_params = dict(params or {})
 
         while True:
@@ -1072,23 +1091,39 @@ class PlexService:
                 params=page_params,
                 timeout=timeout,
             )
-            if not isinstance(data, dict):
-                break
-
-            container = data.get("MediaContainer", {})
+            container = data.get("MediaContainer") if isinstance(data, dict) else None
             if not isinstance(container, dict):
-                break
-
-            page_items = self._extract_metadata_items(data)
-            if not page_items:
-                break
-
-            all_items.extend(page_items)
-            items_seen = as_int(container.get("size")) or len(page_items)
-            if items_seen <= 0:
+                if require_complete:
+                    raise ValueError("Plex returned an invalid library section page")
                 break
 
             total_size = as_int(container.get("totalSize"))
+            if total_size is not None:
+                expected_total = total_size
+            elif require_complete:
+                total_size = expected_total
+            page_items = self._extract_metadata_items(data)
+            page_size_reported = as_int(container.get("size"))
+            if (
+                require_complete
+                and page_size_reported is not None
+                and page_size_reported != len(page_items)
+            ):
+                raise ValueError("Plex returned an incomplete library section page")
+            if not page_items:
+                if (
+                    require_complete
+                    and total_size is not None
+                    and container_start < total_size
+                ):
+                    raise ValueError("Plex returned an incomplete library section page")
+                break
+
+            all_items.extend(page_items)
+            items_seen = page_size_reported or len(page_items)
+            if items_seen <= 0:
+                break
+
             container_start += items_seen
             if total_size is not None:
                 if container_start >= total_size:
@@ -2446,6 +2481,41 @@ class PlexService:
                 if external_ids is not None and external_ids.tmdb is not None:
                     tmdb_by_rating_key[rating_key] = int(external_ids.tmdb)
         return tmdb_by_rating_key
+
+    async def get_history_guid_rating_keys(
+        self, guids: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], set[str]]:
+        """Find current rating keys for historical movie and episode GUIDs."""
+        media_types = {media_type for media_type, _ in guids}
+        if not media_types:
+            return {}
+
+        matches: dict[tuple[str, str], set[str]] = {}
+        for section in await self.get_library_sections():
+            section_id = section.get("key")
+            section_type = section.get("type")
+            if not section_id or section_type not in ("movie", "show"):
+                continue
+            media_type = "movie" if section_type == "movie" else "episode"
+            if media_type not in media_types:
+                continue
+            items = await self._get_section_metadata_items(
+                section_id=section_id,
+                params={
+                    "type": 1 if media_type == "movie" else 4,
+                    "excludeElements": "Media",
+                    "excludeFields": "summary,tagline",
+                },
+                require_complete=True,
+            )
+            for item in items:
+                if item.get("type") != media_type:
+                    continue
+                guid = normalize_plex_history_guid(item.get("guid"), media_type)
+                rating_key = _history_record_rating_key(item, "ratingKey")
+                if guid and rating_key and (media_type, guid) in guids:
+                    matches.setdefault((media_type, guid), set()).add(rating_key)
+        return matches
 
     async def get_watched_user_snapshots_with_cursor(
         self,

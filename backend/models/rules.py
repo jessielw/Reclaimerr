@@ -81,6 +81,7 @@ class RuleExplainNode(BaseModel):
     operator_label: str | None = None
     expected: Any = None
     actual: Any = None
+    actual_label: str | None = None
     children: list["RuleExplainNode"] = Field(default_factory=list)
 
 

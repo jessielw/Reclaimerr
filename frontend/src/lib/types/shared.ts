@@ -501,6 +501,12 @@ export interface NotificationEmailStatus {
   available: boolean;
   account_email: string | null;
   already_configured: boolean;
+  // events an admin has written an email template for
+  template_events: string[];
+  // events that can have one at all
+  template_event_types: string[];
+  // events an administrator sends to every Email destination
+  template_everyone: string[];
 }
 
 export interface LoginMethodsResponse {

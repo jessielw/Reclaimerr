@@ -36,7 +36,7 @@ def _mapping_list(value: object) -> list[Mapping[str, object]]:
 
 def _history_payload(data: Mapping[str, object]) -> Mapping[str, object] | None:
     response = _mapping_from(data, "response")
-    if response is None:
+    if response is None or response.get("result") == "error":
         return None
     return _mapping_from(response, "data")
 
@@ -226,16 +226,25 @@ class TautulliClient:
             data = await self._make_request("get_history", **params)
             payload = _history_payload(data)
             if payload is None:
-                break
-            page = _mapping_list(payload.get("data"))
+                raise ValueError("Tautulli returned an invalid history response")
+            raw_page = payload.get("data")
+            page = _mapping_list(raw_page)
+            total = as_int(payload.get("recordsFiltered"))
+            if (
+                not isinstance(raw_page, list)
+                or len(page) != len(raw_page)
+                or total is None
+                or total < 0
+                or (not page and offset < total)
+            ):
+                raise ValueError("Tautulli returned an incomplete history page")
             records.extend(
                 record
                 for record in page
                 if str(record.get("media_type") or "").lower() in {"movie", "episode"}
             )
-            total = as_int(payload.get("recordsFiltered")) or 0
             offset += len(page)
-            if not page or offset >= total:
+            if offset >= total:
                 break
         return records
 

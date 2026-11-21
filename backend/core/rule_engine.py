@@ -2226,6 +2226,17 @@ def explain_advanced_rule(
             )
         field = str(node.get("field", ""))
         operator = str(node.get("operator", ""))
+        if not disabled and field in {
+            "playback.last_activity_at",
+            "playback.days_since_last_activity",
+        }:
+            activity = context.get("playback.has_activity")
+            if actual is None and activity is False:
+                result["actual_label"] = "No playback activity recorded"
+            elif (
+                actual is None or actual is RULE_VALUE_UNAVAILABLE
+            ) and activity is True:
+                result["actual_label"] = "Playback date unavailable"
         # Failed per-user comparisons have no single matching total. Show every
         # selected user's total so failures have useful actual values too.
         if not disabled and field in USER_SCOPED_PLAYBACK_FIELDS:

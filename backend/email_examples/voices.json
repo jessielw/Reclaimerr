@@ -1,0 +1,17 @@
+[
+  {
+    "headline": "{{media_title}} is gone",
+    "subline": "Hi {{recipient_name}}, your request was carried out and {{size}} is free again.",
+    "subject": "Deleted"
+  },
+  {
+    "headline": "All done, {{recipient_name}}",
+    "subline": "{{media_title}} has been removed from the library.",
+    "subject": "Done"
+  },
+  {
+    "headline": "Consider it deleted",
+    "subline": "{{media_title}} left the building. The space is yours again.",
+    "subject": "Cleared"
+  }
+]

@@ -500,6 +500,13 @@ Playback fields are available to movie-version, series, season, and episode rule
 | Last playback activity | Most recent native or imported timestamp |
 | Days since playback activity | Whole days since the most recent timestamp |
 
+To include items with no recorded playback while skipping recently played items, add an **OR** group under the main **AND** group with these two conditions.
+
+- **Days since playback activity** greater than `30`
+- **Playback activity** is false
+
+The age cutoff requires a date. The second condition passes when the available playback data reports no activity. **Why doesn’t this match?** distinguishes **No playback activity recorded** from an unavailable date or source. On Jellyfin or Emby, use imported playback history to account for unfinished viewing, which native watch state can miss.
+
 Movie events shorter than 15 seconds and episode events shorter than 7 seconds are ignored by default. These thresholds prevent brief scrubs from counting as activity, and can be changed in **Settings → General → Minimum Playback Duration**.
 
 The thresholds are applied while history is imported, so a change only affects events imported after it. History already imported keeps the events it was imported with: raising the minimum does not retire short events that are already stored, and lowering it does not bring back events that were skipped.

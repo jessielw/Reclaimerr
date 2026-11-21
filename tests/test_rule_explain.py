@@ -25,6 +25,7 @@ from backend.database.models import (
     MediaFavorite,
     Movie,
     MovieVersion,
+    PlaybackHistoryAggregate,
     ProtectedMedia,
     ReclaimCandidate,
     ReclaimRule,
@@ -32,6 +33,10 @@ from backend.database.models import (
     Series,
 )
 from backend.enums import MediaType, Service, UserRole
+from backend.services.playback_history import (
+    PlaybackProviderStatus,
+    PlaybackRefreshResult,
+)
 from backend.services.rule_explain import explain_rule_target, list_rule_explain_targets
 from backend.tasks import cleanup
 
@@ -461,6 +466,79 @@ class ExplainIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.condition_state, "unknown")
             self.assertIsNone(result.root.children[0].actual)
             self.assertIn('"condition_state":"unknown"', result.model_dump_json())
+
+    async def test_playback_age_requires_a_date_unless_no_activity_branch_matches(self):
+        field = "playback.days_since_last_activity"
+        days = condition(field, "greater_than", 30)
+        no_activity = condition("playback.has_activity", "is_false", None)
+        current = rule(root=group("and", group("or", days, no_activity)))
+        provider = PlaybackProviderStatus(
+            config_id=7,
+            provider=Service.TAUTULLI,
+            observed_service=Service.PLEX,
+            available=True,
+        )
+        refresh = AsyncMock(return_value=PlaybackRefreshResult())
+        with patch.object(cleanup, "refresh_playback_history", refresh):
+            async with self.sessions() as db:
+                unknown = await explain_rule_target(
+                    db, current, "movie_version", self.version_id
+                )
+                self.assertFalse(unknown.eligible)
+                self.assertEqual(unknown.condition_state, "unknown")
+                self.assertIsNone(unknown.root.children[0].children[0].actual_label)
+
+                refresh.return_value = PlaybackRefreshResult(statuses=[provider])
+                unwatched = await explain_rule_target(
+                    db, current, "movie_version", self.version_id
+                )
+                self.assertTrue(unwatched.eligible)
+                self.assertEqual(unwatched.condition_state, "pass")
+                self.assertEqual(
+                    [node.state for node in unwatched.root.children[0].children],
+                    ["fail", "pass"],
+                )
+
+                for operator in ("greater_than", "greater_than_or_equal"):
+                    with self.subTest(operator=operator):
+                        missing = await explain_rule_target(
+                            db,
+                            rule(root=group("and", condition(field, operator, 30))),
+                            "movie_version",
+                            self.version_id,
+                        )
+                        self.assertFalse(missing.eligible)
+                        self.assertEqual(missing.condition_state, "fail")
+                        self.assertIsNone(missing.root.children[0].actual)
+                        self.assertEqual(
+                            missing.root.children[0].actual_label,
+                            "No playback activity recorded",
+                        )
+
+                aggregate = PlaybackHistoryAggregate(
+                    target_scope="movie_version",
+                    target_id=self.version_id,
+                    media_type=MediaType.MOVIE,
+                    play_count=1,
+                )
+                db.add(aggregate)
+                today = datetime.now(UTC).replace(tzinfo=None)
+                for date, state, label in [
+                    (None, "fail", "Playback date unavailable"),
+                    (today - timedelta(days=30), "fail", None),
+                    (today - timedelta(days=31), "pass", None),
+                ]:
+                    with self.subTest(date=date):
+                        aggregate.last_activity_at = date
+                        await db.commit()
+                        played = await explain_rule_target(
+                            db, current, "movie_version", self.version_id
+                        )
+                        self.assertEqual(played.eligible, state == "pass")
+                        self.assertEqual(played.condition_state, state)
+                        self.assertEqual(
+                            played.root.children[0].children[0].actual_label, label
+                        )
 
     async def test_managed_season_protection_and_empty_inventory(self):
         async with self.sessions() as db:
