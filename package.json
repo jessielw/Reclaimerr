@@ -6,6 +6,6 @@
     "check:docs": "prettier --check \"docs/**/*.md\""
   },
   "devDependencies": {
-    "prettier": "^3.9.10"
+    "prettier": "^3.10.1"
   }
 }
