@@ -144,6 +144,11 @@ def test_find_template_rejects_path_tricks(tmp_path):
     assert et.find_template("missing", tmp_path) is None
 
 
+def test_example_template_rejects_unknown_events():
+    with pytest.raises(KeyError):
+        et.example_template("unknown_event")
+
+
 def _setting(channel, detail="template"):
     return SimpleNamespace(channel=channel, preferences={EVENT: {"detail": detail}})
 

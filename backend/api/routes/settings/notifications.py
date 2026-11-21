@@ -160,7 +160,9 @@ class EmailTemplateDetail(BaseModel):
 
 class EmailTemplateBody(BaseModel):
     html: str = Field(max_length=email_templates.MAX_TEMPLATE_BYTES)
-    voices: str | None = None
+    voices: str | None = Field(
+        default=None, max_length=email_templates.MAX_TEMPLATE_BYTES
+    )
     # picks which library movie the preview shows; the same seed, the same movie
     seed: int = 0
 

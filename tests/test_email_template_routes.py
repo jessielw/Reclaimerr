@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -91,6 +92,17 @@ async def test_preview_renders_unsaved_text_and_checks_voices(client, tmp_path):
     assert "Bye Example Movie" in ok.json()["html"]
     assert bad.status_code == 400
     assert not list(tmp_path.iterdir())  # previewing never writes
+
+
+async def test_preview_rejects_voices_over_the_template_size_limit(client):
+    voices = json.dumps([{"headline": "x" * et.MAX_TEMPLATE_BYTES}])
+
+    response = await client.post(
+        f"{BASE}/{EVENT}/preview", json={"html": "{{headline}}", "voices": voices}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "voices"]
 
 
 async def test_voices_are_validated_before_they_are_saved(client, tmp_path):
