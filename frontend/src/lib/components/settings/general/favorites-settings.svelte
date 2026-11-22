@@ -458,9 +458,9 @@
                       {entry.title}{entry.year ? ` (${entry.year})` : ""}
                     </div>
                     <div class="flex flex-wrap items-center gap-1.5">
-                      <span class="text-xs text-muted-foreground"
-                        >Favorited by</span
-                      >
+                      <span class="text-xs text-muted-foreground">
+                        Favorited by
+                      </span>
                       {#each visibleFavoriteUsers(entry) as username (username)}
                         <Badge variant="outline" class="text-[11px]">
                           {username}

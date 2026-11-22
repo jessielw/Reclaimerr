@@ -9,8 +9,9 @@
   {style}
   xmlns="http://www.w3.org/2000/svg"
   viewBox="0 0 512 512"
-  ><rect width="512" height="512" rx="15%" fill="#282a2d" /><path
+>
+  <rect width="512" height="512" rx="15%" fill="#282a2d" /><path
     d="M256 70H148l108 186-108 186h108l108-186z"
     fill="#e5a00d"
-  /></svg
->
+  />
+</svg>

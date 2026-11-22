@@ -204,9 +204,9 @@
     </div>
     {#if mode === "upload"}
       <div class="space-y-2">
-        <Label for="login-background-upload"
-          >{imageUrl ? "Replace image" : "Upload image"}</Label
-        >
+        <Label for="login-background-upload">
+          {imageUrl ? "Replace image" : "Upload image"}
+        </Label>
         <Input
           id="login-background-upload"
           type="file"
@@ -219,9 +219,13 @@
           removals are stored immediately. Save below to apply the selected
           source.
         </p>
-        {#if imageUrl}<Button variant="outline" disabled={busy} onclick={remove}
-            >Remove uploaded image</Button
-          >{/if}
+        {#if imageUrl}<Button
+            variant="outline"
+            disabled={busy}
+            onclick={remove}
+          >
+            Remove uploaded image
+          </Button>{/if}
       </div>
     {:else if mode === "urls"}
       <div class="space-y-2">
@@ -243,9 +247,9 @@
     {/if}
     {#if mode === "default" || (mode === "urls" && urls.length > 1)}
       <div class="max-w-xs space-y-2">
-        <Label for="login-background-interval"
-          >Rotation interval (seconds)</Label
-        >
+        <Label for="login-background-interval">
+          Rotation interval (seconds)
+        </Label>
         <Input
           id="login-background-interval"
           type="number"
@@ -286,8 +290,8 @@
       can load.
     </p>
     {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
-    <Button onclick={save} disabled={busy}
-      >{busy ? "Working…" : "Save login background"}</Button
-    >
+    <Button onclick={save} disabled={busy}>
+      {busy ? "Working…" : "Save login background"}
+    </Button>
   {/if}
 </section>

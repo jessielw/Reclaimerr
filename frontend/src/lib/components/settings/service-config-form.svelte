@@ -85,9 +85,9 @@
   </div>
 
   <div>
-    <label for="name" class="block text-sm font-medium text-foreground mb-2"
-      >Name</label
-    >
+    <label for="name" class="block text-sm font-medium text-foreground mb-2">
+      Name
+    </label>
     <Input
       type="text"
       name="name"
@@ -114,8 +114,10 @@
     <div>
       <label
         for="baseUrl"
-        class="block text-sm font-medium text-foreground mb-2">Base URL</label
+        class="block text-sm font-medium text-foreground mb-2"
       >
+        Base URL
+      </label>
       <Input
         type="url"
         name="baseUrl"
@@ -135,8 +137,9 @@
       <label
         for="externalUrl"
         class="block text-sm font-medium text-foreground mb-2"
-        >External URL</label
       >
+        External URL
+      </label>
       <Input
         type="url"
         name="externalUrl"
@@ -155,9 +158,9 @@
   {/if}
 
   <div>
-    <label for="apiKey" class="block text-sm font-medium text-foreground mb-2"
-      >{apiKeyLabel}</label
-    >
+    <label for="apiKey" class="block text-sm font-medium text-foreground mb-2">
+      {apiKeyLabel}
+    </label>
     <div class="relative">
       <Input
         id="apiKey"
@@ -201,8 +204,9 @@
           <label
             for="timetout"
             class="block text-sm font-medium text-foreground mb-2"
-            >Timeout</label
           >
+            Timeout
+          </label>
           <Input
             type="number"
             name="timeout"
@@ -239,8 +243,9 @@
           <label
             for="request_limit"
             class="block text-sm font-medium text-foreground mb-2"
-            >Refresh request limit</label
           >
+            Refresh request limit
+          </label>
           <Input
             type="number"
             name="request_limit"
@@ -282,9 +287,9 @@
               );
             }}
           />
-          <span class="text-sm font-medium text-foreground"
-            >MDBList supporter mode</span
-          >
+          <span class="text-sm font-medium text-foreground">
+            MDBList supporter mode
+          </span>
         </label>
         <p class="mt-1 text-xs text-muted-foreground">
           Uses a faster default request delay of 0.2 seconds. Leave disabled for
@@ -299,8 +304,9 @@
         <label
           for="request_delay_seconds"
           class="block text-sm font-medium text-foreground mb-2"
-          >Request delay</label
         >
+          Request delay
+        </label>
         <Input
           type="number"
           name="request_delay_seconds"

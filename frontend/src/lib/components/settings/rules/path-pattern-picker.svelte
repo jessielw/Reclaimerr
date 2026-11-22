@@ -219,9 +219,9 @@
   >
     <!-- header - fixed height -->
     <Dialog.Header class="px-6 pt-5 pb-3 shrink-0 border-b border-border">
-      <Dialog.Title class="text-base font-semibold"
-        >Select Path Pattern</Dialog.Title
-      >
+      <Dialog.Title class="text-base font-semibold">
+        Select Path Pattern
+      </Dialog.Title>
       <Dialog.Description class="text-sm text-muted-foreground mt-0.5">
         Browse indexed directories, optionally add a regex suffix, then insert
         the resulting pattern.
@@ -331,11 +331,11 @@
 
         <!-- regex suffix input -->
         <div class="space-y-1">
-          <Label for="path-suffix" class="text-sm"
-            >Regex Suffix <span class="text-muted-foreground font-normal"
-              >(optional)</span
-            ></Label
-          >
+          <Label for="path-suffix" class="text-sm">
+            Regex Suffix <span class="text-muted-foreground font-normal">
+              (optional)
+            </span>
+          </Label>
           <Input
             id="path-suffix"
             type="text"

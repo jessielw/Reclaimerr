@@ -551,15 +551,17 @@
                     {#if selectedRequest.version_hdr ?? selectedRequest.season_hdr}
                       <span
                         class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                        >HDR</span
                       >
+                        HDR
+                      </span>
                     {/if}
                     <!-- dolby vision -->
                     {#if selectedRequest.version_dolby_vision ?? selectedRequest.season_dolby_vision}
                       <span
                         class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                        >Dolby Vision</span
                       >
+                        Dolby Vision
+                      </span>
                     {/if}
                     <!-- file size -->
                     {#if selectedRequest.version_size ?? selectedRequest.season_size}
@@ -675,19 +677,22 @@
                     disabled={retrySubmitting ||
                       selectedRequest.target_available === false}
                     onclick={() => retryRequest(selectedRequest)}
-                    >Retry deletion</Button
                   >
+                    Retry deletion
+                  </Button>
                 {/if}
                 {#if canManageRequests && selectedRequest.scheduled_deletion_id && ["scheduled", "blocked", "failed"].includes(selectedRequest.schedule_state ?? "")}
                   <Button
                     onclick={() => openSchedule(selectedRequest, "reschedule")}
-                    >Reschedule deletion</Button
                   >
+                    Reschedule deletion
+                  </Button>
                   <Button
                     variant="secondary"
                     onclick={() => openSchedule(selectedRequest, "cancel")}
-                    >Cancel deletion</Button
                   >
+                    Cancel deletion
+                  </Button>
                 {/if}
                 {#if canManageRequests && selectedRequest.status === ProtectionRequestStatus.Pending}
                   <!-- approve delete request -->
@@ -757,31 +762,31 @@
       <div class="space-y-3 py-4">
         <fieldset class="space-y-2">
           <legend class="mb-2 font-medium">Deletion timing</legend>
-          <label class="flex min-h-10 items-center gap-2"
-            ><input
+          <label class="flex min-h-10 items-center gap-2">
+            <input
               type="radio"
               name="approval-timing"
               value="default"
               bind:group={approveMode}
             />
-            Use configured grace period ({approveGraceDays} days)</label
-          >
-          <label class="flex min-h-10 items-center gap-2"
-            ><input
+            Use configured grace period ({approveGraceDays} days)
+          </label>
+          <label class="flex min-h-10 items-center gap-2">
+            <input
               type="radio"
               name="approval-timing"
               value="now"
               bind:group={approveMode}
-            /> Delete now</label
-          >
-          <label class="flex min-h-10 items-center gap-2"
-            ><input
+            /> Delete now
+          </label>
+          <label class="flex min-h-10 items-center gap-2">
+            <input
               type="radio"
               name="approval-timing"
               value="later"
               bind:group={approveMode}
-            /> Choose date/time</label
-          >
+            /> Choose date/time
+          </label>
         </fieldset>
         {#if approveMode === "later"}
           <DeletionTiming
@@ -814,8 +819,10 @@
         <Button
           type="button"
           variant="secondary"
-          onclick={() => (approveDialogOpen = false)}>Cancel</Button
+          onclick={() => (approveDialogOpen = false)}
         >
+          Cancel
+        </Button>
         <Button
           variant="destructive"
           type="submit"
@@ -833,11 +840,11 @@
     class="max-h-[90dvh] overflow-y-auto sm:max-w-xl text-foreground"
   >
     <Dialog.Header>
-      <Dialog.Title
-        >{scheduleAction === "cancel"
+      <Dialog.Title>
+        {scheduleAction === "cancel"
           ? "Cancel scheduled deletion"
-          : "Reschedule deletion"}</Dialog.Title
-      >
+          : "Reschedule deletion"}
+      </Dialog.Title>
       <Dialog.Description>
         {scheduleTarget?.media_title}. {scheduleAction === "cancel"
           ? "Approval history will be kept. Normal cleanup rules apply again; canceling does not protect the media."
@@ -866,15 +873,17 @@
         <Button
           type="button"
           variant="secondary"
-          onclick={() => (scheduleDialogOpen = false)}>Back</Button
+          onclick={() => (scheduleDialogOpen = false)}
         >
-        <Button type="submit" disabled={scheduleSubmitting}
-          >{scheduleSubmitting
+          Back
+        </Button>
+        <Button type="submit" disabled={scheduleSubmitting}>
+          {scheduleSubmitting
             ? "Saving..."
             : scheduleAction === "cancel"
               ? "Cancel deletion"
-              : "Reschedule deletion"}</Button
-        >
+              : "Reschedule deletion"}
+        </Button>
       </Dialog.Footer>
     </form>
   </Dialog.Content>
@@ -899,9 +908,9 @@
       />
     </div>
     <Dialog.Footer>
-      <Button variant="secondary" onclick={() => (denyDialogOpen = false)}
-        >Cancel</Button
-      >
+      <Button variant="secondary" onclick={() => (denyDialogOpen = false)}>
+        Cancel
+      </Button>
       <Button onclick={submitDeny} disabled={denySubmitting}>
         {denySubmitting ? "Denying..." : "Deny"}
       </Button>
@@ -916,16 +925,16 @@
       <Dialog.Title>Cancel Delete Request</Dialog.Title>
       <Dialog.Description>
         {#if cancelTarget}
-          Are you sure you want to cancel your delete request for <strong
-            >{cancelTarget.media_title}</strong
-          >?
+          Are you sure you want to cancel your delete request for <strong>
+            {cancelTarget.media_title}
+          </strong>?
         {/if}
       </Dialog.Description>
     </Dialog.Header>
     <Dialog.Footer>
-      <Button variant="secondary" onclick={() => (cancelDialogOpen = false)}
-        >Keep</Button
-      >
+      <Button variant="secondary" onclick={() => (cancelDialogOpen = false)}>
+        Keep
+      </Button>
       <Button
         variant="destructive"
         onclick={submitCancel}

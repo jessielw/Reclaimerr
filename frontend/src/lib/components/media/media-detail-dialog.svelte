@@ -433,8 +433,10 @@
                       2
                         ? 'hidden sm:inline-flex'
                         : ''}"
-                      variant="outline">{genre}</Badge
+                      variant="outline"
                     >
+                      {genre}
+                    </Badge>
                   {/each}
                   {#if media.genres.length > 3}
                     <Badge
@@ -490,8 +492,10 @@
                     2
                       ? 'hidden'
                       : ''}"
-                    variant="outline">{genre}</Badge
+                    variant="outline"
                   >
+                    {genre}
+                  </Badge>
                 {/each}
                 {#if media.genres.length > 3}
                   <Badge
@@ -528,9 +532,9 @@
               >
                 <div>
                   <span class="text-muted-foreground">Size:</span>
-                  <span class="text-foreground ml-2"
-                    >{formatFileSize(media.size)}</span
-                  >
+                  <span class="text-foreground ml-2">
+                    {formatFileSize(media.size)}
+                  </span>
                 </div>
                 <div>
                   <span class="text-muted-foreground">Library:</span>
@@ -549,37 +553,37 @@
                 {#if isMovie(media) && media.tmdb_in_collection && media.tmdb_collection_name}
                   <div>
                     <span class="text-muted-foreground">Collection:</span>
-                    <span class="text-foreground ml-2"
-                      >{media.tmdb_collection_name}</span
-                    >
+                    <span class="text-foreground ml-2">
+                      {media.tmdb_collection_name}
+                    </span>
                   </div>
                 {/if}
                 {#if media.last_viewed_at}
                   <div>
                     <span class="text-muted-foreground">Last Viewed:</span>
-                    <span class="text-foreground ml-2"
-                      >{formatDateToLocaleString(media.last_viewed_at)}</span
-                    >
+                    <span class="text-foreground ml-2">
+                      {formatDateToLocaleString(media.last_viewed_at)}
+                    </span>
                   </div>
                 {/if}
                 {#if media.added_at}
                   <div>
-                    <span class="text-muted-foreground"
-                      >Media server added:</span
-                    >
-                    <span class="text-foreground ml-2"
-                      >{formatDateToLocaleString(media.added_at)}</span
-                    >
+                    <span class="text-muted-foreground">
+                      Media server added:
+                    </span>
+                    <span class="text-foreground ml-2">
+                      {formatDateToLocaleString(media.added_at)}
+                    </span>
                   </div>
                 {/if}
                 {#if media.arr_added_at}
                   <div>
-                    <span class="text-muted-foreground"
-                      >Latest Arr file added:</span
-                    >
-                    <span class="text-foreground ml-2"
-                      >{formatDateToLocaleString(media.arr_added_at)}</span
-                    >
+                    <span class="text-muted-foreground">
+                      Latest Arr file added:
+                    </span>
+                    <span class="text-foreground ml-2">
+                      {formatDateToLocaleString(media.arr_added_at)}
+                    </span>
                   </div>
                 {/if}
               </div>
@@ -645,9 +649,9 @@
             {#if canRequestProtection}
               <Tooltip.Root>
                 <Tooltip.Trigger>
-                  <Button onclick={handleRequestException}
-                    ><Shield class="size-5" />Protect</Button
-                  >
+                  <Button onclick={handleRequestException}>
+                    <Shield class="size-5" />Protect
+                  </Button>
                 </Tooltip.Trigger>
                 <Tooltip.Content>
                   <p>Request Protection</p>
@@ -659,9 +663,9 @@
             {#if canRequestDelete}
               <Tooltip.Root>
                 <Tooltip.Trigger>
-                  <Button variant="destructive" onclick={handleRequestDelete}
-                    ><Trash2 class="size-5" />Delete</Button
-                  >
+                  <Button variant="destructive" onclick={handleRequestDelete}>
+                    <Trash2 class="size-5" />Delete
+                  </Button>
                 </Tooltip.Trigger>
                 <Tooltip.Content>
                   <p>Request Deletion</p>

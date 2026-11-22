@@ -122,16 +122,17 @@
   <Dialog.Content class="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
     <Dialog.Header>
       <Dialog.Title>Add from preset</Dialog.Title>
-      <Dialog.Description
-        >Choose a starting point, configure it, then preview in the rule editor.
-        Nothing is saved here.</Dialog.Description
-      >
+      <Dialog.Description>
+        Choose a starting point, configure it, then preview in the rule editor.
+        Nothing is saved here.
+      </Dialog.Description>
     </Dialog.Header>
     {#if loading}
       <div class="flex justify-center p-6"><Spinner class="size-8" /></div>
     {:else}
-      {#if error}<Notice type="error" title="Preset unavailable">{error}</Notice
-        >{/if}
+      {#if error}<Notice type="error" title="Preset unavailable">
+          {error}
+        </Notice>{/if}
       {#if !selected}
         <div class="grid gap-3 sm:grid-cols-2">
           {#each catalog as preset (preset.id)}
@@ -140,19 +141,19 @@
               class="rounded-lg border border-border bg-card p-4 text-left hover:border-primary focus-visible:outline-2 focus-visible:outline-primary"
               onclick={() => selectPreset(preset)}
             >
-              <span class="block font-semibold text-foreground"
-                >{preset.title}</span
-              >
-              <span class="block text-xs font-medium text-primary mt-1"
-                >{preset.rule.action?.outcome === "protect"
+              <span class="block font-semibold text-foreground">
+                {preset.title}
+              </span>
+              <span class="block text-xs font-medium text-primary mt-1">
+                {preset.rule.action?.outcome === "protect"
                   ? "Protection"
                   : preset.rule.action?.outcome === "match"
                     ? "Match only"
-                    : "Cleanup candidates"}</span
-              >
-              <span class="mt-1 block text-sm text-muted-foreground"
-                >{preset.description}</span
-              >
+                    : "Cleanup candidates"}
+              </span>
+              <span class="mt-1 block text-sm text-muted-foreground">
+                {preset.description}
+              </span>
             </button>
           {/each}
         </div>
@@ -167,9 +168,9 @@
           </div>
           {#if selected.target_scopes.length > 1}
             <div class="space-y-2">
-              <label for="preset-target" class="block font-medium"
-                >Protect</label
-              >
+              <label for="preset-target" class="block font-medium">
+                Protect
+              </label>
               <select
                 id="preset-target"
                 class="w-full rounded-md border border-border bg-card p-2 text-sm"
@@ -177,11 +178,9 @@
                 onchange={() => (libraryIds = [])}
               >
                 {#each selected.target_scopes as scope}
-                  <option value={scope}
-                    >{scope === "movie_version"
-                      ? "Movies"
-                      : "Whole shows"}</option
-                  >
+                  <option value={scope}>
+                    {scope === "movie_version" ? "Movies" : "Whole shows"}
+                  </option>
                 {/each}
               </select>
             </div>
@@ -208,33 +207,33 @@
                   }}
                 />
                 {library.libraryName}
-                <span class="text-muted-foreground"
-                  >({library.serviceName || library.serviceType})</span
-                >
+                <span class="text-muted-foreground">
+                  ({library.serviceName || library.serviceType})
+                </span>
               </label>
             {:else}
-              <Notice type="warning" title="Library needed"
-                >Configure and sync a matching library on your main media server
-                before using this preset.</Notice
-              >
+              <Notice type="warning" title="Library needed">
+                Configure and sync a matching library on your main media server
+                before using this preset.
+              </Notice>
             {/each}
           </fieldset>
           {#if needsUsers}
             <fieldset class="space-y-2">
-              <legend class="mb-2 font-medium"
-                >Users who must all finish {targetScope === "series"
+              <legend class="mb-2 font-medium">
+                Users who must all finish {targetScope === "series"
                   ? "the show"
-                  : "the season"} (required)</legend
-              >
+                  : "the season"} (required)
+              </legend>
               {#if usersError}
-                <Notice type="error" title="Users unavailable"
-                  >{usersError}</Notice
-                >
+                <Notice type="error" title="Users unavailable">
+                  {usersError}
+                </Notice>
               {:else if users.length === 0}
-                <Notice type="warning" title="Watch data needed"
-                  >Sync per-user watch data first. No users with imported watch
-                  data are available.</Notice
-                >
+                <Notice type="warning" title="Watch data needed">
+                  Sync per-user watch data first. No users with imported watch
+                  data are available.
+                </Notice>
               {:else}
                 <div class="max-h-40 overflow-y-auto space-y-2">
                   {#each users as user (user.username)}
@@ -257,23 +256,23 @@
             </fieldset>
           {/if}
           {#if selected.rule.action?.outcome === "protect"}
-            <Notice type="info" title="Protection starts disabled"
-              >Enable the saved rule to protect matching media on the next scan.
+            <Notice type="info" title="Protection starts disabled">
+              Enable the saved rule to protect matching media on the next scan.
               This preset creates protections, not cleanup candidates. Review
-              matches before saving.</Notice
-            >
+              matches before saving.
+            </Notice>
           {:else if selected.rule.action?.outcome === "match"}
-            <Notice type="info" title="Starts disabled"
-              >Enable the saved rule to read its matches through the API. It
-              takes no action on its own.</Notice
-            >
+            <Notice type="info" title="Starts disabled">
+              Enable the saved rule to read its matches through the API. It
+              takes no action on its own.
+            </Notice>
           {:else}
-            <Notice type="info" title="Starts disabled"
-              >The draft starts with the rule, automatic deletion, moves, and
-              Arr tagging off. Enabling the rule generates candidates; automatic
+            <Notice type="info" title="Starts disabled">
+              The draft starts with the rule, automatic deletion, moves, and Arr
+              tagging off. Enabling the rule generates candidates; automatic
               deletion is a separate choice. Review the action and preview
-              matches before saving.</Notice
-            >
+              matches before saving.
+            </Notice>
           {/if}
         </div>
       {/if}
@@ -284,12 +283,14 @@
           onclick={() => {
             selected = null;
             error = "";
-          }}>Back to presets</Button
-        >{/if}
+          }}
+        >
+          Back to presets
+        </Button>{/if}
       <Button variant="outline" onclick={onCancel}>Cancel</Button>
-      {#if selected}<Button disabled={!ready} onclick={openDraft}
-          >Open in editor</Button
-        >{/if}
+      {#if selected}<Button disabled={!ready} onclick={openDraft}>
+          Open in editor
+        </Button>{/if}
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

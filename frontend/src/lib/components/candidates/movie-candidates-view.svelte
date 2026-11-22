@@ -169,8 +169,9 @@
                 <div class="text-sm font-medium text-foreground">
                   {row.media_title}
                   {#if row.media_year}
-                    <span class="text-muted-foreground">({row.media_year})</span
-                    >
+                    <span class="text-muted-foreground">
+                      ({row.media_year})
+                    </span>
                   {/if}
                 </div>
                 <div class="mt-1 flex items-center gap-2">
@@ -198,13 +199,15 @@
                     <span
                       class={`text-xs wrap-break-word ${field.containerClass ?? ""}`}
                     >
-                      <span class={field.labelClass ?? "text-muted-foreground"}
-                        >{field.label}:</span
-                      >
+                      <span class={field.labelClass ?? "text-muted-foreground"}>
+                        {field.label}:
+                      </span>
                       <span
                         class={field.valueClass ??
-                          "font-medium text-foreground/80"}>{field.value}</span
+                          "font-medium text-foreground/80"}
                       >
+                        {field.value}
+                      </span>
                     </span>
                   {/each}
                 </div>
@@ -213,8 +216,10 @@
                     {#each allRules as rule}
                       <Badge
                         class="border-primary whitespace-break-spaces"
-                        variant="secondary">{rule}</Badge
+                        variant="secondary"
                       >
+                        {rule}
+                      </Badge>
                     {/each}
                     <!-- {:else}
                     <span

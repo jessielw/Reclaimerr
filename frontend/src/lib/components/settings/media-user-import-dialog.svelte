@@ -370,9 +370,9 @@
           >
             <option value="">Select a server</option>
             {#each providers as provider (provider.service_config_id)}
-              <option value={String(provider.service_config_id)}
-                >{provider.name} ({provider.service_type})</option
-              >
+              <option value={String(provider.service_config_id)}>
+                {provider.name} ({provider.service_type})
+              </option>
             {/each}
           </select>
           {#if !busy && providers.length === 0}<p
@@ -383,9 +383,9 @@
             </p>{/if}
         </div>
         <details class="rounded-md border border-border p-3">
-          <summary class="cursor-pointer text-sm font-medium"
-            >Access for new accounts</summary
-          >
+          <summary class="cursor-pointer text-sm font-medium">
+            Access for new accounts
+          </summary>
           <div class="mt-3 space-y-4">
             {#if isAdmin}
               <fieldset class="flex flex-wrap gap-4">
@@ -393,27 +393,29 @@
                 <label
                   for="media-import-role-user"
                   class="flex items-center gap-2"
-                  ><input
+                >
+                  <input
                     id="media-import-role-user"
                     type="radio"
                     name="role"
                     value={UserRole.User}
                     bind:group={role}
                     onchange={invalidate}
-                  /> User</label
-                >
+                  /> User
+                </label>
                 <label
                   for="media-import-role-admin"
                   class="flex items-center gap-2"
-                  ><input
+                >
+                  <input
                     id="media-import-role-admin"
                     type="radio"
                     name="role"
                     value={UserRole.Admin}
                     bind:group={role}
                     onchange={invalidate}
-                  /> Admin</label
-                >
+                  /> Admin
+                </label>
               </fieldset>
             {/if}
             {#if role === UserRole.User}
@@ -423,7 +425,8 @@
                   <label
                     for={`media-import-permission-${option.value}`}
                     class="flex items-center gap-2"
-                    ><input
+                  >
+                    <input
                       id={`media-import-permission-${option.value}`}
                       type="checkbox"
                       name="permissions"
@@ -431,8 +434,8 @@
                       bind:group={permissions}
                       onchange={invalidate}
                     />
-                    {option.label}</label
-                  >
+                    {option.label}
+                  </label>
                 {/each}
               </fieldset>
               <fieldset class="space-y-2">
@@ -440,40 +443,43 @@
                 <label
                   for="media-import-pages-default"
                   class="flex items-center gap-2"
-                  ><input
+                >
+                  <input
                     id="media-import-pages-default"
                     type="radio"
                     name="page_access"
                     value="default"
                     bind:group={pageMode}
                     onchange={invalidate}
-                  /> Configured defaults</label
-                >
+                  /> Configured defaults
+                </label>
                 <label
                   for="media-import-pages-custom"
                   class="flex items-center gap-2"
-                  ><input
+                >
+                  <input
                     id="media-import-pages-custom"
                     type="radio"
                     name="page_access"
                     value="custom"
                     bind:group={pageMode}
                     onchange={invalidate}
-                  /> Choose pages</label
-                >
+                  /> Choose pages
+                </label>
                 {#if isAdmin || $auth.user?.allowed_pages === null}
                   <label
                     for="media-import-pages-all"
                     class="flex items-center gap-2"
-                    ><input
+                  >
+                    <input
                       id="media-import-pages-all"
                       type="radio"
                       name="page_access"
                       value="all"
                       bind:group={pageMode}
                       onchange={invalidate}
-                    /> Unrestricted</label
-                  >
+                    /> Unrestricted
+                  </label>
                 {/if}
                 {#if pageMode === "custom"}
                   <div class="flex flex-wrap gap-4 pt-2">
@@ -481,7 +487,8 @@
                       <label
                         for={`media-import-page-${option.value}`}
                         class="flex items-center gap-2"
-                        ><input
+                      >
+                        <input
                           id={`media-import-page-${option.value}`}
                           type="checkbox"
                           name="allowed_pages"
@@ -489,8 +496,8 @@
                           bind:group={pages}
                           onchange={invalidate}
                         />
-                        {option.label}</label
-                      >
+                        {option.label}
+                      </label>
                     {/each}
                   </div>
                 {/if}
@@ -539,38 +546,40 @@
         </div>
         <div class="max-h-80 overflow-auto rounded-md border border-border">
           <table class="w-full text-left text-sm">
-            <caption class="sr-only"
-              >Selected users and the account changes to confirm</caption
-            >
-            <thead class="bg-muted"
-              ><tr
-                ><th scope="col" class="p-3">Media user</th><th
+            <caption class="sr-only">
+              Selected users and the account changes to confirm
+            </caption>
+            <thead class="bg-muted">
+              <tr>
+                <th scope="col" class="p-3">Media user</th><th
                   scope="col"
-                  class="p-3">Reclaimerr account</th
-                ><th scope="col" class="p-3">Action</th></tr
-              ></thead
-            >
+                  class="p-3"
+                >
+                  Reclaimerr account
+                </th><th scope="col" class="p-3">Action</th>
+              </tr>
+            </thead>
             <tbody>
               {#each selectedRows as row (row.source_user_id)}
-                <tr class="border-t border-border"
-                  ><td class="p-3 break-all"
-                    >{row.username}{#if row.email}<div
+                <tr class="border-t border-border">
+                  <td class="p-3 break-all">
+                    {row.username}{#if row.email}<div
                         class="text-muted-foreground"
                       >
                         {row.email}
-                      </div>{/if}</td
-                  ><td class="p-3 break-all"
-                    >@{row.local_username}{#if row.account && !row.account.is_active}<div
+                      </div>{/if}
+                  </td><td class="p-3 break-all">
+                    @{row.local_username}{#if row.account && !row.account.is_active}<div
                         class="text-muted-foreground"
                       >
                         Account remains disabled
-                      </div>{/if}</td
-                  ><td class="p-3"
-                    >{row.status === "ready_to_create"
+                      </div>{/if}
+                  </td><td class="p-3">
+                    {row.status === "ready_to_create"
                       ? "Create account"
-                      : "Link existing account"}</td
-                  ></tr
-                >
+                      : "Link existing account"}
+                  </td>
+                </tr>
               {/each}
             </tbody>
           </table>
@@ -650,8 +659,10 @@
                 .filter((row) => row.status === "ready_to_create")
                 .map((row) => row.source_user_id);
               reviewed = false;
-            }}>Select new accounts</Button
+            }}
           >
+            Select new accounts
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -659,31 +670,37 @@
             onclick={() => {
               selected = [];
               reviewed = false;
-            }}>Clear selection</Button
+            }}
           >
+            Clear selection
+          </Button>
         </div>
       {/if}
       <div class="max-h-80 overflow-auto rounded-md border border-border">
         <table class="w-full text-left text-sm">
-          <caption class="sr-only"
-            >Media users and proposed account changes</caption
-          >
-          <thead class="bg-muted"
-            ><tr
-              >{#if !completed}<th scope="col" class="p-3">Select</th>{/if}<th
+          <caption class="sr-only">
+            Media users and proposed account changes
+          </caption>
+          <thead class="bg-muted">
+            <tr>
+              {#if !completed}<th scope="col" class="p-3">Select</th>{/if}<th
                 scope="col"
-                class="p-3">Media user</th
-              ><th scope="col" class="p-3">Local account</th><th
+                class="p-3"
+              >
+                Media user
+              </th><th scope="col" class="p-3">Local account</th><th
                 scope="col"
-                class="p-3">Result</th
-              ></tr
-            ></thead
-          >
+                class="p-3"
+              >
+                Result
+              </th>
+            </tr>
+          </thead>
           <tbody>
             {#each visibleRows as row (row.source_user_id)}
               <tr class="border-t border-border">
-                {#if !completed}<td class="p-3"
-                    ><input
+                {#if !completed}<td class="p-3">
+                    <input
                       type="checkbox"
                       name="source_user_ids"
                       aria-label={`Select ${row.username}${row.account ? ` to link @${row.account.username}` : " to create an account"}`}
@@ -693,27 +710,27 @@
                       onchange={() => {
                         reviewed = false;
                       }}
-                    /></td
-                  >{/if}
-                <td class="p-3 break-all"
-                  >{row.username}{#if row.email}<div
+                    />
+                  </td>{/if}
+                <td class="p-3 break-all">
+                  {row.username}{#if row.email}<div
                       class="text-muted-foreground"
                     >
                       {row.email}
                     </div>{/if}
                   <div class="text-xs text-muted-foreground">
                     ID: {row.source_user_id}
-                  </div></td
-                >
-                <td class="p-3 break-all"
-                  >{row.local_username
+                  </div>
+                </td>
+                <td class="p-3 break-all">
+                  {row.local_username
                     ? `@${row.local_username}`
                     : "—"}{#if row.account && !row.account.is_active}<div>
                       Disabled account
-                    </div>{/if}</td
-                >
-                <td class="p-3"
-                  >{row.message}
+                    </div>{/if}
+                </td>
+                <td class="p-3">
+                  {row.message}
                   {#if row.status === "conflict" && !completed}
                     <Button
                       size="sm"
@@ -721,41 +738,50 @@
                       class="mt-2"
                       disabled={busy}
                       onclick={() => stageIdentity(row)}
-                      >Add to identity links</Button
                     >
+                      Add to identity links
+                    </Button>
                   {/if}
                 </td>
               </tr>
-            {:else}<tr
-                ><td colspan={completed ? 3 : 4} class="p-3"
-                  >No media users match.</td
-                ></tr
-              >{/each}
+            {:else}<tr>
+                <td colspan={completed ? 3 : 4} class="p-3">
+                  No media users match.
+                </td>
+              </tr>{/each}
           </tbody>
         </table>
       </div>
     {/if}
     <div class="flex flex-wrap justify-end gap-2">
-      <Button variant="secondary" disabled={busy} onclick={() => dialog.close()}
-        >Close</Button
+      <Button
+        variant="secondary"
+        disabled={busy}
+        onclick={() => dialog.close()}
       >
+        Close
+      </Button>
       {#if reviewed && !completed}<Button
           variant="secondary"
           disabled={busy}
-          onclick={backToSelection}>Back to selection</Button
+          onclick={backToSelection}
         >
+          Back to selection
+        </Button>
       {:else if result && !completed}<Button
           variant="secondary"
           disabled={busy}
-          onclick={() => submit("discover")}>Refresh preview</Button
-        >{/if}
-      {#if !completed}<Button type="submit" disabled={busy}
-          >{!result
+          onclick={() => submit("discover")}
+        >
+          Refresh preview
+        </Button>{/if}
+      {#if !completed}<Button type="submit" disabled={busy}>
+          {!result
             ? "Preview users"
             : reviewed
               ? "Confirm import"
-              : "Review selection"}</Button
-        >{/if}
+              : "Review selection"}
+        </Button>{/if}
     </div>
   </form>
 </dialog>

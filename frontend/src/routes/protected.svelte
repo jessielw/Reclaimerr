@@ -324,28 +324,32 @@
             })()}
           </Select.Trigger>
           <Select.Content class="bg-card border-ring">
-            <Select.Item value="30" label="30 days" class="text-foreground"
-              >30 days</Select.Item
-            >
-            <Select.Item value="90" label="90 days" class="text-foreground"
-              >90 days</Select.Item
-            >
-            <Select.Item value="180" label="180 days" class="text-foreground"
-              >180 days</Select.Item
-            >
-            <Select.Item value="365" label="1 year" class="text-foreground"
-              >1 year</Select.Item
-            >
+            <Select.Item value="30" label="30 days" class="text-foreground">
+              30 days
+            </Select.Item>
+            <Select.Item value="90" label="90 days" class="text-foreground">
+              90 days
+            </Select.Item>
+            <Select.Item value="180" label="180 days" class="text-foreground">
+              180 days
+            </Select.Item>
+            <Select.Item value="365" label="1 year" class="text-foreground">
+              1 year
+            </Select.Item>
             <Select.Item
               value="custom"
               label="Custom days"
-              class="text-foreground">Custom days</Select.Item
+              class="text-foreground"
             >
+              Custom days
+            </Select.Item>
             <Select.Item
               value="permanent"
               label="Permanent"
-              class="text-foreground">Permanent</Select.Item
+              class="text-foreground"
             >
+              Permanent
+            </Select.Item>
           </Select.Content>
         </Select.Root>
 
@@ -408,9 +412,9 @@
     <div>
       <h1 class="text-3xl font-bold text-foreground">Protected</h1>
       {#if canManageProtection}
-        <Button class="mt-2" onclick={() => (addTitleOpen = true)}
-          >Protect title by ID</Button
-        >
+        <Button class="mt-2" onclick={() => (addTitleOpen = true)}>
+          Protect title by ID
+        </Button>
       {/if}
       <p class="text-muted-foreground">
         Media items protected from cleanup and deletion.
@@ -464,13 +468,17 @@
               <Select.Item
                 value="asc"
                 label="Ascending"
-                class="text-card-foreground">Ascending</Select.Item
+                class="text-card-foreground"
               >
+                Ascending
+              </Select.Item>
               <Select.Item
                 value="desc"
                 label="Descending"
-                class="text-card-foreground">Descending</Select.Item
+                class="text-card-foreground"
               >
+                Descending
+              </Select.Item>
             </Select.Content>
           </Select.Root>
         </div>
@@ -490,18 +498,24 @@
               <Select.Item
                 value="all"
                 label="All Media"
-                class="text-card-foreground">All Media</Select.Item
+                class="text-card-foreground"
               >
+                All Media
+              </Select.Item>
               <Select.Item
                 value={MediaType.Movie}
                 label="Movies"
-                class="text-card-foreground">Movies</Select.Item
+                class="text-card-foreground"
               >
+                Movies
+              </Select.Item>
               <Select.Item
                 value={MediaType.Series}
                 label="Series"
-                class="text-card-foreground">Series</Select.Item
+                class="text-card-foreground"
               >
+                Series
+              </Select.Item>
             </Select.Content>
           </Select.Root>
 
@@ -573,25 +587,30 @@
             <tr>
               <th
                 class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Media</th
               >
+                Media
+              </th>
               <th
                 class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Protected Until</th
               >
+                Protected Until
+              </th>
               <th
                 class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Added By</th
               >
+                Added By
+              </th>
               <th
                 class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                >Created</th
               >
+                Created
+              </th>
               {#if canManageProtection}
                 <th
                   class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
-                  >Actions</th
                 >
+                  Actions
+                </th>
               {/if}
             </tr>
           </thead>
@@ -628,34 +647,37 @@
                           {#if entry.version_resolution}
                             <span
                               class="rounded-full border bg-muted px-2 py-0 text-xs"
-                              >{cleanResolutionString(
-                                entry.version_resolution,
-                              )}</span
                             >
+                              {cleanResolutionString(entry.version_resolution)}
+                            </span>
                           {/if}
                           {#if entry.version_video_codec}
                             <span
                               class="rounded-full border bg-muted px-2 py-0 text-xs"
-                              >{entry.version_video_codec.toUpperCase()}</span
                             >
+                              {entry.version_video_codec.toUpperCase()}
+                            </span>
                           {/if}
                           {#if entry.version_hdr}
                             <span
                               class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                              >HDR</span
                             >
+                              HDR
+                            </span>
                           {/if}
                           {#if entry.version_dolby_vision}
                             <span
                               class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                              >Dolby Vision</span
                             >
+                              Dolby Vision
+                            </span>
                           {/if}
                           {#if entry.version_size}
                             <span
                               class="rounded-full border bg-muted px-2 py-0 text-xs"
-                              >{formatFileSize(entry.version_size)}</span
                             >
+                              {formatFileSize(entry.version_size)}
+                            </span>
                           {/if}
                         </div>
                       {/if}

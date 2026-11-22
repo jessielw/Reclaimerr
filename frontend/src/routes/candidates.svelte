@@ -1240,11 +1240,11 @@
 >
   <AlertDialog.Content class="max-h-[90dvh] overflow-y-auto text-foreground">
     <AlertDialog.Header>
-      <AlertDialog.Title
-        >Delete {selectedEntries.length} Item{selectedEntries.length !== 1
+      <AlertDialog.Title>
+        Delete {selectedEntries.length} Item{selectedEntries.length !== 1
           ? "s"
-          : ""}?</AlertDialog.Title
-      >
+          : ""}?
+      </AlertDialog.Title>
       <AlertDialog.Description>
         {#if selectedDeleteMoveCount === selectedEntries.length}
           All selected items will be moved to the configured destination because
@@ -1272,9 +1272,9 @@
     </AlertDialog.Header>
     <DeletionTiming bind:mode={bulkDeleteTiming} bind:value={bulkDeleteWhen} />
     <AlertDialog.Footer>
-      <AlertDialog.Cancel disabled={bulkDeleteSubmitting}
-        >Cancel</AlertDialog.Cancel
-      >
+      <AlertDialog.Cancel disabled={bulkDeleteSubmitting}>
+        Cancel
+      </AlertDialog.Cancel>
       <Button
         onclick={submitBulkDelete}
         disabled={bulkDeleteSubmitting ||
@@ -1300,40 +1300,40 @@
 >
   <AlertDialog.Content class="max-h-[90dvh] overflow-y-auto text-foreground">
     <AlertDialog.Header>
-      <AlertDialog.Title
-        >{deleteTiming === "later"
+      <AlertDialog.Title>
+        {deleteTiming === "later"
           ? "Schedule Deletion?"
-          : "Delete Permanently?"}</AlertDialog.Title
-      >
+          : "Delete Permanently?"}
+      </AlertDialog.Title>
       <AlertDialog.Description>
         {#if deleteTarget}
           {#if deleteWillMove(deleteTarget)}
-            This matched rule uses Move Instead of Delete. <strong
-              >{deleteTarget.media_title}</strong
-            > will be moved to the configured destination folder and removed from
-            the media server instead of deleting the file.
+            This matched rule uses Move Instead of Delete. <strong>
+              {deleteTarget.media_title}
+            </strong> will be moved to the configured destination folder and removed
+            from the media server instead of deleting the file.
           {:else if deleteTarget.episode_number != null}
-            Permanently delete episode <strong
-              >S{String(deleteTarget.season_number ?? 0).padStart(
+            Permanently delete episode <strong>
+              S{String(deleteTarget.season_number ?? 0).padStart(
                 2,
                 "0",
               )}E{String(deleteTarget.episode_number).padStart(
                 2,
                 "0",
               )}{#if deleteTarget.episode_name}&nbsp;&quot;{deleteTarget.episode_name}&quot;{/if}
-              of {deleteTarget.series_title ?? deleteTarget.media_title}</strong
-            > and remove the file from disk. Only this episode is affected - the series
-            and season remain monitored. This cannot be undone.
+              of {deleteTarget.series_title ?? deleteTarget.media_title}
+            </strong> and remove the file from disk. Only this episode is affected
+            - the series and season remain monitored. This cannot be undone.
           {:else if deleteTarget.season_number != null}
-            Permanently delete <strong
-              >Season {deleteTarget.season_number} of {deleteTarget.series_title ??
-                deleteTarget.media_title}</strong
-            > from all configured services and remove the files from disk. This cannot
-            be undone.
+            Permanently delete <strong>
+              Season {deleteTarget.season_number} of {deleteTarget.series_title ??
+                deleteTarget.media_title}
+            </strong> from all configured services and remove the files from disk.
+            This cannot be undone.
           {:else if deleteTarget.movie_version_id != null}
-            Permanently delete this version of <strong
-              >{deleteTarget.media_title}</strong
-            >
+            Permanently delete this version of <strong>
+              {deleteTarget.media_title}
+            </strong>
             from all configured services and remove the files from disk. This cannot
             be undone.
           {:else}
@@ -1345,8 +1345,9 @@
     </AlertDialog.Header>
     <DeletionTiming bind:mode={deleteTiming} bind:value={deleteWhen} />
     <AlertDialog.Footer>
-      <AlertDialog.Cancel disabled={deleteSubmitting}>Cancel</AlertDialog.Cancel
-      >
+      <AlertDialog.Cancel disabled={deleteSubmitting}>
+        Cancel
+      </AlertDialog.Cancel>
       <Button
         onclick={submitSingleDelete}
         disabled={deleteSubmitting ||
@@ -1366,11 +1367,11 @@
 <AlertDialog.Root bind:open={bulkMoveDialogOpen}>
   <AlertDialog.Content class="text-foreground">
     <AlertDialog.Header>
-      <AlertDialog.Title
-        >Move {selectedEntries.length} Item{selectedEntries.length !== 1
+      <AlertDialog.Title>
+        Move {selectedEntries.length} Item{selectedEntries.length !== 1
           ? "s"
-          : ""}?</AlertDialog.Title
-      >
+          : ""}?
+      </AlertDialog.Title>
       <AlertDialog.Description>
         This will move {selectedEntries.length} item{selectedEntries.length !==
         1
@@ -1380,9 +1381,9 @@
       </AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer>
-      <AlertDialog.Cancel disabled={bulkMoveSubmitting}
-        >Cancel</AlertDialog.Cancel
-      >
+      <AlertDialog.Cancel disabled={bulkMoveSubmitting}>
+        Cancel
+      </AlertDialog.Cancel>
       <AlertDialog.Action
         onclick={submitBulkMove}
         disabled={bulkMoveSubmitting}
@@ -1430,9 +1431,9 @@
     }}
   >
     <Dialog.Header>
-      <Dialog.Title
-        >Request Exception for {selectedEntries.length} Items</Dialog.Title
-      >
+      <Dialog.Title>
+        Request Exception for {selectedEntries.length} Items
+      </Dialog.Title>
       <Dialog.Description>
         All selected candidates will be submitted as protection requests and
         auto-approved.
@@ -1630,13 +1631,17 @@
               <Select.Item
                 value="asc"
                 label="Ascending"
-                class="text-card-foreground">Ascending</Select.Item
+                class="text-card-foreground"
               >
+                Ascending
+              </Select.Item>
               <Select.Item
                 value="desc"
                 label="Descending"
-                class="text-card-foreground">Descending</Select.Item
+                class="text-card-foreground"
               >
+                Descending
+              </Select.Item>
             </Select.Content>
           </Select.Root>
         </div>

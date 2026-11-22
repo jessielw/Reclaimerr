@@ -55,9 +55,9 @@
       </span>
       <div class="min-w-0 space-y-1">
         <div class="flex flex-wrap items-center gap-2">
-          <span class="font-medium text-foreground break-all"
-            >{server.config.name}</span
-          >
+          <span class="font-medium text-foreground break-all">
+            {server.config.name}
+          </span>
           {#if isMain}
             <Badge class="gap-1">
               <BadgeCheck class="size-3" />
@@ -67,9 +67,9 @@
             <Badge variant="secondary">Linked</Badge>
           {/if}
           {#if !server.config.enabled}
-            <Badge variant="outline" class="text-muted-foreground"
-              >Disabled</Badge
-            >
+            <Badge variant="outline" class="text-muted-foreground">
+              Disabled
+            </Badge>
           {/if}
         </div>
         <p class="text-xs text-muted-foreground break-all">

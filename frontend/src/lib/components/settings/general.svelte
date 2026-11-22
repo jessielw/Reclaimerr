@@ -651,9 +651,9 @@
       <p class="text-muted-foreground text-sm mb-3">
         Map media server paths to local filesystem paths. Required when
         Reclaimerr runs on the host but your media server reports
-        Docker/container paths (e.g. <code class="font-mono text-xs"
-          >/movies</code
-        >
+        Docker/container paths (e.g. <code class="font-mono text-xs">
+          /movies
+        </code>
         →
         <code class="font-mono text-xs">/mnt/data/movies</code>). Leave empty if
         paths are directly accessible. Scope mappings when multiple services
@@ -715,18 +715,18 @@
                     {#if serviceTypeOptions.length > 0}
                       <Select.Separator />
                       {#each serviceTypeOptions as serviceType}
-                        <Select.Item value={`type:${serviceType}`}
-                          >Any {serviceType}</Select.Item
-                        >
+                        <Select.Item value={`type:${serviceType}`}>
+                          Any {serviceType}
+                        </Select.Item>
                       {/each}
                     {/if}
                     {#if pathMappingScopes.length > 0}
                       <Select.Separator />
                       <Select.Label>Configured services</Select.Label>
                       {#each pathMappingScopes as scope}
-                        <Select.Item value={`config:${scope.id}`}
-                          >{scope.name} ({scope.service_type})</Select.Item
-                        >
+                        <Select.Item value={`config:${scope.id}`}>
+                          {scope.name} ({scope.service_type})
+                        </Select.Item>
                       {/each}
                     {/if}
                   </Select.Content>
@@ -754,8 +754,9 @@
             {/each}
           </datalist>
           <div class="flex flex-wrap items-center gap-1.5 pt-1">
-            <span class="text-xs text-muted-foreground shrink-0">Detected:</span
-            >
+            <span class="text-xs text-muted-foreground shrink-0">
+              Detected:
+            </span>
             <!-- suggestion button chips -->
             {#each pathSuggestions as suggestion}
               <button
@@ -779,8 +780,10 @@
                       },
                     ];
                   }
-                }}>{suggestion}</button
+                }}
               >
+                {suggestion}
+              </button>
             {/each}
           </div>
         {/if}
@@ -846,8 +849,9 @@
           </div>
           <div>
             <Label for="leavingSoonSeriesCollectionTitle" class="mb-2">
-              <span class="text-sm text-foreground">Series Collection Name</span
-              >
+              <span class="text-sm text-foreground">
+                Series Collection Name
+              </span>
             </Label>
             <Input
               id="leavingSoonSeriesCollectionTitle"
@@ -908,9 +912,9 @@
 
         <!-- plex hub visibility -->
         <div class="mt-4">
-          <span class="text-sm text-foreground font-medium"
-            >Visible on (Plex)</span
-          >
+          <span class="text-sm text-foreground font-medium">
+            Visible on (Plex)
+          </span>
           <p class="text-xs text-muted-foreground mt-1">
             Reclaimerr rebuilds these collections on every sync, which drops any
             "Visible on" choice made in Plex. Set it here instead and it is
@@ -946,9 +950,9 @@
         </div>
 
         <div class="mt-4">
-          <span class="text-sm text-foreground font-medium"
-            >Visible on (Emby)</span
-          >
+          <span class="text-sm text-foreground font-medium">
+            Visible on (Emby)
+          </span>
           <Label
             class="flex items-start gap-2 rounded-md border border-border bg-background/40 p-3 text-sm text-foreground max-w-2xl mt-3"
           >
@@ -967,9 +971,9 @@
 
         <!-- custom collection posters -->
         <div class="mt-4">
-          <span class="text-sm text-foreground font-medium"
-            >Custom collection posters</span
-          >
+          <span class="text-sm text-foreground font-medium">
+            Custom collection posters
+          </span>
           <p class="text-xs text-muted-foreground mt-1">
             Upload your own cover art for the managed collections. Unlike the
             rest of this page, a poster is saved as soon as you pick it - there
@@ -996,9 +1000,9 @@
                   {/if}
                 </div>
                 <div class="flex flex-col gap-2 justify-center">
-                  <span class="text-sm text-foreground"
-                    >{POSTER_LABELS[kind]} collection</span
-                  >
+                  <span class="text-sm text-foreground">
+                    {POSTER_LABELS[kind]} collection
+                  </span>
                   <input
                     type="file"
                     class="hidden"
@@ -1054,9 +1058,9 @@
 
         <!-- custom collection thumbs -->
         <div class="mt-4">
-          <span class="text-sm text-foreground font-medium"
-            >Custom collection thumbs</span
-          >
+          <span class="text-sm text-foreground font-medium">
+            Custom collection thumbs
+          </span>
           <p class="text-xs text-muted-foreground mt-1">
             Upload a landscape (16:9) thumb image for the managed collections,
             used by Jellyfin and Emby wherever they show thumb artwork. Like
@@ -1083,9 +1087,9 @@
                   {/if}
                 </div>
                 <div class="flex flex-col gap-2 justify-center">
-                  <span class="text-sm text-foreground"
-                    >{POSTER_LABELS[kind]} collection</span
-                  >
+                  <span class="text-sm text-foreground">
+                    {POSTER_LABELS[kind]} collection
+                  </span>
                   <input
                     type="file"
                     class="hidden"
@@ -1145,10 +1149,10 @@
           the old name on the next scan and rebuilds it under the new one.
           <br />
           <br />
-          <strong
-            >Do not rename or modify these collections on the media server -
-            Reclaimerr depends on their names to manage them.</strong
-          >
+          <strong>
+            Do not rename or modify these collections on the media server -
+            Reclaimerr depends on their names to manage them.
+          </strong>
           <br />
           <br />
           Collection sort applies to <strong>Plex only</strong>. Jellyfin and
@@ -1321,9 +1325,9 @@
         Approved Deletion Requests
       </h3>
       <div class="space-y-2 sm:max-w-xs">
-        <Label for="deleteRequestGracePeriodDays"
-          >Deletion request grace period (days)</Label
-        >
+        <Label for="deleteRequestGracePeriodDays">
+          Deletion request grace period (days)
+        </Label>
         <Input
           id="deleteRequestGracePeriodDays"
           type="number"

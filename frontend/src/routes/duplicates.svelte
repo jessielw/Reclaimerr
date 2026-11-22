@@ -897,8 +897,9 @@
                         <a
                           href="#/protected"
                           class="underline text-muted-foreground"
-                          >Protected - manage protection</a
                         >
+                          Protected - manage protection
+                        </a>
                       {/if}
                     </div>
                     {#if group.manual_reason}
@@ -980,9 +981,9 @@
                           {isKeeper ? "Keep" : "Remove"}
                         </span>
                         {#if index === 0}
-                          <span class="text-xs text-muted-foreground"
-                            >(suggested)</span
-                          >
+                          <span class="text-xs text-muted-foreground">
+                            (suggested)
+                          </span>
                         {/if}
                         <span class="ml-auto flex items-center gap-2">
                           {#if file.protected}

@@ -472,9 +472,9 @@
                     onchange={() => (selectedVersionId = null)}
                     class="accent-primary"
                   />
-                  <span class="text-sm text-foreground font-medium flex-1"
-                    >Entire title - all libraries and versions</span
-                  >
+                  <span class="text-sm text-foreground font-medium flex-1">
+                    Entire title - all libraries and versions
+                  </span>
                 </label>
 
                 <p class="px-1 pb-2 text-xs text-muted-foreground">
@@ -502,9 +502,9 @@
                           : ""}
                       </span>
                       {#if formatSizeGb(version.size) != null}
-                        <span class="text-xs text-muted-foreground"
-                          >{formatSizeGb(version.size)}</span
-                        >
+                        <span class="text-xs text-muted-foreground">
+                          {formatSizeGb(version.size)}
+                        </span>
                       {/if}
                     </label>
                   {/each}

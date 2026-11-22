@@ -657,13 +657,13 @@
                   : "All statuses"}
             </Select.Trigger>
             <Select.Content class="bg-card">
-              <Select.Item value="all" label="All statuses"
-                >All statuses</Select.Item
-              >
+              <Select.Item value="all" label="All statuses">
+                All statuses
+              </Select.Item>
               <Select.Item value="enabled" label="Enabled">Enabled</Select.Item>
-              <Select.Item value="disabled" label="Disabled"
-                >Disabled</Select.Item
-              >
+              <Select.Item value="disabled" label="Disabled">
+                Disabled
+              </Select.Item>
             </Select.Content>
           </Select.Root>
           <Select.Root type="single" bind:value={scopeFilter}>
@@ -676,9 +676,9 @@
             </Select.Trigger>
             <Select.Content class="bg-card">
               {#each scopeOptions as option}
-                <Select.Item value={option.value} label={option.label}
-                  >{option.label}</Select.Item
-                >
+                <Select.Item value={option.value} label={option.label}>
+                  {option.label}
+                </Select.Item>
               {/each}
             </Select.Content>
           </Select.Root>
@@ -696,24 +696,24 @@
                     : "All outcomes"}
             </Select.Trigger>
             <Select.Content class="bg-card">
-              <Select.Item value="all" label="All outcomes"
-                >All outcomes</Select.Item
-              >
-              <Select.Item value="candidate" label="Candidate rules"
-                >Candidate rules</Select.Item
-              >
-              <Select.Item value="protect" label="Protection rules"
-                >Protection rules</Select.Item
-              >
-              <Select.Item value="match" label="Match-only rules"
-                >Match-only rules</Select.Item
-              >
+              <Select.Item value="all" label="All outcomes">
+                All outcomes
+              </Select.Item>
+              <Select.Item value="candidate" label="Candidate rules">
+                Candidate rules
+              </Select.Item>
+              <Select.Item value="protect" label="Protection rules">
+                Protection rules
+              </Select.Item>
+              <Select.Item value="match" label="Match-only rules">
+                Match-only rules
+              </Select.Item>
             </Select.Content>
           </Select.Root>
           {#if hasActiveFilters}
-            <Button variant="secondary" size="sm" onclick={clearFilters}
-              >Clear filters</Button
-            >
+            <Button variant="secondary" size="sm" onclick={clearFilters}>
+              Clear filters
+            </Button>
           {/if}
         </div>
         {#if rules.length > 0}
@@ -935,8 +935,9 @@
               {/if}
             </div>
             {#if item.isRenamed}
-              <Badge variant="secondary" class="shrink-0 text-xs">Renamed</Badge
-              >
+              <Badge variant="secondary" class="shrink-0 text-xs">
+                Renamed
+              </Badge>
             {/if}
           </div>
         {/each}
@@ -978,9 +979,9 @@
         Delete Rule
       </AlertDialog.Title>
       <AlertDialog.Description class="text-muted-foreground">
-        Are you sure you want to delete rule <span class="font-semibold"
-          >{ruleToDelete?.name}</span
-        >? This action cannot be undone.
+        Are you sure you want to delete rule <span class="font-semibold">
+          {ruleToDelete?.name}
+        </span>? This action cannot be undone.
       </AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer class="flex justify-end gap-3 pt-4">

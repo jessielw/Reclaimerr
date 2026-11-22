@@ -371,9 +371,9 @@
   bind:open={bundleOpen}
   class="rounded-md border p-3 space-y-3"
 >
-  <summary class="cursor-pointer text-sm font-medium"
-    >Support bundle - choose what to share</summary
-  >
+  <summary class="cursor-pointer text-sm font-medium">
+    Support bundle - choose what to share
+  </summary>
   <p class="text-sm text-muted-foreground">
     Choose evidence for this {bundleTarget
       ? `${bundleTarget.scope.replaceAll("_", " ")} #${bundleTarget.id}`
@@ -393,13 +393,15 @@
           supportCode = undefined;
           bundleTarget = target;
           choosePreset(target ? "candidate" : "system");
-        }}>Return to {target ? "this item" : "system"}</Button
+        }}
       >
+        Return to {target ? "this item" : "system"}
+      </Button>
     </div>{/if}
   <fieldset disabled={preparing || downloading} class="space-y-3">
     <div class="grid gap-3 sm:grid-cols-3">
-      <label class="text-sm"
-        >Problem
+      <label class="text-sm">
+        Problem
         <select
           class="mt-1 block w-full rounded-md border bg-background p-2"
           value={preset}
@@ -407,67 +409,67 @@
         >
           {#each Object.entries(presets) as [key, value]}
             {#if bundleTarget || supportCode || key === "system"}<option
-                value={key}>{value.label}</option
-              >{/if}
+                value={key}
+              >
+                {value.label}
+              </option>{/if}
           {/each}
         </select>
       </label>
-      <label class="text-sm"
-        >History window
+      <label class="text-sm">
+        History window
         <select
           class="mt-1 block w-full rounded-md border bg-background p-2"
           bind:value={days}
         >
-          <option value={1}>Last 24 hours</option><option value={7}
-            >Last 7 days</option
-          ><option value={14}>Last 14 days</option><option value={30}
-            >Last 30 days</option
-          >
+          <option value={1}>Last 24 hours</option><option value={7}>
+            Last 7 days
+          </option><option value={14}>Last 14 days</option><option value={30}>
+            Last 30 days
+          </option>
         </select>
       </label>
-      <label class="text-sm"
-        >Playback sample limit
+      <label class="text-sm">
+        Playback sample limit
         <select
           class="mt-1 block w-full rounded-md border bg-background p-2"
           bind:value={eventLimit}
         >
-          <option value={10}>10 events</option><option value={50}
-            >50 events</option
-          ><option value={100}>100 events</option>
+          <option value={10}>10 events</option><option value={50}>
+            50 events
+          </option><option value={100}>100 events</option>
         </select>
       </label>
     </div>
     <div class="grid gap-2 sm:grid-cols-2">
       {#each Object.entries(labels) as [key, label]}
         {#if bundleTarget || supportCode || !["storage", "decisions"].includes(key)}
-          <label class="flex gap-2 text-sm"
-            ><input
-              type="checkbox"
-              value={key}
-              bind:group={sections}
-            />{label}</label
-          >
+          <label class="flex gap-2 text-sm">
+            <input type="checkbox" value={key} bind:group={sections} />{label}
+          </label>
         {/if}
       {/each}
     </div>
-    <label class="flex items-start gap-2 text-sm"
-      ><input type="checkbox" class="mt-1" bind:checked={includeSqlite} /><span
-        >Include sanitized SQLite extract<span
+    <label class="flex items-start gap-2 text-sm">
+      <input type="checkbox" class="mt-1" bind:checked={includeSqlite} /><span>
+        Include sanitized SQLite extract<span
           class="block text-muted-foreground"
-          >Contains only the preview's records in support tables. Cannot restore
-          Reclaimerr.</span
-        ></span
-      ></label
-    >
-    <label class="flex items-start gap-2 text-sm"
-      ><input type="checkbox" class="mt-1" bind:checked={includeLogs} /><span
-        >Include sanitized log summaries<span
+        >
+          Contains only the preview's records in support tables. Cannot restore
+          Reclaimerr.
+        </span>
+      </span>
+    </label>
+    <label class="flex items-start gap-2 text-sm">
+      <input type="checkbox" class="mt-1" bind:checked={includeLogs} /><span>
+        Include sanitized log summaries<span
           class="block text-muted-foreground"
-          >Bounded recent log tails with times, levels, failure categories and
-          correlated IDs. Original message text is excluded.</span
-        ></span
-      ></label
-    >
+        >
+          Bounded recent log tails with times, levels, failure categories and
+          correlated IDs. Original message text is excluded.
+        </span>
+      </span>
+    </label>
     <p class="text-xs text-muted-foreground">
       Paths are {includePaths
         ? "included with account and host masking"
@@ -478,9 +480,9 @@
     </p>
     {#if completedChecks.length}
       <fieldset class="space-y-2 rounded border p-3">
-        <legend class="text-sm font-medium"
-          >Attach completed checks (optional)</legend
-        >
+        <legend class="text-sm font-medium">
+          Attach completed checks (optional)
+        </legend>
         <p class="text-xs text-muted-foreground">
           Select up to five timestamped results to include in this ZIP.
           Preparing a bundle does not rerun checks. Results are available for
@@ -497,10 +499,8 @@
                 (selectedChecks.length >= 5 &&
                   !selectedChecks.includes(check.check_id))}
             />
-            <span
-              >{check.kind} check · {new Date(
-                check.checked_at,
-              ).toLocaleString()}
+            <span>
+              {check.kind} check · {new Date(check.checked_at).toLocaleString()}
               {#if check.service_config_id}
                 · Service #{check.service_config_id}{/if}
               {#if check.target}
@@ -508,8 +508,9 @@
                   .id}{/if}
               {#if !check.attachment_expires_at}<span
                   class="block text-muted-foreground"
-                  >Unavailable for attachment; download this result separately.</span
-                >{/if}
+                >
+                  Unavailable for attachment; download this result separately.
+                </span>{/if}
             </span>
           </label>
         {/each}
@@ -526,15 +527,16 @@
       variant="outline"
       disabled={preparing || downloading}
       onclick={prepare}
-      >{preparing
+    >
+      {preparing
         ? "Preparing preview…"
         : preview
           ? "Refresh bundle preview"
-          : "Prepare bundle preview"}</Button
-    >
-    <Button disabled={!ready || downloading} onclick={download}
-      >{downloading ? "Downloading…" : "Download previewed ZIP"}</Button
-    >
+          : "Prepare bundle preview"}
+    </Button>
+    <Button disabled={!ready || downloading} onclick={download}>
+      {downloading ? "Downloading…" : "Download previewed ZIP"}
+    </Button>
   </div>
   <div aria-live="polite">
     {#if bundleError}<p class="text-sm text-destructive" role="alert">
@@ -555,17 +557,18 @@
         </p>
         <p>Files: {preview.manifest.files.join(", ")}</p>
         <details>
-          <summary class="cursor-pointer font-medium"
-            >Sharing inventory and limits</summary
-          >
+          <summary class="cursor-pointer font-medium">
+            Sharing inventory and limits
+          </summary>
           <table class="mt-2 w-full text-left">
-            <thead><tr><th class="py-1">Section</th><th>Records</th></tr></thead
-            ><tbody>
-              {#each preview.manifest.inventory as item}<tr
-                  ><td class="py-1">{item.section.replaceAll("_", " ")}</td><td
-                    >{item.records}</td
-                  ></tr
-                >{/each}
+            <thead>
+              <tr><th class="py-1">Section</th><th>Records</th></tr>
+            </thead><tbody>
+              {#each preview.manifest.inventory as item}<tr>
+                  <td class="py-1">{item.section.replaceAll("_", " ")}</td><td>
+                    {item.records}
+                  </td>
+                </tr>{/each}
             </tbody>
           </table>
           <p class="mt-2">
@@ -587,9 +590,9 @@
         <OperationEvidence entries={preview.timeline} onlookup={lookup} />
         {#if sections.includes("tasks")}
           <details>
-            <summary class="cursor-pointer font-medium"
-              >Automatic deletion runs</summary
-            >
+            <summary class="cursor-pointer font-medium">
+              Automatic deletion runs
+            </summary>
             <p class="mt-2 text-muted-foreground">
               A completed task can skip candidates. The run totals and candidate
               decisions explain what happened.
@@ -627,8 +630,9 @@
                     variant="outline"
                     size="sm"
                     onclick={() => lookup(`scan-${run.correlation_id}`)}
-                    >Look up run</Button
                   >
+                    Look up run
+                  </Button>
                 </li>
               {:else}<li>
                   No automatic-deletion run totals were recorded in this window.
@@ -644,19 +648,19 @@
             not a failed rule.
           </p>{/if}
         {#if preview.timeline.length}<details>
-            <summary class="cursor-pointer font-medium"
-              >Timeline ({preview.timeline.length} events)</summary
-            >
+            <summary class="cursor-pointer font-medium">
+              Timeline ({preview.timeline.length} events)
+            </summary>
             <ol class="mt-2 space-y-2">
               {#each preview.timeline as event}<li>
-                  <span class="text-muted-foreground"
-                    >{new Date(event.occurred_at).toLocaleString()}</span
-                  >
+                  <span class="text-muted-foreground">
+                    {new Date(event.occurred_at).toLocaleString()}
+                  </span>
                   - {event.event.replaceAll("_", " ")}{event.error_category
                     ? ` · ${event.error_category.replaceAll("_", " ")}`
-                    : ""}<span class="block break-all font-mono text-xs"
-                    >{event.correlation_id}</span
-                  >
+                    : ""}<span class="block break-all font-mono text-xs">
+                    {event.correlation_id}
+                  </span>
                   {#if event.auto_delete}
                     <p>
                       Candidate {event.candidate_id}: {event.auto_delete
@@ -682,15 +686,16 @@
                       )}
                     disabled={!/^[0-9a-f-]{36}$/.test(event.correlation_id) &&
                       !event.correlation_id.startsWith("job-")}
-                    >Look up code</Button
                   >
+                    Look up code
+                  </Button>
                 </li>{/each}
             </ol>
           </details>{/if}
         <details>
-          <summary class="cursor-pointer font-medium"
-            >Full bundle data preview</summary
-          ><textarea
+          <summary class="cursor-pointer font-medium">
+            Full bundle data preview
+          </summary><textarea
             aria-label="Support bundle JSON preview"
             readonly
             value={previewJson}
@@ -703,17 +708,17 @@
 </details>
 
 <details class="rounded-md border p-3 space-y-3">
-  <summary class="cursor-pointer text-sm font-medium"
-    >Run a diagnostic check</summary
-  >
+  <summary class="cursor-pointer text-sm font-medium">
+    Run a diagnostic check
+  </summary>
   <p class="text-sm text-muted-foreground">
     Checks run only when requested. Path checks read filesystem metadata;
     provider checks contact the saved server. Each phase has a five-second
     budget. No repairs, syncs or cleanup run.
   </p>
   <fieldset disabled={checking} class="grid gap-3 sm:grid-cols-2">
-    <label class="text-sm"
-      >Check
+    <label class="text-sm">
+      Check
       <select
         class="mt-1 block w-full rounded-md border bg-background p-2"
         bind:value={checkKind}
@@ -721,32 +726,39 @@
           checkResult = null;
         }}
       >
-        {#if target}<option value="relationships">Stored relationships</option
-          ><option value="path">Stored paths and mappings</option>{/if}
+        {#if target}<option value="relationships">
+            Stored relationships
+          </option><option value="path">Stored paths and mappings</option>{/if}
         <option value="provider">Provider connection</option>
       </select>
     </label>
-    {#if checkKind === "provider"}<label class="text-sm"
-        >Configured service<select
+    {#if checkKind === "provider"}<label class="text-sm">
+        Configured service<select
           class="mt-1 block w-full rounded-md border bg-background p-2"
           bind:value={serviceId}
           onchange={() => {
             checkResult = null;
           }}
-          ><option value="">Choose a service</option
-          >{#each services as service}<option value={String(service.id)}
-              >{service.alias} · {service.service}{service.enabled
+        >
+          <option value="">
+            Choose a service
+          </option>{#each services as service}<option
+              value={String(service.id)}
+            >
+              {service.alias} · {service.service}{service.enabled
                 ? ""
-                : " (disabled)"}</option
-            >{/each}</select
-        ></label
-      >{/if}
+                : " (disabled)"}
+            </option>{/each}
+        </select>
+      </label>{/if}
   </fieldset>
   <Button
     variant="outline"
     disabled={checking || (checkKind === "provider" && !serviceId)}
-    onclick={runCheck}>{checking ? "Checking…" : "Run selected check"}</Button
+    onclick={runCheck}
   >
+    {checking ? "Checking…" : "Run selected check"}
+  </Button>
   <div aria-live="polite">
     {#if checkError}<p class="text-sm text-destructive" role="alert">
         {checkError}
@@ -759,9 +771,9 @@
       </p>
       <ul class="mt-2 space-y-2 text-sm">
         {#each checkResult.observations as observation}<li>
-            <strong
-              >{observation.status.toUpperCase()} · {observation.subject}</strong
-            >
+            <strong>
+              {observation.status.toUpperCase()} · {observation.subject}
+            </strong>
             <p class="text-muted-foreground">{observation.detail}</p>
           </li>{/each}
       </ul>
@@ -776,8 +788,10 @@
               }),
               `reclaimerr-check-${checkResult.check_id}.json`,
             );
-        }}>Download check result</Button
+        }}
       >
+        Download check result
+      </Button>
     {/if}
   </div>
 </details>

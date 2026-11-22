@@ -912,9 +912,9 @@
                         class="mt-1 text-xs text-amber-600 dark:text-amber-400"
                       >
                         Replace <code>WEBHOOK_ID/WEBHOOK_TOKEN</code> with the
-                        last two parts of your Discord webhook URL (<code
-                          >https://discord.com/api/webhooks/ID/TOKEN</code
-                        >).
+                        last two parts of your Discord webhook URL (<code>
+                          https://discord.com/api/webhooks/ID/TOKEN
+                        </code>).
                       </p>
                     {/if}
                     {#if !isAdmin}
@@ -939,14 +939,17 @@
                         href="https://appriseit.com/getting-started/universal-syntax/"
                         target="_blank"
                         class="text-primary hover:underline"
-                        >Apprise documentation</a
                       >
+                        Apprise documentation
+                      </a>
                       for supported
                       <a
                         href="https://appriseit.com/services/"
                         target="_blank"
-                        class="text-primary hover:underline">services</a
+                        class="text-primary hover:underline"
                       >
+                        services
+                      </a>
                     </p>
                   </div>
                 {/if}

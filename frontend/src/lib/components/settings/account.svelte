@@ -347,9 +347,9 @@
                 : 'border-primary'}"
             >
               <Avatar.Image src={avatarPreview} alt="Avatar" />
-              <Avatar.Fallback
-                >{profile.username.charAt(0).toUpperCase()}</Avatar.Fallback
-              >
+              <Avatar.Fallback>
+                {profile.username.charAt(0).toUpperCase()}
+              </Avatar.Fallback>
             </Avatar.Root>
           {:else}
             <Avatar.Root class="w-32 h-32 text-4xl font-bold">

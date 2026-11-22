@@ -45,40 +45,45 @@
     </p>
     {#each traces as trace (trace.id)}
       <details class="rounded border p-3 space-y-3">
-        <summary class="cursor-pointer"
-          ><strong>Rule #{trace.rule_id} · {outcomeLabel(trace.outcome)}</strong
-          ><span class="block text-xs text-muted-foreground"
-            >{targetLabel(trace.target)} · {new Date(
+        <summary class="cursor-pointer">
+          <strong>
+            Rule #{trace.rule_id} · {outcomeLabel(trace.outcome)}
+          </strong><span class="block text-xs text-muted-foreground">
+            {targetLabel(trace.target)} · {new Date(
               trace.observed_at,
             ).toLocaleString()}{trace.candidate_id
               ? ` · Candidate #${trace.candidate_id}`
-              : ""}</span
-          ></summary
-        >
+              : ""}
+          </span>
+        </summary>
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs">
-            <caption class="sr-only">Observed rule conditions</caption><thead
-              ><tr
-                ><th class="p-2">Condition</th><th class="p-2">Expected</th><th
-                  class="p-2">Observed</th
-                ><th class="p-2">Result</th></tr
-              ></thead
-            ><tbody>
+            <caption class="sr-only">Observed rule conditions</caption><thead>
+              <tr>
+                <th class="p-2">Condition</th><th class="p-2">Expected</th><th
+                  class="p-2"
+                >
+                  Observed
+                </th><th class="p-2">Result</th>
+              </tr>
+            </thead><tbody>
               {#each trace.conditions as condition}<tr
                   class="border-t align-top"
-                  ><td class="p-2 min-w-32"
-                    >{condition.field_label || condition.field}<span
+                >
+                  <td class="p-2 min-w-32">
+                    {condition.field_label || condition.field}<span
                       class="block text-muted-foreground"
-                      >{condition.operator_label ||
+                    >
+                      {condition.operator_label ||
                         condition.operator?.replaceAll("_", " ") ||
-                        "Unknown operator"}</span
-                    ></td
-                  ><td class="p-2 break-words max-w-52"
-                    >{evidenceValue(condition.expected)}</td
-                  ><td class="p-2 break-words max-w-52"
-                    >{observedValue(condition)}</td
-                  ><td class="p-2">{outcomeLabel(condition.outcome)}</td></tr
-                >{/each}
+                        "Unknown operator"}
+                    </span>
+                  </td><td class="p-2 break-words max-w-52">
+                    {evidenceValue(condition.expected)}
+                  </td><td class="p-2 break-words max-w-52">
+                    {observedValue(condition)}
+                  </td><td class="p-2">{outcomeLabel(condition.outcome)}</td>
+                </tr>{/each}
             </tbody>
           </table>
         </div>
@@ -90,9 +95,9 @@
           inputs are not zero or a successful check.
         </p>
         <details>
-          <summary class="cursor-pointer font-medium"
-            >Captured rule logic (ALL / ANY groups)</summary
-          >
+          <summary class="cursor-pointer font-medium">
+            Captured rule logic (ALL / ANY groups)
+          </summary>
           <pre
             class="mt-2 whitespace-pre-wrap break-words rounded bg-muted p-2 text-xs">{ruleLogic(
               trace.definition,
@@ -169,16 +174,19 @@
             variant="outline"
             size="sm"
             onclick={() => onlookup?.(`scan-${trace.scan_id}`)}
-            >Look up this scan</Button
-          >{/if}
+          >
+            Look up this scan
+          </Button>{/if}
       </details>
     {/each}
   {:else}
     {#if onload}<Button
         variant="outline"
         disabled={loading}
-        onclick={() => onload?.()}>Load recorded scan evidence</Button
-      >{/if}
+        onclick={() => onload?.()}
+      >
+        Load recorded scan evidence
+      </Button>{/if}
     <p class="text-muted-foreground">
       No historical evaluations are loaded here. Prepare a candidate support
       bundle to view recorded scans. Older scans and targets skipped before
@@ -187,9 +195,9 @@
   {/if}
   {#if decisions?.candidates.length}
     <details class="space-y-2" open={!traces.length}>
-      <summary class="cursor-pointer font-medium"
-        >Current candidate's recorded match inputs</summary
-      >
+      <summary class="cursor-pointer font-medium">
+        Current candidate's recorded match inputs
+      </summary>
       <p class="text-muted-foreground">
         These saved candidate inputs do not establish the exact historical scan
         or the result of every condition.
@@ -218,9 +226,9 @@
     </details>
   {/if}
   {#if decisions?.protections.length}<details class="space-y-2">
-      <summary class="cursor-pointer font-medium"
-        >Current saved protections</summary
-      >
+      <summary class="cursor-pointer font-medium">
+        Current saved protections
+      </summary>
       <p class="text-muted-foreground">
         Current state, separate from protection context captured after a
         historical scan.

@@ -417,8 +417,8 @@
             {#if $auth.user.avatar_url}
               <Avatar.Root class="w-10 h-10 border-3 border-primary">
                 <Avatar.Image src={$auth.user.avatar_url} alt="Avatar" />
-                <Avatar.Fallback
-                  >{($auth.user.display_name || $auth.user.username)
+                <Avatar.Fallback>
+                  {($auth.user.display_name || $auth.user.username)
                     .charAt(0)
                     .toUpperCase()}
                 </Avatar.Fallback>
@@ -427,11 +427,11 @@
               <Avatar.Root
                 class="w-10 h-10 text-2xl text-primary-foreground font-bold"
               >
-                <Avatar.Fallback class="bg-primary"
-                  >{($auth.user.display_name || $auth.user.username)
+                <Avatar.Fallback class="bg-primary">
+                  {($auth.user.display_name || $auth.user.username)
                     .charAt(0)
-                    .toUpperCase()}</Avatar.Fallback
-                >
+                    .toUpperCase()}
+                </Avatar.Fallback>
               </Avatar.Root>
             {/if}
             <div>

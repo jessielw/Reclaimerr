@@ -610,9 +610,9 @@
                 {/if}
               </div>
               {#if item.protected}
-                <a href="#/protected" class="text-sm underline"
-                  >Title protected - manage protection</a
-                >
+                <a href="#/protected" class="text-sm underline">
+                  Title protected - manage protection
+                </a>
               {/if}
               {#if item.manual_reason}
                 <p

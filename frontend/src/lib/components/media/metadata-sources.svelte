@@ -681,8 +681,9 @@
                 {:else if card.icon === "anilist"}
                   <span class={`${textIconClass} ${card.labelClass}`}>AL</span>
                 {:else if card.icon === "imdb"}
-                  <span class={`${textIconClass} ${card.labelClass}`}>IMDb</span
-                  >
+                  <span class={`${textIconClass} ${card.labelClass}`}>
+                    IMDb
+                  </span>
                 {:else}
                   <span class={`${textIconClass} ${card.labelClass}`}>TM</span>
                 {/if}

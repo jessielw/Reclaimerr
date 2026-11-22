@@ -84,13 +84,14 @@
               <span
                 class={`text-xs wrap-break-word ${field.containerClass ?? ""}`}
               >
-                <span class={field.labelClass ?? "text-muted-foreground"}
-                  >{field.label}:</span
-                >
+                <span class={field.labelClass ?? "text-muted-foreground"}>
+                  {field.label}:
+                </span>
                 <span
                   class={field.valueClass ?? "font-medium text-foreground/80"}
-                  >{field.value}</span
                 >
+                  {field.value}
+                </span>
               </span>
             {/each}
           </div>

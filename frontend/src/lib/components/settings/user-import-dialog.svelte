@@ -76,9 +76,9 @@
       </Dialog.Description>
     </Dialog.Header>
     <div class="space-y-4">
-      <Button variant="secondary" onclick={downloadTemplate} disabled={busy}
-        >Download CSV Template</Button
-      >
+      <Button variant="secondary" onclick={downloadTemplate} disabled={busy}>
+        Download CSV Template
+      </Button>
       <div class="rounded-md border border-border p-3 text-sm space-y-2">
         <p>
           Keep the header: <code>username,email,display_name,password</code>.
@@ -125,24 +125,25 @@
         </p>
         <div class="overflow-auto max-h-72 rounded-md border border-border">
           <table class="w-full text-sm">
-            <thead class="bg-muted"
-              ><tr
-                ><th class="p-2 text-left">Row</th><th class="p-2 text-left"
-                  >Username</th
-                ><th class="p-2 text-left">Result</th></tr
-              ></thead
-            >
+            <thead class="bg-muted">
+              <tr>
+                <th class="p-2 text-left">Row</th><th class="p-2 text-left">
+                  Username
+                </th><th class="p-2 text-left">Result</th>
+              </tr>
+            </thead>
             <tbody>
               {#each result.rows as row (row.row)}
-                <tr class="border-t border-border"
-                  ><td class="p-2">{row.row}</td><td class="p-2"
-                    >{row.username}</td
-                  ><td
+                <tr class="border-t border-border">
+                  <td class="p-2">{row.row}</td><td class="p-2">
+                    {row.username}
+                  </td><td
                     class="p-2"
                     class:text-destructive={row.status === "error"}
-                    >{row.message}</td
-                  ></tr
-                >
+                  >
+                    {row.message}
+                  </td>
+                </tr>
               {/each}
             </tbody>
           </table>
@@ -152,14 +153,17 @@
         <Button
           variant="secondary"
           disabled={busy}
-          onclick={() => (open = false)}>Close</Button
+          onclick={() => (open = false)}
         >
+          Close
+        </Button>
         <Button
           variant="secondary"
           disabled={!file || busy || completed}
           onclick={() => submit(true)}
-          >{busy ? "Processing…" : "Preview CSV"}</Button
         >
+          {busy ? "Processing…" : "Preview CSV"}
+        </Button>
         <Button
           disabled={busy ||
             !result ||
@@ -167,8 +171,9 @@
             result.ready === 0 ||
             completed}
           onclick={() => submit(false)}
-          >Import {result?.ready ?? 0} Users</Button
         >
+          Import {result?.ready ?? 0} Users
+        </Button>
       </div>
     </div>
   </Dialog.Content>

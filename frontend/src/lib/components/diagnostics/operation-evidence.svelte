@@ -14,9 +14,9 @@
     class="rounded-md border p-3 space-y-3 text-sm"
     open={observations.some((entry) => entry.operation?.outcome === "failed")}
   >
-    <summary class="cursor-pointer font-medium"
-      >Per-item operation outcomes ({observations.length} observations)</summary
-    >
+    <summary class="cursor-pointer font-medium">
+      Per-item operation outcomes ({observations.length} observations)
+    </summary>
     <p class="text-muted-foreground">
       File steps and candidate outcomes are separate. A later successful
       fallback does not erase an earlier failure. Provider requests can cover
@@ -70,8 +70,9 @@
             variant="outline"
             size="sm"
             onclick={() => onlookup(`operation-${entry.correlation_id}`)}
-            >Look up this operation</Button
           >
+            Look up this operation
+          </Button>
         </li>
       {/each}
     </ol>

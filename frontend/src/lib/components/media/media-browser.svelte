@@ -336,13 +336,17 @@
               <Select.Item
                 value="asc"
                 label="Ascending"
-                class="text-card-foreground">Ascending</Select.Item
+                class="text-card-foreground"
               >
+                Ascending
+              </Select.Item>
               <Select.Item
                 value="desc"
                 label="Descending"
-                class="text-card-foreground">Descending</Select.Item
+                class="text-card-foreground"
               >
+                Descending
+              </Select.Item>
             </Select.Content>
           </Select.Root>
         </div>
@@ -352,9 +356,9 @@
       <div class="flex flex-col sm:flex-row sm:items-center gap-3">
         <label class="flex items-center gap-2">
           <Switch bind:checked={candidatesOnly} />
-          <span class="text-sm text-muted-foreground"
-            >Reclaim candidates only</span
-          >
+          <span class="text-sm text-muted-foreground">
+            Reclaim candidates only
+          </span>
         </label>
 
         <!-- per page + poster size -->

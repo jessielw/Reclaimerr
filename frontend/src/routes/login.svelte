@@ -838,9 +838,9 @@
                 {:else}
                   <DoorClosed class="size-6" />
                 {/if}
-                <span class="font-medium"
-                  >{localLoading ? "Signing in..." : "Sign In"}</span
-                >
+                <span class="font-medium">
+                  {localLoading ? "Signing in..." : "Sign In"}
+                </span>
               </Button>
             </form>
 

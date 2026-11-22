@@ -425,16 +425,18 @@
               variant="outline"
               size="sm"
               onclick={() => (tokenScopes = [...readOnlyScopes])}
-              >Read only</Button
             >
+              Read only
+            </Button>
             <Button
               type="button"
               variant="outline"
               size="sm"
               onclick={() =>
                 (tokenScopes = scopeOptions.map((option) => option.value))}
-              >Full automation</Button
             >
+              Full automation
+            </Button>
           </div>
         </div>
         <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -448,9 +450,9 @@
               />
               <span>
                 <span class="block text-sm font-medium">{option.label}</span>
-                <span class="block text-xs text-muted-foreground"
-                  >{option.description}</span
-                >
+                <span class="block text-xs text-muted-foreground">
+                  {option.description}
+                </span>
               </span>
             </label>
           {/each}
@@ -523,11 +525,13 @@
               <Button
                 variant="outline"
                 size="sm"
-                onclick={() => testWebhook(webhook)}>Test</Button
+                onclick={() => testWebhook(webhook)}
               >
-              <Button size="sm" onclick={() => saveWebhook(webhook)}
-                >Save</Button
-              >
+                Test
+              </Button>
+              <Button size="sm" onclick={() => saveWebhook(webhook)}>
+                Save
+              </Button>
               <Button
                 variant="destructive"
                 size="icon-sm"
@@ -550,9 +554,9 @@
                 class="h-9 w-full rounded-md border bg-background px-3 text-sm"
                 bind:value={webhook.method}
               >
-                <option value="POST">POST</option><option value="GET"
-                  >GET</option
-                >
+                <option value="POST">POST</option><option value="GET">
+                  GET
+                </option>
               </select>
             </div>
           </div>
@@ -582,20 +586,20 @@
             <div>
               <Label class="mb-1">Media types</Label>
               <div class="flex gap-4 text-sm">
-                <label class="flex items-center gap-2"
-                  ><input
+                <label class="flex items-center gap-2">
+                  <input
                     type="checkbox"
                     checked={webhook.media_types.includes(MediaType.Movie)}
                     onchange={() => toggleMediaType(webhook, MediaType.Movie)}
-                  /> Movies</label
-                >
-                <label class="flex items-center gap-2"
-                  ><input
+                  /> Movies
+                </label>
+                <label class="flex items-center gap-2">
+                  <input
                     type="checkbox"
                     checked={webhook.media_types.includes(MediaType.Series)}
                     onchange={() => toggleMediaType(webhook, MediaType.Series)}
-                  /> Series</label
-                >
+                  /> Series
+                </label>
               </div>
             </div>
           </div>
@@ -622,8 +626,10 @@
               <Button
                 variant="outline"
                 size="sm"
-                onclick={() => addHeader(webhook)}>Add header</Button
+                onclick={() => addHeader(webhook)}
               >
+                Add header
+              </Button>
             </div>
             {#each webhook.headers as header, headerIndex}
               <div class="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
@@ -637,8 +643,10 @@
                   variant="destructive"
                   size="icon-sm"
                   onclick={() => removeHeader(webhook, headerIndex)}
-                  aria-label="Remove header"><Trash2 class="size-4" /></Button
+                  aria-label="Remove header"
                 >
+                  <Trash2 class="size-4" />
+                </Button>
               </div>
             {/each}
           </div>
@@ -666,30 +674,31 @@
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-left text-sm">
-          <thead class="text-xs text-muted-foreground"
-            ><tr
-              ><th class="py-2">Endpoint</th><th>Event</th><th>Status</th><th
-                >Attempts</th
-              ><th>Created</th><th></th></tr
-            ></thead
-          >
+          <thead class="text-xs text-muted-foreground">
+            <tr>
+              <th class="py-2">Endpoint</th><th>Event</th><th>Status</th><th>
+                Attempts
+              </th><th>Created</th><th></th>
+            </tr>
+          </thead>
           <tbody>
             {#each deliveries as delivery}
-              <tr class="border-t"
-                ><td class="py-2">{delivery.endpoint_name}</td><td
-                  >{delivery.event_type}</td
-                ><td>{delivery.status}</td><td>{delivery.attempts}</td><td
-                  >{formatDate(delivery.created_at)}</td
-                ><td class="text-right"
-                  >{#if delivery.status === "failed"}<Button
+              <tr class="border-t">
+                <td class="py-2">{delivery.endpoint_name}</td><td>
+                  {delivery.event_type}
+                </td><td>{delivery.status}</td><td>{delivery.attempts}</td><td>
+                  {formatDate(delivery.created_at)}
+                </td><td class="text-right">
+                  {#if delivery.status === "failed"}<Button
                       variant="outline"
                       size="icon-sm"
                       onclick={() => retryDelivery(delivery)}
                       aria-label="Retry delivery"
-                      ><RotateCcw class="size-4" /></Button
-                    >{/if}</td
-                ></tr
-              >
+                    >
+                      <RotateCcw class="size-4" />
+                    </Button>{/if}
+                </td>
+              </tr>
             {/each}
           </tbody>
         </table>

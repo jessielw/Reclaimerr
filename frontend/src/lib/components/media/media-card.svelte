@@ -161,9 +161,9 @@
                 class="bg-black/60 text-white font-semibold backdrop-blur-sm py-0.5 px-2 
                   rounded-md min-w-[1.6rem] flex items-center justify-center cursor-help"
               >
-                <span class="{mediaCountSize} text-center"
-                  >{media.versions.length}</span
-                >
+                <span class="{mediaCountSize} text-center">
+                  {media.versions.length}
+                </span>
               </Badge>
             </Tooltip.Trigger>
             <Tooltip.Content>
@@ -177,9 +177,9 @@
                 class="bg-black/60 text-white font-semibold backdrop-blur-sm py-0.5 px-2 
                 rounded-md min-w-[1.6rem] flex items-center justify-center cursor-help"
               >
-                <span class="{mediaCountSize} text-center"
-                  >{seriesBadgeCount}</span
-                >
+                <span class="{mediaCountSize} text-center">
+                  {seriesBadgeCount}
+                </span>
               </Badge>
             </Tooltip.Trigger>
             <Tooltip.Content>

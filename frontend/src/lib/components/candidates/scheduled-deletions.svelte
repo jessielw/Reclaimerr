@@ -139,9 +139,9 @@
         : "s"}{#if nextAt}
         · next: {formatDateTimeToLocaleString(nextAt)}{/if}
     </span>
-    <Button size="sm" variant="outline" onclick={() => (listOpen = true)}
-      >Manage</Button
-    >
+    <Button size="sm" variant="outline" onclick={() => (listOpen = true)}>
+      Manage
+    </Button>
   </div>
 {/if}
 
@@ -150,12 +150,12 @@
     class="max-h-[90dvh] overflow-y-auto text-foreground sm:max-w-2xl"
   >
     <Dialog.Header>
-      <Dialog.Title
-        >Scheduled manual deletions ({schedules.length})</Dialog.Title
-      >
-      <Dialog.Description
-        >Reschedule or cancel before execution starts.</Dialog.Description
-      >
+      <Dialog.Title>
+        Scheduled manual deletions ({schedules.length})
+      </Dialog.Title>
+      <Dialog.Description>
+        Reschedule or cancel before execution starts.
+      </Dialog.Description>
     </Dialog.Header>
     <ul
       class="max-h-[60dvh] divide-y divide-border overflow-y-auto rounded-md border border-border"
@@ -187,15 +187,18 @@
                 size="sm"
                 variant="outline"
                 disabled={schedule.state === "running"}
-                onclick={() => edit(schedule, "reschedule")}>Reschedule</Button
+                onclick={() => edit(schedule, "reschedule")}
               >
+                Reschedule
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
                 disabled={schedule.state === "running"}
                 onclick={() => edit(schedule, "cancel")}
-                >Cancel scheduled deletion</Button
               >
+                Cancel scheduled deletion
+              </Button>
             </div>
           {/if}
         </li>
@@ -221,16 +224,16 @@
     }}
   >
     <Dialog.Header>
-      <Dialog.Title
-        >{action === "cancel"
+      <Dialog.Title>
+        {action === "cancel"
           ? "Cancel scheduled deletion?"
-          : "Reschedule deletion"}</Dialog.Title
-      >
-      <Dialog.Description
-        >{target?.target.title}{action === "cancel"
+          : "Reschedule deletion"}
+      </Dialog.Title>
+      <Dialog.Description>
+        {target?.target.title}{action === "cancel"
           ? ". Normal cleanup rules will apply again, including any earlier automatic deletion date."
-          : ". Choose a new deletion date and time."}</Dialog.Description
-      >
+          : ". Choose a new deletion date and time."}
+      </Dialog.Description>
     </Dialog.Header>
     {#if action === "reschedule"}<DeletionTiming
         mode="later"
@@ -238,19 +241,20 @@
         allowNow={false}
       />{/if}
     <Dialog.Footer>
-      <Button variant="outline" disabled={busy} onclick={() => (open = false)}
-        >Back</Button
-      >
+      <Button variant="outline" disabled={busy} onclick={() => (open = false)}>
+        Back
+      </Button>
       <Button
         disabled={busy ||
           (action === "reschedule" && !!scheduledDeletionError(value))}
         onclick={save}
-        >{busy
+      >
+        {busy
           ? "Saving…"
           : action === "cancel"
             ? "Cancel scheduled deletion"
-            : "Save new time"}</Button
-      >
+            : "Save new time"}
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
