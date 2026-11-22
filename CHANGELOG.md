@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- An integration can name the user behind an API token call by sending the forward-auth user header, so approvals, denials, retries, schedules and reschedules are recorded as that user instead of the token. The caller must be a trusted forward-auth proxy.
+- The person who scheduled a deletion directly is now emailed when it completes or fails, using the Deletion Completed and Deletion Failed notifications. Deletions with a delete request notify the requester as before.
+
 ## [0.6.16] - 2026-11-20
 
 ### Added

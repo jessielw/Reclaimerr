@@ -774,7 +774,7 @@ def _record_review_actor(request: DeleteRequest, actor: DeletionActor) -> None:
     request.reviewed_by_user_id = actor.user_id
     request.reviewed_by_api_token_id = actor.token_id
     request.reviewed_by_api_token_name = (
-        actor.name if actor.token_id is not None else None
+        actor.token_name if actor.token_id is not None else None
     )
 
 

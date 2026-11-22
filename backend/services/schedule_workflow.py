@@ -241,12 +241,15 @@ async def reschedule_schedule(
     schedule_id: int,
     request: RescheduleDeletionRequest,
     authorized_actor: User | ApiPrincipal,
+    *,
+    actor: DeletionActor | None = None,
 ) -> ScheduledDeletionResponse:
-    actor = (
-        DeletionActor.from_user(authorized_actor)
-        if isinstance(authorized_actor, User)
-        else DeletionActor.from_token(authorized_actor)
-    )
+    if actor is None:
+        actor = (
+            DeletionActor.from_user(authorized_actor)
+            if isinstance(authorized_actor, User)
+            else DeletionActor.from_token(authorized_actor)
+        )
     when = future_time(request.scheduled_at)
     async with candidate_workflow_lock:
         schedule = await _editable_schedule(db, schedule_id, authorized_actor)
