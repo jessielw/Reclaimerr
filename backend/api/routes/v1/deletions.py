@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from backend.core.api_tokens import (
     get_api_principal,
     require_api_scope,
 )
+from backend.core.auth import get_acting_user
 from backend.database import get_db
 from backend.database.models import ScheduledDeletion
 from backend.enums import ProtectionRequestStatus
@@ -50,6 +51,18 @@ schedule_router = APIRouter(
 )
 
 Db = Annotated[AsyncSession, Depends(get_db)]
+
+
+async def _actor(
+    http: Request, principal: ApiPrincipal, db: AsyncSession
+) -> DeletionActor:
+    """Record the user behind an integration's call, when it names one."""
+    user = await get_acting_user(http, db)
+    if user is None:
+        return DeletionActor.from_token(principal)
+    return DeletionActor.from_token_for_user(principal, user)
+
+
 ReadRequests = Annotated[
     ApiPrincipal, Depends(require_api_scope(API_TOKEN_DELETE_REQUESTS_READ_SCOPE))
 ]
@@ -104,28 +117,36 @@ async def get_delete_request(
 
 @request_router.post("/{request_id}/approve")
 async def approve_delete_request(
-    request_id: int, review: ApproveDeleteRequest, principal: ManageRequests, db: Db
+    request_id: int,
+    review: ApproveDeleteRequest,
+    http: Request,
+    principal: ManageRequests,
+    db: Db,
 ) -> DeleteRequestResponse:
     return await delete_request_workflow.approve_request(
-        db, request_id, review, DeletionActor.from_token(principal)
+        db, request_id, review, await _actor(http, principal, db)
     )
 
 
 @request_router.post("/{request_id}/deny")
 async def deny_delete_request(
-    request_id: int, review: ReviewDeleteRequest, principal: ManageRequests, db: Db
+    request_id: int,
+    review: ReviewDeleteRequest,
+    http: Request,
+    principal: ManageRequests,
+    db: Db,
 ) -> DeleteRequestResponse:
     return await delete_request_workflow.deny_request(
-        db, request_id, review, DeletionActor.from_token(principal)
+        db, request_id, review, await _actor(http, principal, db)
     )
 
 
 @request_router.post("/{request_id}/retry")
 async def retry_delete_request(
-    request_id: int, principal: ManageRequests, db: Db
+    request_id: int, http: Request, principal: ManageRequests, db: Db
 ) -> DeleteRequestResponse:
     return await delete_request_workflow.retry_request(
-        db, request_id, DeletionActor.from_token(principal)
+        db, request_id, await _actor(http, principal, db)
     )
 
 
@@ -200,10 +221,13 @@ async def get_scheduled_deletion(
 
 @schedule_router.post("", status_code=201)
 async def create_scheduled_deletion(
-    request: ScheduleMediaRequest, principal: ManageManualSchedules, db: Db
+    request: ScheduleMediaRequest,
+    http: Request,
+    principal: ManageManualSchedules,
+    db: Db,
 ) -> ExternalScheduledDeletionResponse:
     schedule = await schedule_workflow.create_media_schedule(
-        db, DeletionActor.from_token(principal), request
+        db, await _actor(http, principal, db), request
     )
     return _schedule_summary(schedule)
 
@@ -212,11 +236,16 @@ async def create_scheduled_deletion(
 async def reschedule_deletion(
     schedule_id: int,
     request: RescheduleDeletionRequest,
+    http: Request,
     principal: ManageSchedules,
     db: Db,
 ) -> ExternalScheduledDeletionResponse:
     schedule = await schedule_workflow.reschedule_schedule(
-        db, schedule_id, request, principal
+        db,
+        schedule_id,
+        request,
+        principal,
+        actor=await _actor(http, principal, db),
     )
     return _schedule_summary(schedule)
 
