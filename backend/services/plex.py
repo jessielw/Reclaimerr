@@ -1716,11 +1716,22 @@ class PlexService:
                 # batched details from /library/metadata/{id1,id2,...}.
                 source_item = details_by_key.get(str(item["ratingKey"]), item)
                 genre_names = self._genre_names(source_item.get("Genre"))
-                media_entries = (
-                    source_item.get("Media", [])
-                    if source_item
-                    else item.get("Media", [])
-                )
+                section_media = item.get("Media", [])
+                media_entries = source_item.get("Media", section_media)
+                # Plex keeps trashed versions in its inventory until trash is
+                # emptied. Preserve the section's marker when enriching metadata.
+                trashed_media_ids = {
+                    str(media.get("id", ""))
+                    for media in section_media
+                    if (as_int(media.get("deletedAt")) or 0) > 0
+                }
+                available_media = [
+                    media
+                    for media in media_entries
+                    if media.get("id")
+                    and str(media["id"]) not in trashed_media_ids
+                    and (as_int(media.get("deletedAt")) or 0) <= 0
+                ]
                 collection_names = collection_names_by_item_id.get(
                     str(item["ratingKey"])
                 )
@@ -1728,7 +1739,9 @@ class PlexService:
                 # build one MovieVersionData per Media entry (each = one physical file/version)
                 added_at = self._fromtimestamp(item.get("addedAt"))
                 versions = []
-                for media in media_entries:
+                # Keep the inventory when every copy is trashed. A storage
+                # outage can temporarily mark all versions as unavailable.
+                for media in available_media or media_entries:
                     media_id = str(media.get("id", ""))
                     if not media_id:
                         continue

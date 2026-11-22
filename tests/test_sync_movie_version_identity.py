@@ -7,14 +7,17 @@ import pytest
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from backend.api.routes.media import get_candidates
 from backend.database import Base
 from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimCandidate,
+    User,
 )
-from backend.enums import MediaType, Service
+from backend.enums import MediaType, Service, UserRole
 from backend.models.media import MovieVersionData
+from backend.services.plex import PlexService
 from backend.tasks import sync
 
 
@@ -162,5 +165,108 @@ def test_direct_match_refreshes_item_id():
                 )
                 await db.commit()
                 assert original.service_item_id == "new-item"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("trash_marker_in_details", "storage_unavailable"),
+    [
+        pytest.param(False, False, id="section-marker"),
+        pytest.param(True, False, id="detail-marker"),
+        pytest.param(False, True, id="all-copies-trashed"),
+    ],
+)
+def test_plex_sync_prunes_trashed_version_candidates(
+    monkeypatch, trash_marker_in_details, storage_unavailable
+):
+    async def run():
+        movie_item = {
+            "type": "movie",
+            "ratingKey": "1",
+            "title": "Upgrade",
+            "Guid": [{"id": "tmdb://123"}],
+        }
+        original = {
+            "id": "original",
+            "Part": [{"file": "/movies/original/film.mkv", "size": 1000}],
+        }
+        upgrade = {
+            "id": "upgrade",
+            "deletedAt": 1795228800 if storage_unavailable else 0,
+            "Part": [{"file": "/movies/upgrade/film.mkv", "size": 2000}],
+        }
+        trashed_original = dict(original, deletedAt="1795228800")
+        section_item = dict(
+            movie_item,
+            Media=[original if trash_marker_in_details else trashed_original, upgrade],
+        )
+        detail_item = dict(
+            movie_item,
+            Media=[trashed_original if trash_marker_in_details else original, upgrade],
+        )
+
+        async def make_request(self, path, *, params=None, **kwargs):
+            if path == "library/sections/1/all":
+                items = [section_item] if params["type"] == 1 else []
+                return {"MediaContainer": {"Metadata": items}}, 200
+            containers = {
+                "library/sections": {
+                    "Directory": [{"type": "movie", "key": "1", "uuid": "library"}]
+                },
+                "library/metadata/1": {"Metadata": [detail_item]},
+                "status/sessions/history/all": {"Metadata": []},
+            }
+            return {"MediaContainer": containers[path]}, 200
+
+        monkeypatch.setattr(PlexService, "_make_request", make_request)
+        plex = PlexService("token", "http://plex.local")
+        [incoming_movie] = await plex.get_aggregated_movies()
+
+        async with database() as factory, factory() as db:
+            movie = Movie(title="Upgrade", tmdb_id=123, size=3000)
+            db.add(movie)
+            await db.flush()
+            stored_original = version(movie.id, "original")
+            stored_upgrade = version(movie.id, "upgrade")
+            stored_upgrade.size = 2000
+            db.add_all([stored_original, stored_upgrade])
+            await db.flush()
+            for stored in (stored_original, stored_upgrade):
+                db.add(
+                    ReclaimCandidate(
+                        media_type=MediaType.MOVIE,
+                        movie_id=movie.id,
+                        movie_version_id=stored.id,
+                        estimated_space_bytes=stored.size,
+                        matched_rule_ids=[],
+                        matched_criteria={},
+                        reason="Selected by cleanup rule",
+                        reason_data=[],
+                    )
+                )
+            await db.commit()
+
+            await sync._upsert_movie_versions(db, movie, incoming_movie.versions)
+            await db.commit()
+
+            response = await get_candidates(
+                User(username="admin", password_hash="x", role=UserRole.ADMIN),
+                db,
+                page=1,
+                per_page=25,
+                sort_by="estimated_space_bytes",
+                sort_order="desc",
+                search=None,
+                media_type=MediaType.MOVIE,
+            )
+            expected = {stored_upgrade.id: 2000}
+            if storage_unavailable:
+                expected[stored_original.id] = 1000
+            assert {
+                item.movie_version_id: item.estimated_space_bytes
+                for item in response.items
+            } == expected
+            assert movie.size == sum(expected.values())
 
     asyncio.run(run())
