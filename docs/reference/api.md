@@ -173,6 +173,8 @@ By default an approval, denial, retry, new schedule or reschedule made with a to
 
 This uses the same trust rule as [trusted proxy authentication](../getting-started/configuration.md#trusted-proxy-authentication): `FORWARD_AUTH_ENABLED` must be on and the caller must be in `FORWARD_AUTH_TRUSTED_PROXIES`. From any other caller the header is ignored. An unknown or disabled username never fails the call, it just stays attributed to the token.
 
+When a deletion that someone scheduled directly finishes, with no delete request behind it, Reclaimerr emails the person who scheduled it using the **Deletion Completed** or **Deletion Failed** notification. Deletions with a delete request notify the requester as before.
+
 To schedule only one copy of a movie, look up the movie, select the matching `versions[].id`, and schedule it using that value as `movie_version_id`:
 
 ```bash
