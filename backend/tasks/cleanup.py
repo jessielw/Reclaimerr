@@ -18,7 +18,7 @@ from uuid import uuid4
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.auto_delete_diagnostics import (
@@ -8456,6 +8456,7 @@ async def _sync_rule_radarr_tags() -> tuple[int, int]:
 
     total_tagged = 0
     total_untagged = 0
+    reconciled_tags = []
     for config_id, client in clients.items():
         expected = by_config.get(config_id, {})
         all_movies = await client.get_all_movies()
@@ -8474,6 +8475,10 @@ async def _sync_rule_radarr_tags() -> tuple[int, int]:
         )
         total_tagged += tagged
         total_untagged += untagged
+        reconciled_tags.append((tmdb_to_id, expected))
+    await _cache_managed_arr_tags(
+        Movie, Service.RADARR, clients.keys(), reconciled_tags
+    )
     return total_tagged, total_untagged
 
 
@@ -8531,6 +8536,7 @@ async def _sync_rule_sonarr_tags() -> tuple[int, int]:
 
     total_tagged = 0
     total_untagged = 0
+    reconciled_tags = []
     for config_id, client in clients.items():
         expected = by_config.get(config_id, {})
         all_series = await client.get_all_series()
@@ -8551,7 +8557,65 @@ async def _sync_rule_sonarr_tags() -> tuple[int, int]:
         )
         total_tagged += tagged
         total_untagged += untagged
+        reconciled_tags.append((tmdb_to_id, expected))
+    await _cache_managed_arr_tags(
+        Series, Service.SONARR, clients.keys(), reconciled_tags
+    )
     return total_tagged, total_untagged
+
+
+async def _cache_managed_arr_tags(
+    model: type[Movie] | type[Series],
+    service: Service,
+    synced_config_ids: Collection[int],
+    snapshots: Sequence[tuple[dict[int, int], dict[str, set[int]]]],
+) -> None:
+    """Mirror the reconciled managed tags across all instances for each title."""
+    tags_by_tmdb: dict[int, set[str]] = {}
+    for tmdb_to_id, expected_by_tag in snapshots:
+        tmdb_by_arr_id = {arr_id: tmdb_id for tmdb_id, arr_id in tmdb_to_id.items()}
+        for tmdb_id in tmdb_to_id:
+            tags_by_tmdb.setdefault(tmdb_id, set())
+        for tag, arr_ids in expected_by_tag.items():
+            for arr_id in arr_ids:
+                tmdb_id = tmdb_by_arr_id.get(arr_id)
+                if tmdb_id is not None:
+                    tags_by_tmdb[tmdb_id].add(tag)
+
+    if not tags_by_tmdb:
+        return
+
+    async with async_db() as db:
+        # A configured instance may have failed to initialize. Its tags still
+        # contribute to the cached union, so refresh only from a complete set.
+        missing_config = await db.scalar(
+            select(ServiceConfig.id)
+            .where(
+                ServiceConfig.enabled.is_(True),
+                ServiceConfig.service_type == service,
+                ServiceConfig.id.notin_(synced_config_ids),
+            )
+            .limit(1)
+        )
+        if missing_config is not None:
+            return
+
+        items = await db.stream_scalars(
+            select(model)
+            .where(model.removed_at.is_(None))
+            .options(load_only(model.tmdb_id, model.arr_tags))
+            .execution_options(yield_per=1000)
+        )
+        async for item in items:
+            managed_tags = tags_by_tmdb.get(item.tmdb_id)
+            if managed_tags is None:
+                continue
+            current = set(item.arr_tags or [])
+            reconciled = {tag for tag in current if not _is_managed_arr_tag(tag)}
+            reconciled.update(managed_tags)
+            if current != reconciled:
+                item.arr_tags = sorted(reconciled)
+        await db.commit()
 
 
 async def _sync_expected_arr_tags(

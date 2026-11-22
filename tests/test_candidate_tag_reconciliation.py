@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from sqlalchemy import delete
+import pytest
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.api.routes.requests import create_protection_request
@@ -11,6 +13,7 @@ from backend.database import Base
 from backend.database.models import (
     Movie,
     MovieArrRef,
+    MovieVersion,
     ReclaimCandidate,
     ReclaimRule,
     ServiceConfig,
@@ -49,9 +52,13 @@ class TaggingRadarr:
 
     async def add_tag_to_movies(self, movie_ids: list[int], tag_id: int) -> None:
         self.added.append((movie_ids, tag_id))
+        for movie_id in movie_ids:
+            (await self.get_movie(movie_id)).tags.append(tag_id)
 
     async def remove_tag_from_movies(self, movie_ids: list[int], tag_id: int) -> None:
         self.removed.append((movie_ids, tag_id))
+        for movie_id in movie_ids:
+            (await self.get_movie(movie_id)).tags.remove(tag_id)
 
 
 async def _seed(session_maker) -> SimpleNamespace:
@@ -126,9 +133,10 @@ def _radarr_double(monkeypatch, session_maker) -> TaggingRadarr:
     return client
 
 
-def test_scan_removes_managed_tag_from_dropped_candidate(monkeypatch) -> None:
-    """A scan that drops a candidate must strip its managed tag immediately."""
-
+@pytest.mark.parametrize("exclusion", ["keep_tag", "watch_count"])
+def test_scan_removes_managed_tag_from_dropped_candidate(
+    monkeypatch, exclusion
+) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
         async with engine.begin() as conn:
@@ -136,19 +144,91 @@ def test_scan_removes_managed_tag_from_dropped_candidate(monkeypatch) -> None:
         session_maker = async_sessionmaker(
             engine, expire_on_commit=False, class_=AsyncSession
         )
-        await _seed(session_maker)
+        ids = await _seed(session_maker)
         client = _radarr_double(monkeypatch, session_maker)
         monkeypatch.setattr("backend.core.task_tracking.async_db", session_maker)
+        monkeypatch.setattr(cleanup, "_load_arr_disk_space", AsyncMock(return_value=[]))
+        monkeypatch.setattr(cleanup, "notify_all_users", AsyncMock())
+        client.catalog.extend(
+            [
+                SimpleNamespace(id=8, label="personal"),
+                SimpleNamespace(id=9, label="keep"),
+            ]
+        )
+        client.movies[0].tags = []
+        client.movies[1].tags = [8]
 
-        async def fake_scan(_db) -> tuple[int, int, int]:
-            return 0, 0, 1
+        async with session_maker() as db:
+            await db.execute(delete(ReclaimCandidate))
+            rule = await db.get(ReclaimRule, ids.rule_id)
+            rule.definition = {
+                "version": 1,
+                "root": {
+                    "type": "group",
+                    "op": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "field": "arr.tags",
+                            "operator": "not_equals",
+                            "value": "keep",
+                        },
+                        {
+                            "type": "condition",
+                            "field": "watch.view_count",
+                            "operator": "equals",
+                            "value": 0,
+                        },
+                    ],
+                },
+            }
+            for movie_id in (ids.candidate_movie_id, ids.dropped_movie_id):
+                db.add(
+                    MovieVersion(
+                        movie_id=movie_id,
+                        service=Service.PLEX,
+                        service_item_id=str(movie_id),
+                        service_media_id=str(movie_id),
+                        library_id="movies",
+                        library_name="Movies",
+                        path=f"/movies/{movie_id}.mkv",
+                        size=100,
+                    )
+                )
+            (await db.get(Movie, ids.dropped_movie_id)).arr_tags = ["personal"]
+            await db.commit()
 
-        monkeypatch.setattr(cleanup, "_scan_with_db", fake_scan)
+        await cleanup.scan_cleanup_candidates()
+        assert set(client.added[0][0]) == {51, 52}
+        assert client.movies[1].tags == [8, 5]
 
+        async with session_maker() as db:
+            assert set(await db.scalars(select(ReclaimCandidate.movie_id))) == {
+                ids.candidate_movie_id,
+                ids.dropped_movie_id,
+            }
+            movie = await db.get(Movie, ids.dropped_movie_id)
+            assert movie.arr_tags == ["personal", "rec-clean"]
+            if exclusion == "watch_count":
+                movie.view_count = 1
+            else:
+                client.movies[1].tags.append(9)
+            await db.commit()
         await cleanup.scan_cleanup_candidates()
 
         assert client.removed == [([52], 5)]
-        assert client.added == []
+        assert client.movies[0].tags == [5]
+        expected_tags = ["personal"]
+        if exclusion == "keep_tag":
+            expected_tags.insert(0, "keep")
+            assert client.movies[1].tags == [8, 9]
+        else:
+            assert client.movies[1].tags == [8]
+        async with session_maker() as db:
+            assert list(await db.scalars(select(ReclaimCandidate.movie_id))) == [
+                ids.candidate_movie_id
+            ]
+            assert (await db.get(Movie, ids.dropped_movie_id)).arr_tags == expected_tags
         await engine.dispose()
 
     asyncio.run(run())
@@ -164,9 +244,13 @@ def test_tag_reconciliation_failure_does_not_fail_the_scan(monkeypatch) -> None:
         session_maker = async_sessionmaker(
             engine, expire_on_commit=False, class_=AsyncSession
         )
-        await _seed(session_maker)
+        ids = await _seed(session_maker)
         client = _radarr_double(monkeypatch, session_maker)
         monkeypatch.setattr("backend.core.task_tracking.async_db", session_maker)
+
+        async with session_maker() as db:
+            (await db.get(Movie, ids.dropped_movie_id)).arr_tags = ["rec-clean"]
+            await db.commit()
 
         async def boom() -> list[SimpleNamespace]:
             raise RuntimeError("radarr unreachable")
@@ -181,6 +265,8 @@ def test_tag_reconciliation_failure_does_not_fail_the_scan(monkeypatch) -> None:
         await cleanup.scan_cleanup_candidates()
 
         assert client.removed == []
+        async with session_maker() as db:
+            assert (await db.get(Movie, ids.dropped_movie_id)).arr_tags == ["rec-clean"]
         await engine.dispose()
 
     asyncio.run(run())
