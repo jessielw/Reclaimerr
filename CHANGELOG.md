@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Cleanup candidates view still lists Plex versions whose file is gone from disk.
+- Plex sync skips trashed movie and episode versions when an available copy exists, so Cleanup Candidates, TV file paths, and season and series sizes reflect available files. #550
 - Reclaimerr now clears stale `rec-*` tags from its media details when a movie or series stops matching cleanup rules and Radarr or Sonarr removes the tag. Tags such as `keep` are preserved.
 
 ## [0.6.16] - 2026-11-20
