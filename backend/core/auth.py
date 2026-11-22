@@ -297,6 +297,22 @@ async def _get_forward_auth_user(
     return user
 
 
+async def get_acting_user(request: Request, db: AsyncSession) -> User | None:
+    """The user a trusted proxy or integration says is behind an API token call.
+
+    Reads the same header, and applies the same trusted-peer rule, as forward
+    authentication, so it is only honoured when forward auth is enabled and the
+    caller is in FORWARD_AUTH_TRUSTED_PROXIES. It only attributes the action: the
+    token still decides what is allowed. An unknown or disabled user never
+    fails the call, it just stays attributed to the token.
+    """
+    try:
+        return await _get_forward_auth_user(request, db)
+    except HTTPException as exc:
+        LOG.warning(f"Ignoring acting user on an API token call: {exc.detail}")
+        return None
+
+
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),

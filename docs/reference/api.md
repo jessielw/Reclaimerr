@@ -167,6 +167,12 @@ Delete request and schedule lists use `page` (default 1) and `per_page` (default
 
 Reclaimerr checks the authorizing token when execution starts. A revoked, expired, missing, or insufficiently scoped token blocks execution. An authorized reschedule or immediate retry supplies a fresh grant. Canceling a schedule releases its hold on ordinary cleanup rules. The requested time is when the job becomes eligible to run. Playback, protections, and the saved file scope still apply.
 
+#### Acting on behalf of a user
+
+By default an approval, denial, retry, new schedule or reschedule made with a token is recorded as `API token: <name>`. An integration that knows which person is behind a call, such as a media server plugin, can name them by sending the forward-auth user header (`Remote-User` unless `FORWARD_AUTH_USER_HEADER` says otherwise) with the Reclaimerr username. The action is then recorded as that user, the token stays on record, and the token still decides what is allowed and whether a schedule can run.
+
+This uses the same trust rule as [trusted proxy authentication](../getting-started/configuration.md#trusted-proxy-authentication): `FORWARD_AUTH_ENABLED` must be on and the caller must be in `FORWARD_AUTH_TRUSTED_PROXIES`. From any other caller the header is ignored. An unknown or disabled username never fails the call, it just stays attributed to the token.
+
 To schedule only one copy of a movie, look up the movie, select the matching `versions[].id`, and schedule it using that value as `movie_version_id`:
 
 ```bash
