@@ -243,15 +243,19 @@
                   href="https://mdblist.com/"
                   target="_blank"
                   referrerpolicy="no-referrer"
-                  class="hyper-link">MDBList</a
+                  class="hyper-link"
                 >
+                  MDBList
+                </a>
                 and
                 <a
                   href="https://www.omdbapi.com/apikey.aspx"
                   target="_blank"
                   referrerpolicy="no-referrer"
-                  class="hyper-link">OMDb</a
+                  class="hyper-link"
                 >
+                  OMDb
+                </a>
                 requires an API key to to be configured. All other metadata providers
                 do not require anything to function.
               </p>
@@ -302,8 +306,8 @@
               <div class="mt-2 space-y-1 text-sm text-muted-foreground">
                 <!-- schedule value -->
                 {#if task.schedule_value}
-                  <span class="flex items-center" title="Schedule"
-                    ><CalendarDays class="size-4 text-foreground mr-2" />
+                  <span class="flex items-center" title="Schedule">
+                    <CalendarDays class="size-4 text-foreground mr-2" />
                     <!-- interval -->
                     {#if task.schedule_type === ScheduleType.Interval}
                       {formatInterval(parseInt(task.schedule_value))}
@@ -321,9 +325,10 @@
                     title={formatDateTimeToLocaleString(task.next_run, {
                       includeTimezone: true,
                     })}
-                    ><ClipboardClock class="size-4 text-foreground mr-2" /> Next run:
-                    {formatDistanceToNow(task.next_run)}</span
                   >
+                    <ClipboardClock class="size-4 text-foreground mr-2" /> Next run:
+                    {formatDistanceToNow(task.next_run)}
+                  </span>
                 {/if}
 
                 <!-- last run info -->
@@ -334,11 +339,12 @@
                         includeTimezone: true,
                       })
                     : undefined}
-                  ><Hourglass class="size-4 text-foreground mr-2" />Last run:
+                >
+                  <Hourglass class="size-4 text-foreground mr-2" />Last run:
                   {task.last_run
                     ? ` ${formatDistanceToNow(task.last_run)}`
-                    : " Never run"}</span
-                >
+                    : " Never run"}
+                </span>
 
                 <!-- error info -->
                 {#if task.error}

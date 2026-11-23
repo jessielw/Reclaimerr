@@ -337,10 +337,10 @@
   <Dialog.Content class="bg-card text-foreground sm:max-w-2xl">
     <Dialog.Header>
       <Dialog.Title>Copy visible logs</Dialog.Title>
-      <Dialog.Description
-        >Automatic copying is unavailable in this browser. Select the text below
-        and use your device's Copy command.</Dialog.Description
-      >
+      <Dialog.Description>
+        Automatic copying is unavailable in this browser. Select the text below
+        and use your device's Copy command.
+      </Dialog.Description>
     </Dialog.Header>
     <Textarea
       readonly
@@ -353,8 +353,10 @@
       <Button
         type="button"
         variant="secondary"
-        onclick={() => (copyDialogOpen = false)}>Close</Button
+        onclick={() => (copyDialogOpen = false)}
       >
+        Close
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

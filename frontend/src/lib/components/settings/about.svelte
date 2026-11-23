@@ -92,8 +92,9 @@
           target="_blank"
           rel="noopener noreferrer"
           class="text-primary underline"
-          >https://jessielw.github.io/Reclaimerr/</a
         >
+          https://jessielw.github.io/Reclaimerr/
+        </a>
       </article>
 
       <!-- github discussions -->
@@ -158,9 +159,9 @@
                 <Badge class="h-4 px-1 text-[10px] leading-none">Current</Badge>
               {/if}
               {#if selected.date}
-                <span class="text-xs text-muted-foreground"
-                  >{selected.date}</span
-                >
+                <span class="text-xs text-muted-foreground">
+                  {selected.date}
+                </span>
               {/if}
             </span>
           {/if}
@@ -171,14 +172,14 @@
               <span class="flex items-center gap-2">
                 {release.version}
                 {#if release.version === currentVersion}
-                  <Badge class="h-4 px-1 text-[10px] leading-none"
-                    >Current</Badge
-                  >
+                  <Badge class="h-4 px-1 text-[10px] leading-none">
+                    Current
+                  </Badge>
                 {/if}
                 {#if release.date}
-                  <span class="text-xs text-muted-foreground"
-                    >{release.date}</span
-                  >
+                  <span class="text-xs text-muted-foreground">
+                    {release.date}
+                  </span>
                 {/if}
               </span>
             </Select.Item>

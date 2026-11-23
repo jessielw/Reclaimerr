@@ -2399,15 +2399,15 @@
         </Button>
 
         {#if !canAddGroup(rootNode)}
-          <span class="text-xs text-muted-foreground"
-            >Max {MAX_TOTAL_GROUPS} groups reached</span
-          >
+          <span class="text-xs text-muted-foreground">
+            Max {MAX_TOTAL_GROUPS} groups reached
+          </span>
         {/if}
 
         {#if !canNestGroup(depth)}
-          <span class="text-xs text-muted-foreground"
-            >Max nesting depth reached</span
-          >
+          <span class="text-xs text-muted-foreground">
+            Max nesting depth reached
+          </span>
         {/if}
       </div>
     </div>
@@ -2510,9 +2510,9 @@
         </Select.Trigger>
         <Select.Content>
           {#each operatorOptions(node.field) as op}
-            <Select.Item value={op.value} label={op.label}
-              >{op.label}</Select.Item
-            >
+            <Select.Item value={op.value} label={op.label}>
+              {op.label}
+            </Select.Item>
           {/each}
         </Select.Content>
       </Select.Root>
@@ -2615,15 +2615,15 @@
               <Select.Content>
                 {#if node.field === "series.status"}
                   {#each TMDB_SERIES_STATUSES as status}
-                    <Select.Item value={status} label={status}
-                      >{status}</Select.Item
-                    >
+                    <Select.Item value={status} label={status}>
+                      {status}
+                    </Select.Item>
                   {/each}
                 {:else}
                   {#each SONARR_SERIES_STATUSES as status}
-                    <Select.Item value={status.value} label={status.label}
-                      >{status.label}</Select.Item
-                    >
+                    <Select.Item value={status.value} label={status.label}>
+                      {status.label}
+                    </Select.Item>
                   {/each}
                 {/if}
               </Select.Content>

@@ -52,19 +52,19 @@
   {#if allowNow}
     <fieldset class="flex flex-wrap gap-4">
       <legend class="mb-2 font-medium">When should this run?</legend>
-      <label class="flex items-center gap-2"
-        ><input type="radio" name={id} value="now" bind:group={mode} />
-        {nowLabel}</label
-      >
-      <label class="flex items-center gap-2"
-        ><input type="radio" name={id} value="later" bind:group={mode} /> Delete on…</label
-      >
+      <label class="flex items-center gap-2">
+        <input type="radio" name={id} value="now" bind:group={mode} />
+        {nowLabel}
+      </label>
+      <label class="flex items-center gap-2">
+        <input type="radio" name={id} value="later" bind:group={mode} /> Delete on…
+      </label>
     </fieldset>
   {/if}
   {#if mode === "later"}
-    <label for={`${id}-time`} class="block font-medium"
-      >Deletion date and time</label
-    >
+    <label for={`${id}-time`} class="block font-medium">
+      Deletion date and time
+    </label>
     <Input
       id={`${id}-time`}
       type="datetime-local"
@@ -93,8 +93,10 @@
           type="button"
           size="sm"
           variant="outline"
-          onclick={() => applyPreset(preset.apply)}>{preset.label}</Button
+          onclick={() => applyPreset(preset.apply)}
         >
+          {preset.label}
+        </Button>
       {/each}
     </div>
     <p id={`${id}-hint`} class="text-muted-foreground" aria-live="polite">

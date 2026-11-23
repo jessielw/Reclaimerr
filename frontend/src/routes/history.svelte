@@ -631,9 +631,9 @@
               </Select.Trigger>
               <Select.Content>
                 {#each statusOptions as option}
-                  <Select.Item value={option.value} label={option.label}
-                    >{option.label}</Select.Item
-                  >
+                  <Select.Item value={option.value} label={option.label}>
+                    {option.label}
+                  </Select.Item>
                 {/each}
               </Select.Content>
             </Select.Root>
@@ -649,9 +649,9 @@
               </Select.Trigger>
               <Select.Content>
                 {#each visibleActivityTypeOptions as option}
-                  <Select.Item value={option.value} label={option.label}
-                    >{option.label}</Select.Item
-                  >
+                  <Select.Item value={option.value} label={option.label}>
+                    {option.label}
+                  </Select.Item>
                 {/each}
               </Select.Content>
             </Select.Root>
@@ -669,9 +669,9 @@
                 }
               }}
             >
-              <Select.Trigger class="w-full text-foreground"
-                >{activityPerPage} / page</Select.Trigger
-              >
+              <Select.Trigger class="w-full text-foreground">
+                {activityPerPage} / page
+              </Select.Trigger>
               <Select.Content>
                 {#each PER_PAGE_OPTIONS as option}
                   <Select.Item
@@ -725,16 +725,16 @@
                   >
                     <div class="space-y-2">
                       <div class="flex flex-wrap items-center gap-2">
-                        <Badge class={activityStatusClasses(job.status)}
-                          >{statusLabel(job.status)}</Badge
-                        >
-                        <Badge variant="outline"
-                          >{jobTypeLabel(job.job_type)}</Badge
-                        >
+                        <Badge class={activityStatusClasses(job.status)}>
+                          {statusLabel(job.status)}
+                        </Badge>
+                        <Badge variant="outline">
+                          {jobTypeLabel(job.job_type)}
+                        </Badge>
                         {#if activityOperationLabel(job)}
-                          <Badge variant="secondary"
-                            >{activityOperationLabel(job)}</Badge
-                          >
+                          <Badge variant="secondary">
+                            {activityOperationLabel(job)}
+                          </Badge>
                         {/if}
                       </div>
                       <h3 class="text-base font-semibold text-foreground">
@@ -777,14 +777,14 @@
                           class="flex flex-wrap gap-2 text-xs text-muted-foreground"
                         >
                           {#each secondaryLabels(job) as label}
-                            <span class="rounded-full bg-muted px-2 py-1"
-                              >{label}</span
-                            >
+                            <span class="rounded-full bg-muted px-2 py-1">
+                              {label}
+                            </span>
                           {/each}
                           {#if candidateRemainingCount(job) > 0}
-                            <span class="rounded-full bg-muted px-2 py-1"
-                              >+{candidateRemainingCount(job)} more</span
-                            >
+                            <span class="rounded-full bg-muted px-2 py-1">
+                              +{candidateRemainingCount(job)} more
+                            </span>
                           {/if}
                         </div>
                       {/if}
@@ -894,18 +894,24 @@
               <Select.Item
                 value="all"
                 label="All types"
-                class="text-card-foreground">All types</Select.Item
+                class="text-card-foreground"
               >
+                All types
+              </Select.Item>
               <Select.Item
                 value={MediaType.Movie}
                 label="Movies"
-                class="text-card-foreground">Movies</Select.Item
+                class="text-card-foreground"
               >
+                Movies
+              </Select.Item>
               <Select.Item
                 value={MediaType.Series}
                 label="Series"
-                class="text-card-foreground">Series</Select.Item
+                class="text-card-foreground"
               >
+                Series
+              </Select.Item>
             </Select.Content>
           </Select.Root>
 
@@ -917,13 +923,17 @@
               <Select.Item
                 value="desc"
                 label="Newest first"
-                class="text-card-foreground">Newest first</Select.Item
+                class="text-card-foreground"
               >
+                Newest first
+              </Select.Item>
               <Select.Item
                 value="asc"
                 label="Oldest first"
-                class="text-card-foreground">Oldest first</Select.Item
+                class="text-card-foreground"
               >
+                Oldest first
+              </Select.Item>
             </Select.Content>
           </Select.Root>
 
@@ -937,9 +947,9 @@
               }
             }}
           >
-            <Select.Trigger class="w-full bg-card text-card-foreground"
-              >{historyPerPage} / page</Select.Trigger
-            >
+            <Select.Trigger class="w-full bg-card text-card-foreground">
+              {historyPerPage} / page
+            </Select.Trigger>
             <Select.Content class="bg-card">
               {#each PER_PAGE_OPTIONS as option}
                 <Select.Item
@@ -998,13 +1008,13 @@
                           ? "Movie"
                           : "Series"}
                       </Badge>
-                      <Badge variant="outline"
-                        >{historyActionLabel(entry)}</Badge
-                      >
+                      <Badge variant="outline">
+                        {historyActionLabel(entry)}
+                      </Badge>
                       {#if entry.size != null}
-                        <Badge variant="secondary"
-                          >{formatFileSize(entry.size)}</Badge
-                        >
+                        <Badge variant="secondary">
+                          {formatFileSize(entry.size)}
+                        </Badge>
                       {/if}
                       {#each historyAttributeLabels(entry) as label}
                         <Badge variant="secondary">{label}</Badge>

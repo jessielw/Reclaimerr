@@ -349,12 +349,12 @@
               </div>
               <div class="flex items-center gap-1.5">
                 {#if item.scheduled_deletion_id}
-                  <Badge variant="outline" class="text-[10px]"
-                    >Manual · {item.state}</Badge
-                  >
-                  <a href="/candidates" use:link class="text-xs underline"
-                    >Manage schedule</a
-                  >
+                  <Badge variant="outline" class="text-[10px]">
+                    Manual · {item.state}
+                  </Badge>
+                  <a href="/candidates" use:link class="text-xs underline">
+                    Manage schedule
+                  </a>
                 {/if}
                 <Badge variant="outline" class="text-[10px]">
                   {scopeLabel(item.scope)}

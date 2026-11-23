@@ -14,11 +14,13 @@ from backend.database.models import (
     Movie,
     MovieVersion,
     ReclaimCandidate,
+    ScheduledDeletion,
     Season,
     Series,
 )
 from backend.enums import MediaType
 from backend.models.api_v1.leaving_soon import LeavingSoonItem
+from backend.models.dashboard import DashboardLeavingSoonTitle
 from backend.services.candidate_lifecycle import candidate_scope
 from backend.services.media_server_items import MediaItemTarget, load_media_server_items
 from backend.services.reclaim_stats import (
@@ -35,15 +37,9 @@ from backend.services.scheduled_deletions import (
 )
 
 
-async def load_leaving_soon(
+async def _load_leaving_soon_items(
     db: AsyncSession,
-    *,
-    media_type: MediaType | None,
-    after: datetime | None,
-    before: datetime | None,
-    offset: int,
-    limit: int,
-) -> tuple[list[LeavingSoonItem], int]:
+) -> tuple[list[LeavingSoonItem], list[ScheduledDeletion]]:
     rows = (
         await db.execute(
             select(ReclaimCandidate, Movie, MovieVersion, Series, Season, Episode)
@@ -178,20 +174,33 @@ async def load_leaving_soon(
                 state=state,
             )
         )
-    filtered = sorted(
-        (
-            item
-            for item in items
-            if (media_type is None or item.media_type == media_type)
-            and (after is None or item.delete_at >= after)
-            and (before is None or item.delete_at <= before)
-        ),
+    items.sort(
         key=lambda item: (
             item.delete_at,
             item.source,
             item.scheduled_deletion_id or item.candidate_id or 0,
         ),
     )
+    return items, schedules
+
+
+async def load_leaving_soon(
+    db: AsyncSession,
+    *,
+    media_type: MediaType | None,
+    after: datetime | None,
+    before: datetime | None,
+    offset: int,
+    limit: int,
+) -> tuple[list[LeavingSoonItem], int]:
+    items, schedules = await _load_leaving_soon_items(db)
+    filtered = [
+        item
+        for item in items
+        if (media_type is None or item.media_type == media_type)
+        and (after is None or item.delete_at >= after)
+        and (before is None or item.delete_at <= before)
+    ]
     page = filtered[offset : offset + limit]
     candidate_targets = {
         index: MediaItemTarget(
@@ -222,3 +231,45 @@ async def load_leaving_soon(
         if item.scheduled_deletion_id is not None:
             item.media_server_items = scheduled_items[item.scheduled_deletion_id]
     return page, len(filtered)
+
+
+async def load_dashboard_leaving_soon(
+    db: AsyncSession, limit: int
+) -> list[DashboardLeavingSoonTitle]:
+    # Group the whole timeline so multiple scopes cannot crowd out other titles.
+    items, _ = await _load_leaving_soon_items(db)
+    by_title: dict[tuple[MediaType, int], list[LeavingSoonItem]] = {}
+    for item in items:
+        if item.source == "candidate" or item.state == "scheduled":
+            by_title.setdefault((item.media_type, item.media_id), []).append(item)
+
+    titles = list(by_title.items())[:limit]
+    media_by_key: dict[tuple[MediaType, int], Movie | Series] = {}
+    for media_type, model in ((MediaType.MOVIE, Movie), (MediaType.SERIES, Series)):
+        ids = [media_id for (kind, media_id), _ in titles if kind is media_type]
+        if ids:
+            rows = await db.scalars(select(model).where(model.id.in_(ids)))
+            media_by_key.update({(media_type, media.id): media for media in rows})
+
+    results = []
+    for key, (item, *rest) in titles:
+        media = media_by_key.get(key)
+        results.append(
+            DashboardLeavingSoonTitle(
+                media_id=item.media_id,
+                media_type=item.media_type,
+                title=media.title if media else item.title,
+                year=media.year if media else item.year,
+                poster_url=media.poster_url if media else None,
+                season_number=item.season_number,
+                episode_number=item.episode_number,
+                movie_version_id=item.movie_version_id,
+                size_bytes=item.size_bytes,
+                delete_operation=item.delete_operation,
+                delete_at=item.delete_at,
+                source=item.source,
+                scheduled_deletion_id=item.scheduled_deletion_id,
+                additional_count=len(rest),
+            )
+        )
+    return results

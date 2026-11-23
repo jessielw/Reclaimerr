@@ -302,14 +302,18 @@
         disabled={testing || saving || !baseUrl.trim()}
         status={testStatus}
         class="gap-2 sm:mr-auto"
-        size="sm">Test</TestButton
+        size="sm"
       >
+        Test
+      </TestButton>
       <Button
         variant="outline"
         size="sm"
         disabled={saving}
-        onclick={() => (open = false)}>Cancel</Button
+        onclick={() => (open = false)}
       >
+        Cancel
+      </Button>
       <Button size="sm" class="gap-2" disabled={!canSave} onclick={save}>
         {#if saving}
           <Spinner class="size-4" />

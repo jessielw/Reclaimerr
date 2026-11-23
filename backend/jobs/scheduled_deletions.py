@@ -28,6 +28,7 @@ async def run_scheduled_deletion(
         _finalize_delete_request_job,
         _run_candidate_file_op_job_unlocked,
     )
+    from backend.services.scheduled_deletion_notices import notify_schedule_creator
 
     candidate_id = None
     owns_execution = False
@@ -172,4 +173,16 @@ async def run_scheduled_deletion(
                 if state == "completed":
                     schedule.completed_at = datetime.now(UTC)
             await db.commit()
+        if (
+            owns_execution
+            and delete_request_id is None
+            and payload.scheduled_deletion_id is not None
+            and state in ("completed", "failed")
+        ):
+            # A deletion scheduled directly has no request to notify through
+            await notify_schedule_creator(
+                payload.scheduled_deletion_id,
+                succeeded=state == "completed",
+                error=error,
+            )
     return result

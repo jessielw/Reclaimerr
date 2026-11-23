@@ -970,9 +970,9 @@
       >
         <!-- mobile: native grouped select -->
         <div class="md:hidden p-4 border-b border-border">
-          <label for="settings-tab-select" class="sr-only"
-            >Select Settings Tab</label
-          >
+          <label for="settings-tab-select" class="sr-only">
+            Select Settings Tab
+          </label>
           <div class="relative">
             <select
               id="settings-tab-select"
@@ -1044,9 +1044,9 @@
             {#if isMultiInstanceTab(activeTab)}
               {#snippet instanceSelector()}
                 <Label class="space-y-1">
-                  <span class="text-sm font-medium text-foreground"
-                    >Instance</span
-                  >
+                  <span class="text-sm font-medium text-foreground">
+                    Instance
+                  </span>
                   <Select.Root
                     type="single"
                     value={serviceState[activeTab].config.id !== null
@@ -1139,9 +1139,9 @@
             />
             {#if activeTab === SettingsTab.Tautulli}
               <div class="mt-5 space-y-2">
-                <label for="tautulli-plex-server" class="text-sm font-medium"
-                  >Plex server</label
-                >
+                <label for="tautulli-plex-server" class="text-sm font-medium">
+                  Plex server
+                </label>
                 <select
                   id="tautulli-plex-server"
                   class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
@@ -1233,9 +1233,9 @@
                                 event.currentTarget.value,
                               )}
                           >
-                            <option value=""
-                              >Use existing history provider</option
-                            >
+                            <option value="">
+                              Use existing history provider
+                            </option>
                             {#each mediaServer.candidates as candidate}
                               <option value={candidate.id}>
                                 {candidate.name} - {candidate.match ===

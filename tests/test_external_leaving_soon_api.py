@@ -8,8 +8,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.v1 import router
 from backend.core.api_tokens import generate_api_token
+from backend.core.auth import get_current_user
 from backend.database import Base, get_db
 from backend.database.models import (
     ApiToken,
@@ -33,6 +35,7 @@ from backend.enums import (
     BackgroundJobStatus,
     BackgroundJobType,
     MediaType,
+    PageAccess,
     ProtectionRequestStatus,
     Service,
 )
@@ -186,6 +189,66 @@ async def test_combines_sources_and_exposes_only_public_fields(client_db):
     assert "/private" not in response.text
     assert "secret" not in response.text
     assert "private username" not in response.text
+
+
+async def test_dashboard_leaving_soon_groups_active_schedules_before_limiting(
+    client_db,
+):
+    _, db = client_db
+    candidate = await add_candidate(db, movie_version_id=10)
+    movie = await db.get(Movie, candidate.movie_id)
+    movie.poster_url = "/movie.jpg"
+    await add_candidate(db, movie=movie, movie_version_id=11)
+
+    series = Series(title="Manual Series", tmdb_id=500, poster_url="/series.jpg")
+    db.add(series)
+    await db.flush()
+    season = Season(series_id=series.id, season_number=1)
+    db.add(season)
+    await db.flush()
+    manual, _ = await add_schedule(
+        db,
+        media_type="series",
+        media_id=series.id,
+        scope="season",
+        season_id=season.id,
+        season_number=1,
+        title="Manual Series S01",
+    )
+    blocked, _ = await add_schedule(db, state="blocked")
+    blocked.scheduled_at = NOW
+    await db.commit()
+
+    viewer = User(
+        username="viewer", password_hash="unused", allowed_pages=[PageAccess.CANDIDATES]
+    )
+
+    async def override_db():
+        yield db
+
+    app = FastAPI()
+    app.include_router(dashboard_router)
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = lambda: viewer
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        url = "/api/dashboard/leaving-soon?limit=2"
+        response = await client.get(url)
+        assert response.status_code == 200
+        automatic, scheduled = response.json()
+        assert [automatic["source"], scheduled["source"]] == ["candidate", "manual"]
+        assert automatic["additional_count"] == 1
+        assert automatic["poster_url"] == "/movie.jpg"
+        assert scheduled["title"] == "Manual Series"
+        assert scheduled["season_number"] == 1
+        assert scheduled["poster_url"] == "/series.jpg"
+        assert scheduled["scheduled_deletion_id"] == manual.id
+        assert datetime.fromisoformat(scheduled["delete_at"]) == NOW + timedelta(days=3)
+        assert "/private" not in response.text
+
+        viewer.allowed_pages = [PageAccess.DASHBOARD]
+        assert (await client.get(url)).status_code == 403
 
 
 async def test_schedule_replaces_overlapping_candidate_but_preserves_other_versions(

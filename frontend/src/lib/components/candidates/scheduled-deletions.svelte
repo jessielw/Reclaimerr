@@ -16,10 +16,12 @@
 
   let {
     canManage,
+    initialScheduleId = null,
     refreshKey = 0,
     onChanged,
   }: {
     canManage: boolean;
+    initialScheduleId?: number | null;
     refreshKey?: number;
     onChanged?: () => void;
   } = $props();
@@ -30,6 +32,19 @@
   let action = $state<"reschedule" | "cancel">("reschedule");
   let open = $state(false);
   let listOpen = $state(false);
+  let manageTrigger = $state<HTMLButtonElement | null>(null);
+  let hasLoadedSchedules = false;
+  const linkedSchedule = $derived(
+    schedules.find(({ id }) => id === initialScheduleId),
+  );
+  const displayedSchedules = $derived(
+    linkedSchedule
+      ? [
+          linkedSchedule,
+          ...schedules.filter(({ id }) => id !== initialScheduleId),
+        ]
+      : schedules,
+  );
   const nextAt = $derived(
     schedules
       .filter((item) => item.state === "scheduled")
@@ -55,6 +70,9 @@
       });
       schedules = result;
       if (!result.length) listOpen = false;
+      else if (!hasLoadedSchedules && initialScheduleId !== null)
+        listOpen = true;
+      hasLoadedSchedules = true;
       error = "";
       if (changed) onChanged?.();
     } catch (e) {
@@ -128,39 +146,47 @@
     <Button size="sm" variant="outline" onclick={load}>Retry</Button>
   </div>
 {/if}
-{#if schedules.length}
-  <div
-    class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground"
-  >
-    <span>
-      <strong>{schedules.length}</strong> scheduled manual deletion{schedules.length ===
-      1
-        ? ""
-        : "s"}{#if nextAt}
-        · next: {formatDateTimeToLocaleString(nextAt)}{/if}
-    </span>
-    <Button size="sm" variant="outline" onclick={() => (listOpen = true)}
-      >Manage</Button
-    >
-  </div>
-{/if}
-
 <Dialog.Root bind:open={listOpen}>
+  {#if schedules.length}
+    <div
+      class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground"
+    >
+      <span>
+        <strong>{schedules.length}</strong> scheduled manual deletion{schedules.length ===
+        1
+          ? ""
+          : "s"}{#if nextAt}
+          · next: {formatDateTimeToLocaleString(nextAt)}{/if}
+      </span>
+      <Dialog.Trigger bind:ref={manageTrigger}>
+        {#snippet child({ props })}
+          <Button {...props} size="sm" variant="outline">Manage</Button>
+        {/snippet}
+      </Dialog.Trigger>
+    </div>
+  {/if}
+
   <Dialog.Content
     class="max-h-[90dvh] overflow-y-auto text-foreground sm:max-w-2xl"
+    onCloseAutoFocus={(event) => {
+      if (manageTrigger) {
+        event.preventDefault();
+        manageTrigger.focus({ preventScroll: true });
+      }
+    }}
   >
     <Dialog.Header>
-      <Dialog.Title
-        >Scheduled manual deletions ({schedules.length})</Dialog.Title
-      >
-      <Dialog.Description
-        >Reschedule or cancel before execution starts.</Dialog.Description
-      >
+      <Dialog.Title>
+        Scheduled manual deletions ({schedules.length})
+      </Dialog.Title>
+      <Dialog.Description>
+        Reschedule or cancel before execution starts.
+      </Dialog.Description>
     </Dialog.Header>
     <ul
       class="max-h-[60dvh] divide-y divide-border overflow-y-auto rounded-md border border-border"
     >
-      {#each schedules as schedule (schedule.id)}
+      {#each displayedSchedules as schedule (schedule.id)}
         <li class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div class="min-w-0 flex-1">
             <p class="font-medium">
@@ -187,15 +213,18 @@
                 size="sm"
                 variant="outline"
                 disabled={schedule.state === "running"}
-                onclick={() => edit(schedule, "reschedule")}>Reschedule</Button
+                onclick={() => edit(schedule, "reschedule")}
               >
+                Reschedule
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
                 disabled={schedule.state === "running"}
                 onclick={() => edit(schedule, "cancel")}
-                >Cancel scheduled deletion</Button
               >
+                Cancel scheduled deletion
+              </Button>
             </div>
           {/if}
         </li>
@@ -221,16 +250,16 @@
     }}
   >
     <Dialog.Header>
-      <Dialog.Title
-        >{action === "cancel"
+      <Dialog.Title>
+        {action === "cancel"
           ? "Cancel scheduled deletion?"
-          : "Reschedule deletion"}</Dialog.Title
-      >
-      <Dialog.Description
-        >{target?.target.title}{action === "cancel"
+          : "Reschedule deletion"}
+      </Dialog.Title>
+      <Dialog.Description>
+        {target?.target.title}{action === "cancel"
           ? ". Normal cleanup rules will apply again, including any earlier automatic deletion date."
-          : ". Choose a new deletion date and time."}</Dialog.Description
-      >
+          : ". Choose a new deletion date and time."}
+      </Dialog.Description>
     </Dialog.Header>
     {#if action === "reschedule"}<DeletionTiming
         mode="later"
@@ -238,19 +267,20 @@
         allowNow={false}
       />{/if}
     <Dialog.Footer>
-      <Button variant="outline" disabled={busy} onclick={() => (open = false)}
-        >Back</Button
-      >
+      <Button variant="outline" disabled={busy} onclick={() => (open = false)}>
+        Back
+      </Button>
       <Button
         disabled={busy ||
           (action === "reschedule" && !!scheduledDeletionError(value))}
         onclick={save}
-        >{busy
+      >
+        {busy
           ? "Saving…"
           : action === "cancel"
             ? "Cancel scheduled deletion"
-            : "Save new time"}</Button
-      >
+            : "Save new time"}
+      </Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

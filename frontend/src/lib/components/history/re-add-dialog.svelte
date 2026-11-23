@@ -114,9 +114,9 @@
 <Dialog.Root bind:open>
   <Dialog.Content class="bg-card text-foreground border-border">
     <Dialog.Header>
-      <Dialog.Title
-        >Re-add {options?.title ?? entry?.name ?? "title"}</Dialog.Title
-      >
+      <Dialog.Title>
+        Re-add {options?.title ?? entry?.name ?? "title"}
+      </Dialog.Title>
       <Dialog.Description>
         Adds the whole {entry?.media_type === "series" ? "series" : "movie"} back
         to {arrLabel}, monitored, and removes its import exclusion if it has
@@ -201,17 +201,22 @@
           </p>{/if}
 
         <Dialog.Footer>
-          <Button type="button" variant="outline" onclick={() => (open = false)}
-            >Cancel</Button
+          <Button
+            type="button"
+            variant="outline"
+            onclick={() => (open = false)}
           >
+            Cancel
+          </Button>
           <Button
             type="submit"
             disabled={submitting ||
               !!blockedReason ||
               !rootFolder ||
               profileId === null}
-            >{submitting ? "Adding…" : `Add to ${arrLabel}`}</Button
           >
+            {submitting ? "Adding…" : `Add to ${arrLabel}`}
+          </Button>
         </Dialog.Footer>
       </form>
     {/if}

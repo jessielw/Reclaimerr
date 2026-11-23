@@ -754,8 +754,10 @@
         onclick={() => {
           ruleCheckSnapshot = buildPreviewSnapshot();
           ruleCheckOpen = true;
-        }}>Why doesn’t this match?</Button
+        }}
       >
+        Why doesn’t this match?
+      </Button>
       <Button
         type="button"
         variant="secondary"
@@ -804,9 +806,12 @@
     <div class="flex flex-col md:flex-row space-x-2 space-y-2">
       <!-- name -->
       <div class="space-y-2 w-full">
-        <Label for="rule-name" class="block text-sm font-medium text-foreground"
-          >Name</Label
+        <Label
+          for="rule-name"
+          class="block text-sm font-medium text-foreground"
         >
+          Name
+        </Label>
         <Input
           id="rule-name"
           class="input-hover-el text-foreground"
@@ -857,10 +862,11 @@
       <Label
         for="rule-description"
         class="block text-sm font-medium text-foreground"
-        >Description <span class="font-normal text-muted-foreground"
-          >(optional)</span
-        ></Label
       >
+        Description <span class="font-normal text-muted-foreground">
+          (optional)
+        </span>
+      </Label>
       <Textarea
         id="rule-description"
         class="input-hover-el text-foreground"
@@ -1029,9 +1035,9 @@
 
       <!-- instance -->
       <div class="space-y-2">
-        <Label class="text-sm font-medium text-foreground"
-          >{selectedArrName} Instances</Label
-        >
+        <Label class="text-sm font-medium text-foreground">
+          {selectedArrName} Instances
+        </Label>
         <div class="grid gap-2 sm:grid-cols-2">
           {#each selectedArrInstances as instance}
             <Label
@@ -1320,9 +1326,9 @@
             <!-- preview data -->
             {#if previewData.metadata}
               <div class="mt-1 text-xs text-muted-foreground italic">
-                Evaluated <strong
-                  >{previewData.metadata.source_media_count}</strong
-                >
+                Evaluated <strong>
+                  {previewData.metadata.source_media_count}
+                </strong>
                 active source item{previewData.metadata.source_media_count === 1
                   ? ""
                   : "s"} before applying library scope and other rule conditions.
@@ -1330,9 +1336,9 @@
                   Excluded
                   {#if previewData.metadata.skipped_favorites_count > 0}
                     {" "}
-                    <strong
-                      >{previewData.metadata.skipped_favorites_count}</strong
-                    >
+                    <strong>
+                      {previewData.metadata.skipped_favorites_count}
+                    </strong>
                     favorite{previewData.metadata.skipped_favorites_count === 1
                       ? ""
                       : "s"}
@@ -1343,9 +1349,9 @@
                   {/if}
                   {#if previewData.metadata.skipped_protected_count > 0}
                     {" "}
-                    <strong
-                      >{previewData.metadata.skipped_protected_count}</strong
-                    >
+                    <strong>
+                      {previewData.metadata.skipped_protected_count}
+                    </strong>
                     protected item{previewData.metadata
                       .skipped_protected_count === 1
                       ? ""
@@ -1482,9 +1488,9 @@
                         <div class="text-sm font-medium text-foreground">
                           <span class="break-all">{entry.media_title}</span>
                           {#if entry.media_year}
-                            <span class="text-muted-foreground"
-                              >({entry.media_year})</span
-                            >
+                            <span class="text-muted-foreground">
+                              ({entry.media_year})
+                            </span>
                           {/if}
                         </div>
                         <div class="mt-1 flex flex-wrap items-center gap-2">
@@ -1748,11 +1754,11 @@
                 <div class="rounded-md border border-border bg-muted/20 p-3">
                   <div class="break-all">
                     <strong>{item.watch_user_key}</strong>
-                    <span class="text-muted-foreground"
-                      >on {item.source_service}, latest {explainMoment(
+                    <span class="text-muted-foreground">
+                      on {item.source_service}, latest {explainMoment(
                         item.watched_at,
-                      )}</span
-                    >
+                      )}
+                    </span>
                     {#if item.matched_requester_ids.length > 0}
                       <span class="text-muted-foreground">
                         &mdash; matched requester {item.matched_requester_ids.join(

@@ -101,9 +101,9 @@
         >
           <option value="tmdb_id">TMDB</option>
           <option value="imdb_id">IMDb</option>
-          {#if mediaType === MediaType.Series}<option value="tvdb_id"
-              >TVDB</option
-            >{/if}
+          {#if mediaType === MediaType.Series}<option value="tvdb_id">
+              TVDB
+            </option>{/if}
           <option value="anilist_id">AniList</option>
         </select>
       </div>
@@ -128,12 +128,12 @@
           {error}
         </p>{/if}
       <Dialog.Footer>
-        <Button type="button" variant="outline" onclick={() => (open = false)}
-          >Cancel</Button
-        >
-        <Button type="submit" disabled={submitting || !externalId.trim()}
-          >{submitting ? "Protecting…" : "Protect title"}</Button
-        >
+        <Button type="button" variant="outline" onclick={() => (open = false)}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={submitting || !externalId.trim()}>
+          {submitting ? "Protecting…" : "Protect title"}
+        </Button>
       </Dialog.Footer>
     </form>
   </Dialog.Content>

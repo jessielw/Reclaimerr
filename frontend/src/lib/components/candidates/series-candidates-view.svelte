@@ -185,8 +185,9 @@
                 <div class="text-sm font-medium text-foreground">
                   {row.media_title}
                   {#if row.media_year}
-                    <span class="text-muted-foreground">({row.media_year})</span
-                    >
+                    <span class="text-muted-foreground">
+                      ({row.media_year})
+                    </span>
                   {/if}
                 </div>
                 <div class="mt-1 flex flex-wrap items-center gap-2">
@@ -209,13 +210,15 @@
                     <span
                       class={`text-xs wrap-break-word ${field.containerClass ?? ""}`}
                     >
-                      <span class={field.labelClass ?? "text-muted-foreground"}
-                        >{field.label}:</span
-                      >
+                      <span class={field.labelClass ?? "text-muted-foreground"}>
+                        {field.label}:
+                      </span>
                       <span
                         class={field.valueClass ??
-                          "font-medium text-foreground/80"}>{field.value}</span
+                          "font-medium text-foreground/80"}
                       >
+                        {field.value}
+                      </span>
                     </span>
                   {/each}
                 </div>
@@ -224,8 +227,10 @@
                     {#each allRules as rule}
                       <Badge
                         class="border-primary whitespace-break-spaces"
-                        variant="secondary">{rule}</Badge
+                        variant="secondary"
                       >
+                        {rule}
+                      </Badge>
                     {/each}
                   {/if}
                 </div>
@@ -389,9 +394,9 @@
                   <ChevronRight
                     class={`size-3.5 text-muted-foreground transition-transform ${isSeasonOpen ? "rotate-90" : ""}`}
                   />
-                  <span class="text-foreground font-medium"
-                    >Season {seasonNum}</span
-                  >
+                  <span class="text-foreground font-medium">
+                    Season {seasonNum}
+                  </span>
                   <span class="text-amber-400">
                     {episodes.length} episode{episodes.length !== 1 ? "s" : ""}
                   </span>

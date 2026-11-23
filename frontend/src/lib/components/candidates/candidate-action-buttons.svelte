@@ -113,11 +113,9 @@
 
 <!-- deletion permissions -->
 {#if entry.scheduled_deletion_at}
-  <span class="text-xs text-blue-400 self-center"
-    >Scheduled for {formatDateTimeToLocaleString(
-      entry.scheduled_deletion_at,
-    )}</span
-  >
+  <span class="text-xs text-blue-400 self-center">
+    Scheduled for {formatDateTimeToLocaleString(entry.scheduled_deletion_at)}
+  </span>
 {/if}
 {#if canDelete && entry.scheduled_deletion_id}
   {@render action(

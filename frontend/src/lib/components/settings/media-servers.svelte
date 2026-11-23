@@ -395,8 +395,8 @@
         history.
         <br />
         <br />
-        <i
-          >Note: If you configure these later you will simply just have to wait
+        <i>
+          Note: If you configure these later you will simply just have to wait
           for or run the
           <strong>Sync Media</strong> task after
         </i>
@@ -459,9 +459,9 @@
         <h3 class="font-semibold text-foreground">
           Configured servers
           {#if servers.length}
-            <span class="text-sm font-normal text-muted-foreground"
-              >({servers.length})</span
-            >
+            <span class="text-sm font-normal text-muted-foreground">
+              ({servers.length})
+            </span>
           {/if}
         </h3>
         {#if servers.length > 1}

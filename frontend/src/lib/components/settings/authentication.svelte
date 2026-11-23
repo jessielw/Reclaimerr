@@ -270,9 +270,9 @@
         </p>
       {/if}
       <details class="text-sm text-muted-foreground">
-        <summary class="font-medium text-foreground"
-          >Recover access outside the app</summary
-        >
+        <summary class="font-medium text-foreground">
+          Recover access outside the app
+        </summary>
         <p class="mt-2">
           Set <code>AUTH_FORCE_LOCAL_LOGIN=true</code> in your environment or .env
           file and restart Reclaimerr. Sign in with an existing local admin username
@@ -408,9 +408,9 @@
 
         <div class="md:col-span-2">
           <Label for="oidcRedirectOverride" class="mb-2">
-            <span class="text-sm text-foreground"
-              >Redirect URI Override (optional)</span
-            >
+            <span class="text-sm text-foreground">
+              Redirect URI Override (optional)
+            </span>
           </Label>
           <Input
             id="oidcRedirectOverride"
@@ -436,8 +436,9 @@
         </div>
         <div class="grid gap-4 md:grid-cols-2">
           <div>
-            <Label for="ssoTabLabel" class="mb-2">SSO tab text (optional)</Label
-            >
+            <Label for="ssoTabLabel" class="mb-2">
+              SSO tab text (optional)
+            </Label>
             <Input
               id="ssoTabLabel"
               type="text"
@@ -451,9 +452,9 @@
             </p>
           </div>
           <div>
-            <Label for="ssoButtonLabel" class="mb-2"
-              >SSO button text (optional)</Label
-            >
+            <Label for="ssoButtonLabel" class="mb-2">
+              SSO button text (optional)
+            </Label>
             <Input
               id="ssoButtonLabel"
               type="text"

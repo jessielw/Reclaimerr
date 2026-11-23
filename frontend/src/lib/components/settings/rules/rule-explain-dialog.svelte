@@ -101,19 +101,19 @@
   >
     <Dialog.Header class="shrink-0">
       <Dialog.Title>Why doesn’t this match?</Dialog.Title>
-      <Dialog.Description
-        >Check one item against your current rule, including unsaved edits. This
+      <Dialog.Description>
+        Check one item against your current rule, including unsaved edits. This
         does not save the rule, create candidates or protections, or take
-        actions.</Dialog.Description
-      >
+        actions.
+      </Dialog.Description>
     </Dialog.Header>
     <div
       class="h-[55dvh] min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pr-2"
     >
       <div class="space-y-2">
-        <label for="rule-explain-search" class="text-sm font-medium"
-          >Find an item</label
-        >
+        <label for="rule-explain-search" class="text-sm font-medium">
+          Find an item
+        </label>
         <Input
           id="rule-explain-search"
           bind:value={search}
@@ -146,13 +146,14 @@
               aria-pressed={selected?.id === target.id}
               onclick={() => choose(target)}
             >
-              <span class="block text-sm font-medium break-words"
-                >{target.label}</span
-              >
+              <span class="block text-sm font-medium break-words">
+                {target.label}
+              </span>
               {#if target.path}<span
                   class="block text-xs text-muted-foreground break-all"
-                  >{target.path}</span
-                >{/if}
+                >
+                  {target.path}
+                </span>{/if}
             </button>
           {/each}
         {:else}
@@ -168,21 +169,21 @@
             size="sm"
             disabled={loading || targets.page <= 1}
             onclick={() => void loadTargets((targets?.page ?? 1) - 1)}
-            >Previous</Button
           >
-          <span
-            >Page {targets.page} of {Math.ceil(
-              targets.total / targets.per_page,
-            )}</span
-          >
+            Previous
+          </Button>
+          <span>
+            Page {targets.page} of {Math.ceil(targets.total / targets.per_page)}
+          </span>
           <Button
             variant="outline"
             size="sm"
             disabled={loading ||
               targets.page * targets.per_page >= targets.total}
             onclick={() => void loadTargets((targets?.page ?? 1) + 1)}
-            >Next</Button
           >
+            Next
+          </Button>
         </div>
       {/if}
       {#if selected}
@@ -191,10 +192,10 @@
             <strong>Selected:</strong>
             {selected.label}
           </p>
-          <Button disabled={checking} onclick={() => void check()}
-            >{#if checking}<Spinner class="size-4" />Checking…{:else}Check this
-              item{/if}</Button
-          >
+          <Button disabled={checking} onclick={() => void check()}>
+            {#if checking}<Spinner class="size-4" />Checking…{:else}Check this
+              item{/if}
+          </Button>
         </div>
       {/if}
       {#if error}<Notice type="error" title="Check failed">{error}</Notice>{/if}
@@ -228,8 +229,10 @@
           {/if}
           {#each result.warnings as warning}<Notice
               type="warning"
-              title="Source data warning">{warning}</Notice
-            >{/each}
+              title="Source data warning"
+            >
+              {warning}
+            </Notice>{/each}
           <p class="text-xs text-muted-foreground">
             All enabled conditions are checked, including branches normally
             skipped after a failure. Results use the same data sources and

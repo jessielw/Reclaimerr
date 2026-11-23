@@ -24,8 +24,10 @@
             <div class="min-w-0 space-y-1">
               <Badge
                 class="border-primary break-all whitespace-normal"
-                variant="secondary">{rule.name}</Badge
+                variant="secondary"
               >
+                {rule.name}
+              </Badge>
               {#if rule.description}
                 <p class="mt-1 whitespace-pre-line text-xs text-foreground">
                   {rule.description}

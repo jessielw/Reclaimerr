@@ -582,9 +582,9 @@
         />
       </div>
       <p class="text-muted-foreground text-sm">
-        <span class="text-foreground"
-          >Seerr requester watched after requesting</span
-        >
+        <span class="text-foreground">
+          Seerr requester watched after requesting
+        </span>
         normally requires every play to postdate that requester&apos;s earliest request.
         Turn this on to drop the date comparison and check completion only, making
         the field answer the same question as
@@ -746,9 +746,9 @@
             class="rounded-md border border-border bg-background/40 p-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5"
           >
             <div class="min-w-0">
-              <Label class="mb-2 text-xs whitespace-nowrap"
-                >Seerr instance</Label
-              >
+              <Label class="mb-2 text-xs whitespace-nowrap">
+                Seerr instance
+              </Label>
               <Select.Root
                 type="single"
                 value={instanceScopeValue(mapping)}
@@ -782,9 +782,9 @@
                 }}
               >
                 <Select.Trigger class="w-full min-w-0 text-foreground">
-                  <span class="block truncate"
-                    >{instanceScopeLabel(mapping)}</span
-                  >
+                  <span class="block truncate">
+                    {instanceScopeLabel(mapping)}
+                  </span>
                 </Select.Trigger>
                 <Select.Content>
                   <Select.Item value="__any__" label="Any instance">
@@ -803,9 +803,9 @@
             </div>
 
             <div class="min-w-0">
-              <Label class="mb-2 text-xs whitespace-nowrap"
-                >Seerr user (lookup)</Label
-              >
+              <Label class="mb-2 text-xs whitespace-nowrap">
+                Seerr user (lookup)
+              </Label>
               <Select.Root
                 type="single"
                 value={seerrSelectValue(mapping)}
@@ -828,9 +828,9 @@
                 }}
               >
                 <Select.Trigger class="w-full min-w-0 text-foreground">
-                  <span class="block truncate"
-                    >{seerrTriggerLabel(mapping)}</span
-                  >
+                  <span class="block truncate">
+                    {seerrTriggerLabel(mapping)}
+                  </span>
                 </Select.Trigger>
                 <Select.Content>
                   <Select.Item value="__manual__" label="Manual username only">
@@ -846,9 +846,9 @@
             </div>
 
             <div class="min-w-0">
-              <Label class="mb-2 text-xs whitespace-nowrap"
-                >Seerr username (manual)</Label
-              >
+              <Label class="mb-2 text-xs whitespace-nowrap">
+                Seerr username (manual)
+              </Label>
               <Input
                 type="text"
                 class="text-sm"
@@ -862,9 +862,9 @@
             </div>
 
             <div class="min-w-0">
-              <Label class="mb-2 text-xs whitespace-nowrap"
-                >Media watch user key</Label
-              >
+              <Label class="mb-2 text-xs whitespace-nowrap">
+                Media watch user key
+              </Label>
               <Popover.Root
                 open={isMediaUserPickerOpen(row.index)}
                 onOpenChange={(open) =>
@@ -939,8 +939,9 @@
             </div>
 
             <div class="min-w-0">
-              <Label class="mb-2 text-xs whitespace-nowrap">Service scope</Label
-              >
+              <Label class="mb-2 text-xs whitespace-nowrap">
+                Service scope
+              </Label>
               <Select.Root
                 type="single"
                 value={serviceScopeValue(mapping)}

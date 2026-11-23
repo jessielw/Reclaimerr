@@ -100,9 +100,9 @@
   bind:open={expanded}
   class="rounded-md border p-3 space-y-3 text-sm"
 >
-  <summary class="cursor-pointer font-medium"
-    >Find evidence by support code</summary
-  >
+  <summary class="cursor-pointer font-medium">
+    Find evidence by support code
+  </summary>
   <p class="text-muted-foreground">
     Paste a scan, operation or job code from the timeline or logs. Lookup reads
     stored history only. It does not rerun the operation.
@@ -114,8 +114,8 @@
       void search();
     }}
   >
-    <label class="flex-1 min-w-40"
-      >Support code<input
+    <label class="flex-1 min-w-40">
+      Support code<input
         class="mt-1 block w-full rounded-md border bg-background p-2 font-mono text-xs"
         bind:value={code}
         maxlength={80}
@@ -123,14 +123,15 @@
         autocomplete="off"
         spellcheck="false"
         disabled={loading || busy}
-      /></label
-    >
+      />
+    </label>
     <Button
       variant="outline"
       type="submit"
       disabled={loading || busy || !code.trim()}
-      >{loading ? "Searching…" : "Look up code"}</Button
     >
+      {loading ? "Searching…" : "Look up code"}
+    </Button>
   </form>
   <div aria-live="polite" class="space-y-2">
     {#if error}<p role="alert" class="text-destructive">{error}</p>{/if}
@@ -150,18 +151,21 @@
           {#if match.occurred_at}<p class="text-muted-foreground">
               Recorded {new Date(match.occurred_at).toLocaleString()}
             </p>{/if}
-          {#if match.targets.length > 1 || match.targets_truncated}<label
-              >Evidence scope<select
+          {#if match.targets.length > 1 || match.targets_truncated}<label>
+              Evidence scope<select
                 class="mt-1 block w-full rounded border bg-background p-2"
                 bind:value={selected[match.code]}
                 disabled={busy}
-                ><option value="">All targets associated with this code</option
-                >{#each match.targets as target}<option
+              >
+                <option value="">
+                  All targets associated with this code
+                </option>{#each match.targets as target}<option
                     value={`${target.scope}:${target.id}`}
-                    >{targetLabel(target)}</option
-                  >{/each}</select
-              ></label
-            >{:else if match.targets.length}<p>
+                  >
+                    {targetLabel(target)}
+                  </option>{/each}
+              </select>
+            </label>{:else if match.targets.length}<p>
               {targetLabel(match.targets[0])}
             </p>{:else}<p>
               No retained media association; the bundle will contain
@@ -177,13 +181,15 @@
               busy ||
               !!error ||
               searchedCode !== code.trim()}
-            onclick={() => prepare(match)}>Prepare matching evidence</Button
+            onclick={() => prepare(match)}
           >
+            Prepare matching evidence
+          </Button>
         </div>{/each}
       <details>
-        <summary class="cursor-pointer text-muted-foreground"
-          >Lookup coverage</summary
-        >
+        <summary class="cursor-pointer text-muted-foreground">
+          Lookup coverage
+        </summary>
         <ul class="list-disc pl-5">
           {#each result.limitations as note}<li>{note}</li>{/each}
         </ul>

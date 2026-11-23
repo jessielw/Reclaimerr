@@ -1269,6 +1269,26 @@ class PlexService:
         _, paths, _ = await self._get_episode_data_for_section(section_id)
         return paths
 
+    @staticmethod
+    def _filter_trashed_media(
+        media_entries: JsonList, section_media: JsonList
+    ) -> JsonList:
+        """Prefer available copies, using trash markers from both Plex responses."""
+        trashed_media_ids = {
+            str(media.get("id", ""))
+            for media in section_media
+            if (as_int(media.get("deletedAt")) or 0) > 0
+        }
+        available_media = [
+            media
+            for media in media_entries
+            if media.get("id")
+            and str(media["id"]) not in trashed_media_ids
+            and (as_int(media.get("deletedAt")) or 0) <= 0
+        ]
+        # A storage outage can temporarily mark every copy as trashed.
+        return available_media or media_entries
+
     async def _get_episode_data_for_section(
         self,
         section_id: str,
@@ -1350,9 +1370,19 @@ class PlexService:
             except (TypeError, ValueError):
                 continue
 
+            section_media = episode.get("Media", [])
+            media_entries = self._filter_trashed_media(
+                source_episode.get("Media") or section_media, section_media
+            )
+            primary_media = media_entries[0] if media_entries else {}
+            primary_parts = primary_media.get("Part") or []
+            primary_part = primary_parts[0] if primary_parts else None
+            ep_file = primary_part.get("file") if primary_part is not None else None
+            ep_path = normalize_fpath(ep_file) if ep_file else None
+
             # compute episode file size
             episode_size = 0
-            for media in source_episode.get("Media", []) or episode.get("Media", []):
+            for media in media_entries:
                 for part in media.get("Part", []):
                     episode_size += part.get("size", 0)
 
@@ -1360,14 +1390,8 @@ class PlexService:
             series_sizes[series_key] = series_sizes.get(series_key, 0) + episode_size
 
             # series path (first episode of each series)
-            if series_key not in series_paths:
-                media_list = source_episode.get("Media", []) or episode.get("Media", [])
-                if media_list and media_list[0].get("Part"):
-                    ep_file = media_list[0]["Part"][0].get("file")
-                    if ep_file:
-                        series_paths[series_key] = str(
-                            PurePosixPath(normalize_fpath(ep_file)).parent.parent
-                        )
+            if series_key not in series_paths and ep_path is not None:
+                series_paths[series_key] = str(PurePosixPath(ep_path).parent.parent)
 
             # accumulate season totals
             sk = (series_key, season_num)
@@ -1376,26 +1400,10 @@ class PlexService:
             if season_key and sk not in season_keys:
                 season_keys[sk] = season_key
 
-            # season path (first episode of each season)
-            if sk not in season_paths:
-                _media_list = source_episode.get("Media", []) or episode.get(
-                    "Media", []
-                )
-                if _media_list and _media_list[0].get("Part"):
-                    _ep_file = _media_list[0]["Part"][0].get("file")
-                    if _ep_file:
-                        season_paths[sk] = str(
-                            PurePosixPath(normalize_fpath(_ep_file)).parent
-                        )
-
-            # episode paths for this season
-            _media_list = source_episode.get("Media", []) or episode.get("Media", [])
-            if _media_list and _media_list[0].get("Part"):
-                _ep_file = _media_list[0]["Part"][0].get("file")
-                if _ep_file:
-                    season_episode_paths.setdefault(sk, []).append(
-                        normalize_fpath(_ep_file)
-                    )
+            if ep_path is not None:
+                if sk not in season_paths:
+                    season_paths[sk] = str(PurePosixPath(ep_path).parent)
+                season_episode_paths.setdefault(sk, []).append(ep_path)
 
             # season air date = earliest episode air date
             ep_air_date_raw = source_episode.get(
@@ -1420,7 +1428,7 @@ class PlexService:
                     season_added_at[sk] = ep_added_at
 
             # media aggregate signals per season
-            for media in source_episode.get("Media", []) or episode.get("Media", []):
+            for media in media_entries:
                 video_codec_raw = media.get("videoCodec")
                 audio_codec_raw = media.get("audioCodec")
                 if video_codec_raw:
@@ -1552,24 +1560,13 @@ class PlexService:
                 except (TypeError, ValueError):
                     ep_num = None
                 if ep_num is not None:
-                    ep_path: str | None = None
                     ep_size: int | None = None
                     ep_runtime_seconds: int | None = None
-                    _ep_media = source_episode.get("Media", []) or episode.get(
-                        "Media", []
-                    )
-                    if _ep_media:
-                        ep_duration_ms = as_float(_ep_media[0].get("duration"))
-                        if ep_duration_ms is not None:
-                            ep_runtime_seconds = int(ep_duration_ms / 1000)
-                        if _ep_media[0].get("Part"):
-                            _part = _ep_media[0]["Part"][0]
-                            ep_path = (
-                                normalize_fpath(_part.get("file"))
-                                if _part.get("file")
-                                else None
-                            )
-                            ep_size = _part.get("size") or episode_size or None
+                    ep_duration_ms = as_float(primary_media.get("duration"))
+                    if ep_duration_ms is not None:
+                        ep_runtime_seconds = int(ep_duration_ms / 1000)
+                    if primary_part is not None:
+                        ep_size = primary_part.get("size") or episode_size or None
                     ep_air: datetime | None = None
                     _ep_air_raw = source_episode.get(
                         "originallyAvailableAt"
@@ -1599,7 +1596,7 @@ class PlexService:
                             added_at=ep_added_at,
                             versions=self._episode_versions(
                                 str(episode.get("ratingKey", "")),
-                                _ep_media,
+                                media_entries,
                                 library_id or section_id,
                                 library_name or "",
                                 ep_added_at,
@@ -1716,10 +1713,9 @@ class PlexService:
                 # batched details from /library/metadata/{id1,id2,...}.
                 source_item = details_by_key.get(str(item["ratingKey"]), item)
                 genre_names = self._genre_names(source_item.get("Genre"))
-                media_entries = (
-                    source_item.get("Media", [])
-                    if source_item
-                    else item.get("Media", [])
+                section_media = item.get("Media", [])
+                media_entries = self._filter_trashed_media(
+                    source_item.get("Media", section_media), section_media
                 )
                 collection_names = collection_names_by_item_id.get(
                     str(item["ratingKey"])

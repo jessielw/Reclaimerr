@@ -111,9 +111,9 @@
 
             <div class="space-y-1">
               <p class="text-xs text-muted-foreground">
-                Your username will be <span class="text-foreground font-medium"
-                  >admin</span
-                >. You can add more users after setup.
+                Your username will be <span class="text-foreground font-medium">
+                  admin
+                </span>. You can add more users after setup.
               </p>
             </div>
 

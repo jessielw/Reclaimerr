@@ -458,32 +458,37 @@
                 ? `Use requested (${formatProtectionLabel(approveTarget)})`
                 : "Use requested (-)"}
               class="text-foreground"
-              >{approveTarget
+            >
+              {approveTarget
                 ? `Use requested (${formatProtectionLabel(approveTarget)})`
-                : "Use requested (-)"}</Select.Item
-            >
-            <Select.Item value="30" label="30 days" class="text-foreground"
-              >30 days</Select.Item
-            >
-            <Select.Item value="90" label="90 days" class="text-foreground"
-              >90 days</Select.Item
-            >
-            <Select.Item value="180" label="180 days" class="text-foreground"
-              >180 days</Select.Item
-            >
-            <Select.Item value="365" label="1 year" class="text-foreground"
-              >1 year</Select.Item
-            >
+                : "Use requested (-)"}
+            </Select.Item>
+            <Select.Item value="30" label="30 days" class="text-foreground">
+              30 days
+            </Select.Item>
+            <Select.Item value="90" label="90 days" class="text-foreground">
+              90 days
+            </Select.Item>
+            <Select.Item value="180" label="180 days" class="text-foreground">
+              180 days
+            </Select.Item>
+            <Select.Item value="365" label="1 year" class="text-foreground">
+              1 year
+            </Select.Item>
             <Select.Item
               value="custom"
               label="Custom days"
-              class="text-foreground">Custom days</Select.Item
+              class="text-foreground"
             >
+              Custom days
+            </Select.Item>
             <Select.Item
               value="permanent"
               label="Permanent"
-              class="text-foreground">Permanent</Select.Item
+              class="text-foreground"
             >
+              Permanent
+            </Select.Item>
           </Select.Content>
         </Select.Root>
         {#if approveDuration === "custom"}
@@ -537,9 +542,9 @@
       <Dialog.Title>Deny Request</Dialog.Title>
       <Dialog.Description>
         {#if denyTarget}
-          Denying protection request for <strong
-            >{denyTarget.media_title}</strong
-          >.
+          Denying protection request for <strong>
+            {denyTarget.media_title}
+          </strong>.
         {/if}
       </Dialog.Description>
     </Dialog.Header>
@@ -581,9 +586,9 @@
       <Dialog.Title>Cancel Request</Dialog.Title>
       <Dialog.Description>
         {#if cancelTarget}
-          Are you sure you want to cancel your request for <strong
-            >{cancelTarget.media_title}</strong
-          >? This cannot be undone.
+          Are you sure you want to cancel your request for <strong>
+            {cancelTarget.media_title}
+          </strong>? This cannot be undone.
         {/if}
       </Dialog.Description>
     </Dialog.Header>
@@ -638,30 +643,35 @@
               value="user_requested"
               label="Use each request's selected duration"
               class="text-foreground"
-              >Use each request's selected duration</Select.Item
             >
-            <Select.Item value="30" label="30 days" class="text-foreground"
-              >30 days</Select.Item
-            >
-            <Select.Item value="90" label="90 days" class="text-foreground"
-              >90 days</Select.Item
-            >
-            <Select.Item value="180" label="180 days" class="text-foreground"
-              >180 days</Select.Item
-            >
-            <Select.Item value="365" label="1 year" class="text-foreground"
-              >1 year</Select.Item
-            >
+              Use each request's selected duration
+            </Select.Item>
+            <Select.Item value="30" label="30 days" class="text-foreground">
+              30 days
+            </Select.Item>
+            <Select.Item value="90" label="90 days" class="text-foreground">
+              90 days
+            </Select.Item>
+            <Select.Item value="180" label="180 days" class="text-foreground">
+              180 days
+            </Select.Item>
+            <Select.Item value="365" label="1 year" class="text-foreground">
+              1 year
+            </Select.Item>
             <Select.Item
               value="custom"
               label="Custom days"
-              class="text-foreground">Custom days</Select.Item
+              class="text-foreground"
             >
+              Custom days
+            </Select.Item>
             <Select.Item
               value="permanent"
               label="Permanent"
-              class="text-foreground">Permanent</Select.Item
+              class="text-foreground"
             >
+              Permanent
+            </Select.Item>
           </Select.Content>
         </Select.Root>
         {#if bulkDuration === "custom"}
@@ -837,9 +847,9 @@
                       >
                         {req.media_title}
                       </h3>
-                      <span class="text-sm text-muted-foreground"
-                        >{req.media_year ?? "Unknown"}</span
-                      >
+                      <span class="text-sm text-muted-foreground">
+                        {req.media_year ?? "Unknown"}
+                      </span>
                     </div>
 
                     <p class="mt-1 text-xs text-muted-foreground line-clamp-1">
@@ -957,15 +967,17 @@
                     {#if selectedRequest.version_hdr ?? selectedRequest.season_hdr}
                       <span
                         class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                        >HDR</span
                       >
+                        HDR
+                      </span>
                     {/if}
                     <!-- dolby vision -->
                     {#if selectedRequest.version_dolby_vision ?? selectedRequest.season_dolby_vision}
                       <span
                         class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                        >Dolby Vision</span
                       >
+                        Dolby Vision
+                      </span>
                     {/if}
                     <!-- file size -->
                     {#if selectedRequest.version_size ?? selectedRequest.season_size}
@@ -1055,9 +1067,9 @@
                 >
                   {req.media_title}
                 </h3>
-                <span class="text-sm text-muted-foreground"
-                  >{req.media_year ?? "Unknown"}</span
-                >
+                <span class="text-sm text-muted-foreground">
+                  {req.media_year ?? "Unknown"}
+                </span>
                 <p class="mt-1 text-xs text-muted-foreground">
                   Requested {formatDate(req.created_at)} · {formatEffectiveProtectionLabel(
                     req,
@@ -1081,49 +1093,53 @@
                     {#if req.version_resolution ?? req.season_resolution}
                       <span
                         class="rounded-full border bg-muted px-2 py-0 text-xs"
-                        >{cleanResolutionString(
-                          req.version_resolution ?? req.season_resolution,
-                        )}</span
                       >
+                        {cleanResolutionString(
+                          req.version_resolution ?? req.season_resolution,
+                        )}
+                      </span>
                     {/if}
                     <!-- video codec -->
                     {#if req.version_video_codec}
                       <span
                         class="rounded-full border bg-muted px-2 py-0 text-xs"
-                        >{req.version_video_codec.toUpperCase()}</span
                       >
+                        {req.version_video_codec.toUpperCase()}
+                      </span>
                     {/if}
                     <!-- season video codecs -->
                     {#if req.season_video_codecs?.length}
                       {#each req.season_video_codecs as codec}
                         <span
                           class="rounded-full border bg-muted px-2 py-0 text-xs"
-                          >{codec.toUpperCase()}</span
                         >
+                          {codec.toUpperCase()}
+                        </span>
                       {/each}
                     {/if}
                     <!-- HDR -->
                     {#if req.version_hdr ?? req.season_hdr}
                       <span
                         class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                        >HDR</span
                       >
+                        HDR
+                      </span>
                     {/if}
                     <!-- dolby visions -->
                     {#if req.version_dolby_vision ?? req.season_dolby_vision}
                       <span
                         class="rounded-full border bg-muted px-2.5 py-0.5 text-xs font-medium"
-                        >Dolby Vision</span
                       >
+                        Dolby Vision
+                      </span>
                     {/if}
                     <!-- file size -->
                     {#if req.version_size ?? req.season_size}
                       <span
                         class="rounded-full border bg-muted px-2 py-0 text-xs"
-                        >{formatFileSize(
-                          req.version_size ?? req.season_size,
-                        )}</span
                       >
+                        {formatFileSize(req.version_size ?? req.season_size)}
+                      </span>
                     {/if}
                   </div>
                 {/if}

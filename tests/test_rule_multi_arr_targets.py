@@ -60,7 +60,7 @@ def test_radarr_tag_sync_applies_one_rule_to_multiple_selected_instances(
                     name=f"Radarr {index}",
                     enabled=True,
                 )
-                for index in (1, 2)
+                for index in (1, 2, 3)
             ]
             movie = Movie(title="Movie", tmdb_id=101, size=100)
             rule = ReclaimRule(
@@ -76,7 +76,7 @@ def test_radarr_tag_sync_applies_one_rule_to_multiple_selected_instances(
             )
             db.add_all([*configs, movie, rule])
             await db.flush()
-            arr_ids = [51, 52]
+            arr_ids = [51, 52, 53]
             for config, arr_id in zip(configs, arr_ids, strict=True):
                 db.add(
                     MovieArrRef(
@@ -88,7 +88,7 @@ def test_radarr_tag_sync_applies_one_rule_to_multiple_selected_instances(
                 )
             rule.action = {
                 **(rule.action or {}),
-                "radarr_service_config_ids": [config.id for config in configs],
+                "radarr_service_config_ids": [config.id for config in configs[:2]],
             }
             db.add(
                 ReclaimCandidate(
@@ -117,7 +117,10 @@ def test_radarr_tag_sync_applies_one_rule_to_multiple_selected_instances(
         assert [client.added for client in clients.values()] == [
             [([51], 5)],
             [([52], 5)],
+            [],
         ]
+        async with session_maker() as db:
+            assert (await db.get(Movie, movie.id)).arr_tags == ["rec-clean"]
         await engine.dispose()
 
     asyncio.run(run())

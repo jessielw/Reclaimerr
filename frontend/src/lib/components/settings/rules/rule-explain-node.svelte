@@ -43,16 +43,18 @@
           {current.op === "or" ? "ANY condition (OR)" : "ALL conditions (AND)"}
         {:else}
           {current.label || current.field}
-          <span class="text-muted-foreground"
-            >{current.operator_label || current.operator}</span
-          >
+          <span class="text-muted-foreground">
+            {current.operator_label || current.operator}
+          </span>
         {/if}
       </div>
       <span
         class="shrink-0 text-xs font-semibold rounded px-2 py-1 {stateClasses[
           current.state
-        ]}">{labels[current.state]}</span
+        ]}"
       >
+        {labels[current.state]}
+      </span>
     </div>
     {#if current.type === "group"}
       <div class="space-y-2 border-l pl-3">

@@ -276,9 +276,9 @@
         <div class="space-y-6 overflow-x-hidden">
           {#if showSyncNotice}
             <Notice type="warning" title="No Media Found">
-              A media server is configured but no media has been synced yet. Run <strong
-                >Sync Media</strong
-              >
+              A media server is configured but no media has been synced yet. Run <strong>
+                Sync Media
+              </strong>
               in <strong>Tasks</strong> to populate your library.
             </Notice>
           {/if}

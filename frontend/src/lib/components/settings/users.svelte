@@ -479,19 +479,24 @@
       <Button
         type="button"
         variant="secondary"
-        onclick={() => (showImportModal = true)}>Import CSV</Button
+        onclick={() => (showImportModal = true)}
       >
+        Import CSV
+      </Button>
       <Button
         type="button"
         variant="secondary"
         onclick={() => (showMediaImportModal = true)}
-        >Import from media server</Button
       >
+        Import from media server
+      </Button>
       <Button
         type="button"
         class="hover "
-        onclick={() => (showCreateModal = true)}><UserPlus /> Add User</Button
+        onclick={() => (showCreateModal = true)}
       >
+        <UserPlus /> Add User
+      </Button>
     </div>
   {/if}
 </div>
@@ -570,28 +575,34 @@
         <tr>
           <th
             class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-            >User</th
           >
+            User
+          </th>
           <th
             class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-            >Role</th
           >
+            Role
+          </th>
           <th
             class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-            >Page Access</th
           >
+            Page Access
+          </th>
           <th
             class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-            >Joined</th
           >
+            Joined
+          </th>
           <th
             class="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider"
-            >Last Login</th
           >
+            Last Login
+          </th>
           <th
             class="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider"
-            >Actions</th
           >
+            Actions
+          </th>
         </tr>
       </thead>
       <tbody class="divide-y divide-border">
@@ -603,11 +614,11 @@
                   {#if user.avatar_url}
                     <Avatar.Root class="w-16 h-16 border-2 border-primary">
                       <Avatar.Image src={user.avatar_url} alt={user.username} />
-                      <Avatar.Fallback
-                        >{(user.display_name || user.username)
+                      <Avatar.Fallback>
+                        {(user.display_name || user.username)
                           .charAt(0)
-                          .toUpperCase()}</Avatar.Fallback
-                      >
+                          .toUpperCase()}
+                      </Avatar.Fallback>
                     </Avatar.Root>
                   {:else}
                     <Avatar.Root
@@ -628,9 +639,9 @@
                   >
                     <span>{user.display_name || user.username}</span>
                     {#if user.display_name && user.display_name !== user.username}
-                      <span class="text-xs text-muted-foreground italic"
-                        >{user.username}</span
-                      >
+                      <span class="text-xs text-muted-foreground italic">
+                        {user.username}
+                      </span>
                     {/if}
                   </div>
                   {#if user.email}
@@ -642,8 +653,9 @@
               </div>
             </td>
             <td class="px-6 py-4 whitespace-nowrap">
-              <span class="text-sm text-foreground capitalize">{user.role}</span
-              >
+              <span class="text-sm text-foreground capitalize">
+                {user.role}
+              </span>
             </td>
             <td class="px-6 py-4 max-w-80">
               <span class="text-sm text-muted-foreground">
@@ -679,8 +691,10 @@
                     class="rounded-full "
                     title={`Edit user ${user.username}`}
                     aria-label={`Edit user ${user.username}`}
-                    onclick={() => openEditModal(user)}><UserPen /></Button
+                    onclick={() => openEditModal(user)}
                   >
+                    <UserPen />
+                  </Button>
                 {/if}
                 <!-- delete -->
                 {#if canManageUsers}
@@ -704,13 +718,15 @@
                         ? `self-delete-help-${user.id}`
                         : undefined}
                       onclick={() => openDeleteDialog(user)}
-                      disabled={user.id === $auth.user?.id}><UserX /></Button
+                      disabled={user.id === $auth.user?.id}
                     >
+                      <UserX />
+                    </Button>
                   </span>
                   {#if user.id === $auth.user?.id}
-                    <span id={`self-delete-help-${user.id}`} class="sr-only"
-                      >You cannot delete your own account.</span
-                    >
+                    <span id={`self-delete-help-${user.id}`} class="sr-only">
+                      You cannot delete your own account.
+                    </span>
                   {/if}
                 {/if}
               </div>
@@ -898,9 +914,9 @@
         text-foreground"
     >
       <Dialog.Header>
-        <Dialog.Title class="text-xl font-semibold text-foreground mb-4"
-          >Create Local User</Dialog.Title
-        >
+        <Dialog.Title class="text-xl font-semibold text-foreground mb-4">
+          Create Local User
+        </Dialog.Title>
       </Dialog.Header>
       <form
         onsubmit={(e) => {
@@ -977,9 +993,9 @@
         <div class="space-y-2">
           <Label for="new_permissions_container">Permissions</Label>
           {#if newUser.role === UserRole.Admin}
-            <span class="mt-0 text-xs text-muted-foreground"
-              >Permissions have no effect on Admins</span
-            >
+            <span class="mt-0 text-xs text-muted-foreground">
+              Permissions have no effect on Admins
+            </span>
           {/if}
           <div
             id="new_permissions_container"
@@ -1001,9 +1017,9 @@
                 />
                 <span>
                   <span class="font-medium">{option.label}</span>
-                  <span class="block text-xs text-muted-foreground"
-                    >{option.description}</span
-                  >
+                  <span class="block text-xs text-muted-foreground">
+                    {option.description}
+                  </span>
                 </span>
               </Label>
             {/each}
@@ -1086,8 +1102,10 @@
             type="button"
             class="flex-1 hover "
             onclick={closeModal}
-            variant="secondary">Cancel</Button
+            variant="secondary"
           >
+            Cancel
+          </Button>
           <Button type="submit" class="flex-1 hover ">Save Changes</Button>
         </div>
       </form>
@@ -1103,9 +1121,9 @@
         text-foreground"
     >
       <Dialog.Header>
-        <Dialog.Title class="text-xl font-semibold text-foreground mb-4"
-          >Edit User: {editingUser.username}</Dialog.Title
-        >
+        <Dialog.Title class="text-xl font-semibold text-foreground mb-4">
+          Edit User: {editingUser.username}
+        </Dialog.Title>
       </Dialog.Header>
       <form
         onsubmit={(e) => {
@@ -1172,9 +1190,9 @@
         <div class="space-y-2">
           <Label for="edit_permissions_container">Permissions</Label>
           {#if editUser.role === UserRole.Admin}
-            <span class="mt-0 text-xs text-muted-foreground"
-              >Permissions have no effect on Admins</span
-            >
+            <span class="mt-0 text-xs text-muted-foreground">
+              Permissions have no effect on Admins
+            </span>
           {/if}
           <div
             id="edit_permissions_container"
@@ -1195,9 +1213,9 @@
                 />
                 <span>
                   <span class="font-medium">{option.label}</span>
-                  <span class="block text-xs text-muted-foreground"
-                    >{option.description}</span
-                  >
+                  <span class="block text-xs text-muted-foreground">
+                    {option.description}
+                  </span>
                 </span>
               </Label>
             {/each}
@@ -1276,8 +1294,10 @@
             type="button"
             class="flex-1 hover "
             onclick={closeEditModal}
-            variant="secondary">Cancel</Button
+            variant="secondary"
           >
+            Cancel
+          </Button>
           <Button type="submit" class="flex-1 hover ">Save Changes</Button>
         </div>
       </form>
@@ -1294,9 +1314,9 @@
     class="bg-card border border-border rounded-lg p-6 max-w-md w-full text-foreground"
   >
     <AlertDialog.Header>
-      <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2"
-        >Delete User</AlertDialog.Title
-      >
+      <AlertDialog.Title class="text-xl font-semibold text-foreground mb-2">
+        Delete User
+      </AlertDialog.Title>
       <AlertDialog.Description class="text-muted-foreground">
         Are you sure you want to delete user "{userToDelete?.username}"? This
         action cannot be undone.

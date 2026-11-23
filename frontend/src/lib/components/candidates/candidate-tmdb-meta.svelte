@@ -90,8 +90,9 @@
         {#each genres as genre}
           <span
             class="text-xs px-1.5 py-px rounded-full bg-muted border border-border/60 text-muted-foreground"
-            >{genre}</span
           >
+            {genre}
+          </span>
         {/each}
       </div>
     {/if}

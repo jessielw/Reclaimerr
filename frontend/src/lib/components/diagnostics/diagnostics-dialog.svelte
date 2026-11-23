@@ -118,9 +118,9 @@
 <Dialog.Root bind:open>
   <Dialog.Content class="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
     <Dialog.Header>
-      <Dialog.Title
-        >{selected ? "Media debug info" : "Support diagnostics"}</Dialog.Title
-      >
+      <Dialog.Title>
+        {selected ? "Media debug info" : "Support diagnostics"}
+      </Dialog.Title>
       <Dialog.Description>
         Includes media titles, IDs and playback information. Accounts, server
         names and addresses are masked. Review the preview before sharing.
@@ -135,12 +135,12 @@
         disabled={loading}
         class="mt-1"
       />
-      <span
-        >Include file paths <span class="block text-muted-foreground"
-          >For mount and path-mapping problems. Paths may reveal folder names;
-          credentials remain excluded.</span
-        ></span
-      >
+      <span>
+        Include file paths <span class="block text-muted-foreground">
+          For mount and path-mapping problems. Paths may reveal folder names;
+          credentials remain excluded.
+        </span>
+      </span>
     </label>
     {#if parents.length}
       <Button
@@ -151,11 +151,9 @@
           parents = parents.slice(0, -1);
           childrenOffset = 0;
         }}
-        >Back to {parents[parents.length - 1].scope.replaceAll(
-          "_",
-          " ",
-        )}</Button
       >
+        Back to {parents[parents.length - 1].scope.replaceAll("_", " ")}
+      </Button>
     {/if}
 
     <div aria-live="polite" aria-busy={loading} class="space-y-3">
@@ -185,9 +183,9 @@
         </div>
         {#if report.collection.partial}
           <details class="rounded-md border border-amber-500/50 p-3 text-sm">
-            <summary class="cursor-pointer font-medium"
-              >Partial report - view unavailable or limited sections</summary
-            >
+            <summary class="cursor-pointer font-medium">
+              Partial report - view unavailable or limited sections
+            </summary>
             <ul class="mt-2 list-disc pl-5">
               {#each report.collection.observations.filter((o) => o.state !== "available") as observation}
                 <li>
@@ -209,13 +207,13 @@
         {/if}
         {#if report.sections.children?.length}
           <label class="text-sm space-y-1">
-            <span
-              >Focus on an affected {report.target?.scope === "series"
+            <span>
+              Focus on an affected {report.target?.scope === "series"
                 ? "season"
                 : report.target?.scope === "season"
                   ? "episode"
-                  : "version"}</span
-            >
+                  : "version"}
+            </span>
             <select
               class="block w-full rounded-md border bg-background p-2"
               value=""
@@ -229,13 +227,13 @@
             >
               <option value="">Keep this report’s scope</option>
               {#each report.sections.children as child, index}
-                <option value={child.id}
-                  >{child.scope === "season"
+                <option value={child.id}>
+                  {child.scope === "season"
                     ? `Season ${child.season_number}`
                     : child.scope === "episode"
                       ? `Episode ${child.episode_number}: ${child.title ?? ""}`
-                      : `Version ${report.collection.children_offset + index + 1} · ${child.video_width && child.video_height ? `${child.video_width}×${child.video_height}` : "Unknown resolution"} · ${formatFileSize(child.size)}`}</option
-                >
+                      : `Version ${report.collection.children_offset + index + 1} · ${child.video_width && child.video_height ? `${child.video_width}×${child.video_height}` : "Unknown resolution"} · ${formatFileSize(child.size)}`}
+                </option>
               {/each}
             </select>
           </label>
@@ -247,21 +245,24 @@
               disabled={loading || !!error || childrenOffset === 0}
               onclick={() =>
                 (childrenOffset = Math.max(0, childrenOffset - 100))}
-              >Previous 100</Button
             >
-            <span
-              >{report.collection.children_offset + 1}–{Math.min(
+              Previous 100
+            </Button>
+            <span>
+              {report.collection.children_offset + 1}–{Math.min(
                 report.collection.children_offset + 100,
                 report.collection.children_total ?? 0,
-              )} of {report.collection.children_total}</span
-            >
+              )} of {report.collection.children_total}
+            </span>
             <Button
               variant="outline"
               disabled={loading ||
                 !!error ||
                 childrenOffset + 100 >= (report.collection.children_total ?? 0)}
-              onclick={() => (childrenOffset += 100)}>Next 100</Button
+              onclick={() => (childrenOffset += 100)}
             >
+              Next 100
+            </Button>
           </div>
         {/if}
         {#if report.sections.decisions}<DecisionEvidence
@@ -272,9 +273,9 @@
             }}
           />{/if}
         <details bind:open={previewOpen}>
-          <summary class="cursor-pointer text-sm font-medium"
-            >JSON preview</summary
-          >
+          <summary class="cursor-pointer text-sm font-medium">
+            JSON preview
+          </summary>
           <textarea
             aria-label="Diagnostics JSON"
             readonly
@@ -298,11 +299,13 @@
       <Button
         variant="outline"
         disabled={loading || !snapshot}
-        onclick={() => revision++}>Refresh report</Button
+        onclick={() => revision++}
       >
-      <Button variant="outline" disabled={!exportReady} onclick={download}
-        >Download JSON</Button
-      >
+        Refresh report
+      </Button>
+      <Button variant="outline" disabled={!exportReady} onclick={download}>
+        Download JSON
+      </Button>
       <Button disabled={!exportReady} onclick={copy}>Copy debug info</Button>
     </Dialog.Footer>
   </Dialog.Content>
