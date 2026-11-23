@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
@@ -30,15 +30,26 @@ from backend.enums import (
 from backend.models.dashboard import (
     DashboardActivityItem,
     DashboardKpis,
+    DashboardLeavingSoonTitle,
     DashboardRequestsSummary,
     DashboardResponse,
     DashboardServiceSummary,
     DashboardViewer,
 )
+from backend.services.leaving_soon import load_dashboard_leaving_soon
 from backend.services.reclaim_stats import load_reclaim_totals, next_auto_delete_at
 from backend.user_types import MEDIA_SERVERS
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
+
+
+@router.get("/dashboard/leaving-soon", response_model=list[DashboardLeavingSoonTitle])
+async def get_dashboard_leaving_soon(
+    _user: Annotated[User, Depends(require_page_access(PageAccess.CANDIDATES))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 12,
+) -> list[DashboardLeavingSoonTitle]:
+    return await load_dashboard_leaving_soon(db, limit)
 
 
 @router.get("/dashboard", response_model=DashboardResponse)

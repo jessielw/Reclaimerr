@@ -8,6 +8,7 @@
     subtitle: string;
     posterUrl: string | null;
     tooltip: string[];
+    href?: string;
     data: T;
   };
 </script>
@@ -21,6 +22,8 @@
   import { createFilterState } from "$lib/utils/pagination";
 
   const COUNT_OPTIONS = [6, 12, 24];
+  const posterClass =
+    "w-28 shrink-0 text-left cursor-pointer [&_*]:cursor-pointer";
   // matches the dashboard's own stats refresh
   const REFRESH_MS = 60000;
 
@@ -30,7 +33,7 @@
     storageKey: string;
     emptyText: string;
     fetchEntries: (count: number) => Promise<PosterRowEntry<T>[]>;
-    onSelect: (entry: PosterRowEntry<T>) => void;
+    onSelect?: (entry: PosterRowEntry<T>) => void;
   }
   let { title, storageKey, emptyText, fetchEntries, onSelect }: Props =
     $props();
@@ -87,6 +90,20 @@
     return () => clearInterval(timer);
   });
 </script>
+
+{#snippet poster(entry: PosterRowEntry<unknown>)}
+  <PosterThumb
+    mediaType={entry.mediaType}
+    posterUrl={entry.posterUrl}
+    posterSize="185"
+    tailWindElSize="w-28"
+    showMediaType
+  />
+  <p class="mt-1.5 text-sm font-medium text-foreground truncate">
+    {entry.title}
+  </p>
+  <p class="text-xs text-muted-foreground truncate">{entry.subtitle}</p>
+{/snippet}
 
 <section class="bg-card rounded-lg border border-border p-5">
   <div class="flex items-center justify-between gap-3">
@@ -145,24 +162,22 @@
     <div class="mt-4 flex gap-3 overflow-x-auto pb-2">
       {#each entries as entry (entry.key)}
         <Tooltip.Root>
-          <Tooltip.Trigger
-            class="w-28 shrink-0 text-left cursor-pointer [&_*]:cursor-pointer"
-            onclick={() => onSelect(entry)}
-          >
-            <PosterThumb
-              mediaType={entry.mediaType}
-              posterUrl={entry.posterUrl}
-              posterSize="185"
-              tailWindElSize="w-28"
-              showMediaType
-            />
-            <p class="mt-1.5 text-sm font-medium text-foreground truncate">
-              {entry.title}
-            </p>
-            <p class="text-xs text-muted-foreground truncate">
-              {entry.subtitle}
-            </p>
-          </Tooltip.Trigger>
+          {#if entry.href}
+            <Tooltip.Trigger>
+              {#snippet child({ props })}
+                <a {...props} class={posterClass} href={entry.href}>
+                  {@render poster(entry)}
+                </a>
+              {/snippet}
+            </Tooltip.Trigger>
+          {:else}
+            <Tooltip.Trigger
+              class={posterClass}
+              onclick={() => onSelect?.(entry)}
+            >
+              {@render poster(entry)}
+            </Tooltip.Trigger>
+          {/if}
           <Tooltip.Content>
             {#each entry.tooltip as line}
               <p>{line}</p>

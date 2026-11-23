@@ -16,10 +16,12 @@
 
   let {
     canManage,
+    initialScheduleId = null,
     refreshKey = 0,
     onChanged,
   }: {
     canManage: boolean;
+    initialScheduleId?: number | null;
     refreshKey?: number;
     onChanged?: () => void;
   } = $props();
@@ -30,6 +32,19 @@
   let action = $state<"reschedule" | "cancel">("reschedule");
   let open = $state(false);
   let listOpen = $state(false);
+  let manageTrigger = $state<HTMLButtonElement | null>(null);
+  let hasLoadedSchedules = false;
+  const linkedSchedule = $derived(
+    schedules.find(({ id }) => id === initialScheduleId),
+  );
+  const displayedSchedules = $derived(
+    linkedSchedule
+      ? [
+          linkedSchedule,
+          ...schedules.filter(({ id }) => id !== initialScheduleId),
+        ]
+      : schedules,
+  );
   const nextAt = $derived(
     schedules
       .filter((item) => item.state === "scheduled")
@@ -55,6 +70,9 @@
       });
       schedules = result;
       if (!result.length) listOpen = false;
+      else if (!hasLoadedSchedules && initialScheduleId !== null)
+        listOpen = true;
+      hasLoadedSchedules = true;
       error = "";
       if (changed) onChanged?.();
     } catch (e) {
@@ -128,26 +146,34 @@
     <Button size="sm" variant="outline" onclick={load}>Retry</Button>
   </div>
 {/if}
-{#if schedules.length}
-  <div
-    class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground"
-  >
-    <span>
-      <strong>{schedules.length}</strong> scheduled manual deletion{schedules.length ===
-      1
-        ? ""
-        : "s"}{#if nextAt}
-        · next: {formatDateTimeToLocaleString(nextAt)}{/if}
-    </span>
-    <Button size="sm" variant="outline" onclick={() => (listOpen = true)}>
-      Manage
-    </Button>
-  </div>
-{/if}
-
 <Dialog.Root bind:open={listOpen}>
+  {#if schedules.length}
+    <div
+      class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground"
+    >
+      <span>
+        <strong>{schedules.length}</strong> scheduled manual deletion{schedules.length ===
+        1
+          ? ""
+          : "s"}{#if nextAt}
+          · next: {formatDateTimeToLocaleString(nextAt)}{/if}
+      </span>
+      <Dialog.Trigger bind:ref={manageTrigger}>
+        {#snippet child({ props })}
+          <Button {...props} size="sm" variant="outline">Manage</Button>
+        {/snippet}
+      </Dialog.Trigger>
+    </div>
+  {/if}
+
   <Dialog.Content
     class="max-h-[90dvh] overflow-y-auto text-foreground sm:max-w-2xl"
+    onCloseAutoFocus={(event) => {
+      if (manageTrigger) {
+        event.preventDefault();
+        manageTrigger.focus({ preventScroll: true });
+      }
+    }}
   >
     <Dialog.Header>
       <Dialog.Title>
@@ -160,7 +186,7 @@
     <ul
       class="max-h-[60dvh] divide-y divide-border overflow-y-auto rounded-md border border-border"
     >
-      {#each schedules as schedule (schedule.id)}
+      {#each displayedSchedules as schedule (schedule.id)}
         <li class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div class="min-w-0 flex-1">
             <p class="font-medium">

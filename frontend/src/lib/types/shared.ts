@@ -1527,6 +1527,23 @@ export interface PaginatedRulePreviewResponse extends PaginatedResponse<RulePrev
   metadata?: RulePreviewMetadata | null;
 }
 
+export interface DashboardLeavingSoonTitle {
+  media_id: number;
+  media_type: MediaType;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  movie_version_id: number | null;
+  size_bytes: number | null;
+  delete_operation: "delete" | "move";
+  delete_at: string;
+  source: "candidate" | "manual" | "delete_request";
+  scheduled_deletion_id: number | null;
+  additional_count: number;
+}
+
 export interface DashboardKpis {
   total_movies: number;
   total_series: number;

@@ -1,96 +1,79 @@
 <script lang="ts">
-  import { push } from "svelte-spa-router";
   import { get_api } from "$lib/api";
   import { auth } from "$lib/stores/auth";
   import { hasPageAccess } from "$lib/page-access";
   import PosterRow, {
     type PosterRowEntry,
   } from "$lib/components/media/poster-row.svelte";
-  import { formatDate, formatDistanceToNow } from "$lib/utils/date";
+  import {
+    formatDateTimeToLocaleString,
+    formatDistanceToNow,
+  } from "$lib/utils/date";
   import { formatFileSize } from "$lib/utils/formatters";
   import {
     MediaType,
     PageAccess,
-    type PaginatedResponse,
-    type ReclaimCandidateEntry,
+    type DashboardLeavingSoonTitle,
   } from "$lib/types/shared";
 
-  type LeavingEntry = PosterRowEntry<ReclaimCandidateEntry>;
+  type LeavingEntry = PosterRowEntry<DashboardLeavingSoonTitle>;
 
   const canViewCandidates = $derived(
     hasPageAccess($auth.user, PageAccess.Candidates),
   );
 
-  const scopeLabel = (c: ReclaimCandidateEntry): string | null => {
-    if (c.episode_number != null && c.season_number != null) {
-      return `Season ${c.season_number}, Episode ${c.episode_number}`;
+  const scopeLabel = (item: DashboardLeavingSoonTitle): string | null => {
+    if (item.episode_number != null && item.season_number != null) {
+      return `Season ${item.season_number}, Episode ${item.episode_number}`;
     }
-    if (c.season_number != null) return `Season ${c.season_number}`;
+    if (item.season_number != null) return `Season ${item.season_number}`;
+    if (item.movie_version_id != null) return "Movie version";
     return null;
   };
 
-  const toEntry = (
-    candidate: ReclaimCandidateEntry,
-    moreFromTitle: number,
-  ): LeavingEntry => {
-    const title = candidate.series_title ?? candidate.media_title;
-    const name = candidate.media_year
-      ? `${title} (${candidate.media_year})`
-      : title;
-    const kind = candidate.media_type === MediaType.Movie ? "Movie" : "Series";
-    const verb = candidate.delete_operation === "move" ? "Moves" : "Deletes";
-    const when = candidate.auto_delete_is_eligible
-      ? "now"
-      : formatDate(candidate.auto_delete_eligible_at);
+  const toEntry = (item: DashboardLeavingSoonTitle): LeavingEntry => {
+    const { title, year, delete_at, media_type, scheduled_deletion_id } = item;
+    const name = year ? `${title} (${year})` : title;
+    const kind = media_type === MediaType.Movie ? "Movie" : "Series";
+    const verb = item.delete_operation === "move" ? "Moves" : "Deletes";
+    const due = Date.parse(delete_at) <= Date.now();
 
     const tooltip = [name];
-    const scope = scopeLabel(candidate);
+    const scope = scopeLabel(item);
     if (scope) tooltip.push(scope);
-    if (moreFromTitle > 0) {
-      tooltip.push(`+${moreFromTitle} more scheduled from this title`);
+    if (item.source === "manual") tooltip.push("Manually scheduled");
+    if (item.source === "delete_request")
+      tooltip.push("Approved deletion request");
+    tooltip.push(
+      `${kind} • ${verb} ${formatDateTimeToLocaleString(delete_at)}`,
+    );
+    if (item.additional_count > 0) {
+      tooltip.push(`+${item.additional_count} more scheduled from this title`);
     }
-    tooltip.push(`${kind} • ${verb} ${when}`);
-    if (candidate.estimated_space_bytes) {
-      tooltip.push(`Frees ${formatFileSize(candidate.estimated_space_bytes)}`);
+    if (item.size_bytes) {
+      tooltip.push(`Frees ${formatFileSize(item.size_bytes)}`);
     }
 
     return {
-      key: `${candidate.media_type}:${candidate.media_id}`,
-      mediaType: candidate.media_type,
+      key: `${media_type}:${item.media_id}`,
+      mediaType: media_type,
       title,
-      subtitle: candidate.auto_delete_is_eligible
-        ? "Due now"
-        : formatDistanceToNow(candidate.auto_delete_eligible_at),
-      posterUrl: candidate.poster_url,
+      subtitle: due ? "Due now" : formatDistanceToNow(delete_at),
+      posterUrl: item.poster_url,
       tooltip,
-      data: candidate,
+      href:
+        scheduled_deletion_id != null
+          ? `#/candidates?schedule=${scheduled_deletion_id}`
+          : `#/candidates?search=${encodeURIComponent(title)}`,
+      data: item,
     };
   };
 
-  // the API sorts active deletions soonest first and inactive ones after, so
-  // dropping the inactive tail leaves the schedule in order
   const fetchEntries = async (count: number): Promise<LeavingEntry[]> => {
-    const params = new URLSearchParams({
-      page: "1",
-      per_page: count.toString(),
-      sort_by: "auto_delete_eligible_at",
-      sort_order: "asc",
-    });
-    const data = await get_api<PaginatedResponse<ReclaimCandidateEntry>>(
-      `/api/media/candidates?${params.toString()}`,
+    const items = await get_api<DashboardLeavingSoonTitle[]>(
+      `/api/dashboard/leaving-soon?limit=${count}`,
     );
-
-    // seasons, episodes and versions of one title share a poster; keep the
-    // soonest and count the rest
-    const byTitle = new Map<string, ReclaimCandidateEntry[]>();
-    for (const candidate of data.items) {
-      if (!candidate.auto_delete_is_active) continue;
-      const key = `${candidate.media_type}:${candidate.media_id}`;
-      byTitle.set(key, [...(byTitle.get(key) ?? []), candidate]);
-    }
-    return [...byTitle.values()]
-      .map(([first, ...rest]) => toEntry(first, rest.length))
-      .slice(0, count);
+    return items.map(toEntry);
   };
 </script>
 
@@ -98,9 +81,7 @@
   <PosterRow
     title="Leaving Soon"
     storageKey="dashboard_leaving_soon"
-    emptyText="Nothing scheduled. Titles show up here once a rule with auto-delete schedules them."
+    emptyText="No upcoming deletions or moves."
     {fetchEntries}
-    onSelect={(entry) =>
-      push(`/candidates?search=${encodeURIComponent(entry.title)}`)}
   />
 {/if}

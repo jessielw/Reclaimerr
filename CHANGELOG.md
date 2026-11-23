@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- The dashboard's **Leaving Soon** row shows automatic cleanup, manual schedules, and delayed deletion approvals together. Each title appears once, ordered by its earliest deadline. Select a manual schedule or delayed approval to open its entry in **Candidates**.
 - An integration can name the user behind an API token call by sending the forward-auth user header, so approvals, denials, retries, schedules and reschedules are recorded as that user instead of the token. The caller must be a trusted forward-auth proxy.
 - The person who scheduled a deletion directly is now emailed when it completes or fails, using the Deletion Completed and Deletion Failed notifications. Deletions with a delete request notify the requester as before.
 

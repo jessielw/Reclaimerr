@@ -1,6 +1,28 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel
+
+from backend.enums import MediaType
+
+
+class DashboardLeavingSoonTitle(BaseModel):
+    media_id: int
+    media_type: MediaType
+    title: str
+    year: int | None
+    poster_url: str | None
+    season_number: int | None
+    episode_number: int | None
+    movie_version_id: int | None
+    size_bytes: int | None
+    delete_operation: Literal["delete", "move"]
+    delete_at: datetime
+    source: Literal["candidate", "manual", "delete_request"]
+    scheduled_deletion_id: int | None
+    additional_count: int
 
 
 class DashboardKpis(BaseModel):

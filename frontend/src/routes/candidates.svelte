@@ -109,10 +109,12 @@
   let data = $state<PaginatedResponse<ReclaimCandidateEntry> | null>(null);
   let loading = $state(true);
   let error = $state("");
+  const query = new URLSearchParams(router.querystring ?? "");
+  const scheduleId = Number(query.get("schedule"));
+  const initialScheduleId =
+    Number.isSafeInteger(scheduleId) && scheduleId > 0 ? scheduleId : null;
   // links like /candidates?search=Title (from the dashboard) open pre-filtered
-  let searchQuery = $state(
-    new URLSearchParams(router.querystring ?? "").get("search") ?? "",
-  );
+  let searchQuery = $state(query.get("search") ?? "");
   let ruleOptions = $state<CandidateRuleFilterOption[]>([]);
   const _mediaFilterStore = createFilterState<CandidateMediaFilter>(
     "candidates_media_filter",
@@ -1507,6 +1509,7 @@
   <div class="max-w-7xl mx-auto space-y-4">
     <ScheduledDeletions
       canManage={canDelete}
+      {initialScheduleId}
       refreshKey={scheduleRefreshKey}
       onChanged={schedulesChanged}
     />
