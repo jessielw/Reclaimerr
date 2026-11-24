@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -358,6 +358,59 @@ def _stub_scan_providers(monkeypatch):
     monkeypatch.setattr(cleanup, "_activate_playback_history_for_rules", playback)
     monkeypatch.setattr(cleanup, "_activate_seerr_request_resolver_for_rules", seerr)
     return playback, seerr
+
+
+def test_scan_notifies_only_for_inserted_candidates(monkeypatch):
+    async def run():
+        async with _database(monkeypatch) as sessions:
+            _stub_scan_providers(monkeypatch)
+            send = AsyncMock()
+            monkeypatch.setattr(cleanup, "notify_all_users", send)
+            monkeypatch.setattr(cleanup, "warn_requesters_before_deletion", AsyncMock())
+            monkeypatch.setattr(cleanup, "reconcile_candidate_arr_tags", AsyncMock())
+            monkeypatch.setattr("backend.core.task_tracking.async_db", sessions)
+            monkeypatch.setattr("backend.services.notifications.async_db", sessions)
+
+            async with sessions() as db:
+                _, candidate_id, _, _ = await _seed(db, "movie_version", "media.size")
+                candidate = await db.get(ReclaimCandidate, candidate_id)
+                candidate.created_at = datetime.now(UTC).replace(
+                    tzinfo=None
+                ) + timedelta(seconds=10)
+                movie = Movie(title="New Movie", tmdb_id=103, size=2000)
+                db.add(movie)
+                await db.flush()
+                db.add(
+                    MovieVersion(
+                        movie_id=movie.id,
+                        service=Service.PLEX,
+                        service_item_id="new-item",
+                        service_media_id="new-media",
+                        library_id="movies",
+                        library_name="Movies",
+                        path="/media/new-movie.mkv",
+                        size=2000,
+                    )
+                )
+                rule = (await db.scalars(select(ReclaimRule))).one()
+                definition = deepcopy(rule.definition)
+                definition["root"]["children"][0]["value"] = 3000
+                rule.definition = definition
+                await db.commit()
+
+            await cleanup.scan_cleanup_candidates()
+            send.assert_awaited_once()
+            context = send.await_args.kwargs["context"]
+            assert context["created_count"] == 1
+            assert context["total_reclaimable_bytes"] == 2000
+            assert [
+                candidate["media_title"] for candidate in context["candidates"]
+            ] == ["New Movie"]
+
+            await cleanup.scan_cleanup_candidates()
+            send.assert_awaited_once()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("scope", SCOPES)

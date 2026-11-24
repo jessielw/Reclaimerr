@@ -95,7 +95,7 @@ def url_fingerprint(url: str) -> str:
     return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()
 
 
-def _single_plugin(url: str) -> apprise.NotifyBase | None:
+def single_notification_plugin(url: str) -> apprise.NotifyBase | None:
     """The one plugin `url` resolves to, or None if it is not exactly one.
 
     Apprise splits a string on commas/whitespace and adds every URL in it, so
@@ -124,7 +124,7 @@ def destination_approval(
     """
     if role is UserRole.ADMIN:
         return "not_required"
-    plugin = _single_plugin(url)
+    plugin = single_notification_plugin(url)
     if plugin is None:
         return "invalid"
     if _is_fixed_host(plugin):
@@ -156,7 +156,7 @@ def approval_error(state: DestinationApproval) -> str | None:
 
 def describe_destination(url: str) -> dict[str, str | bool] | None:
     """What an admin needs to judge a destination, with secrets redacted."""
-    plugin = _single_plugin(url)
+    plugin = single_notification_plugin(url)
     if plugin is None:
         return None
     host = (getattr(plugin, "host", None) or "").strip()

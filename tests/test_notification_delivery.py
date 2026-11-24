@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -110,6 +109,22 @@ async def test_all_users_fan_out_is_deduplicated_too(
     assert len(sent) == 2
 
 
+def test_discord_webhook_deduplication_preserves_thread_targets() -> None:
+    plain = "discord://1234567890/abcDEF123"
+    embed = "discord://Reclaimerr@1234567890/abcDEF123?format=markdown"
+    native = "https://discord.com/api/webhooks/1234567890/abcDEF123"
+    thread = f"{plain}?thread=34567890"
+
+    assert (
+        notifications._destination_key(plain)
+        == notifications._destination_key(embed)
+        == notifications._destination_key(native)
+    )
+    assert notifications._destination_key(thread) != notifications._destination_key(
+        plain
+    )
+
+
 @pytest.mark.anyio
 async def test_cleanup_context_carries_episode_numbers(
     monkeypatch: pytest.MonkeyPatch,
@@ -124,7 +139,7 @@ async def test_cleanup_context_carries_episode_numbers(
         await conn.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(notifications, "async_db", session_maker)
 
-    started = datetime.now(UTC)
+    candidates = []
     async with session_maker() as session:
         series = Series(title="Carrie", tmdb_id=1, year=2026)
         session.add(series)
@@ -136,7 +151,7 @@ async def test_cleanup_context_carries_episode_numbers(
             episode = Episode(season_id=season.id, episode_number=number)
             session.add(episode)
             await session.flush()
-            session.add(
+            candidates.append(
                 ReclaimCandidate(
                     media_type=MediaType.SERIES,
                     series_id=series.id,
@@ -161,10 +176,11 @@ async def test_cleanup_context_carries_episode_numbers(
                     ],
                 )
             )
+        session.add_all(candidates)
         await session.commit()
 
     context = await notifications.build_cleanup_notification_context(
-        created_count=2, created_since=started
+        [candidate.id for candidate in candidates]
     )
 
     numbers = sorted(c["episode_number"] for c in context["candidates"])
@@ -188,14 +204,14 @@ async def test_cleanup_keeps_same_named_media_separate(
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         monkeypatch.setattr(notifications, "async_db", session_maker)
-        started = datetime.now(UTC)
+        candidates = []
         async with session_maker() as session:
             for tmdb_id in (100, 200):
                 model = Movie if media_type == MediaType.MOVIE else Series
                 media = model(title="Same Name", year=2020, tmdb_id=tmdb_id)
                 session.add(media)
                 await session.flush()
-                session.add(
+                candidates.append(
                     ReclaimCandidate(
                         media_type=media_type,
                         movie_id=media.id if media_type == MediaType.MOVIE else None,
@@ -207,10 +223,11 @@ async def test_cleanup_keeps_same_named_media_separate(
                         reason_data=[],
                     )
                 )
+            session.add_all(candidates)
             await session.commit()
 
         context = await notifications.build_cleanup_notification_context(
-            created_count=2, created_since=started
+            [candidate.id for candidate in candidates]
         )
         assert len({c["media_id"] for c in context["candidates"]}) == 2
         _, body, _ = notifications._compose_body(

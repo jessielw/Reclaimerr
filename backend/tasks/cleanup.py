@@ -1821,23 +1821,22 @@ async def scan_cleanup_candidates() -> None:
     async with track_task_execution(Task.SCAN_CLEANUP_CANDIDATES):
         async with candidate_workflow_lock:
             try:
-                scan_started_at = datetime.now(UTC)
+                created_ids: list[int] = []
                 async with async_db() as session:
-                    response = await _scan_with_db(session)
-                    if response and response[0] > 0:
-                        try:
-                            context = await build_cleanup_notification_context(
-                                created_count=response[0],
-                                created_since=scan_started_at,
-                            )
+                    await _scan_with_db(session, created_candidate_ids=created_ids)
+                if created_ids:
+                    try:
+                        context = await build_cleanup_notification_context(created_ids)
+                        count = context["created_count"]
+                        if count:
                             await notify_all_users(
                                 notification_type=NotificationType.NEW_CLEANUP_CANDIDATES,
                                 title="New Cleanup Candidates Found",
-                                message=f"There are {response[0]} new cleanup candidates",
+                                message=f"There are {count} new cleanup candidates",
                                 context=context,
                             )
-                        except Exception as e:
-                            LOG.error(f"Error sending cleanup scan notification: {e}")
+                    except Exception as e:
+                        LOG.error(f"Error sending cleanup scan notification: {e}")
                 try:
                     async with async_db() as session:
                         await warn_requesters_before_deletion(session)
@@ -6184,12 +6183,16 @@ async def _postpone_candidate_spike(
     return len(new_ids)
 
 
-async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
+async def _scan_with_db(
+    db: AsyncSession, *, created_candidate_ids: list[int] | None = None
+) -> tuple[int, int, int] | None:
     recorder = ScanRecorder()
     token = current_scan.set(recorder)
     LOG.info("Support scan started")
     try:
-        result = await _scan_with_db_impl(db)
+        result = await _scan_with_db_impl(
+            db, created_candidate_ids=created_candidate_ids
+        )
         recorder.context["status"] = "completed"
         await persist_scan(db, recorder)
         LOG.info("Support scan completed")
@@ -6202,7 +6205,9 @@ async def _scan_with_db(db: AsyncSession) -> tuple[int, int, int] | None:
         current_scan.reset(token)
 
 
-async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
+async def _scan_with_db_impl(
+    db: AsyncSession, *, created_candidate_ids: list[int] | None = None
+) -> tuple[int, int, int] | None:
     """Internal method to perform scan with database session.
 
     Returns (created_count, updated_count, removed_count) or None if no rules found."""
@@ -6465,6 +6470,9 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
         candidates_created = 0
         candidates_updated = 0
         candidates_removed = 0
+        created_candidates: list[ReclaimCandidate] | None = (
+            [] if created_candidate_ids is not None else None
+        )
 
         # process movies
         if movie_rules:
@@ -6474,6 +6482,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                 MediaType.MOVIE,
                 commit=False,
                 preserve_candidate_ids=preserve_candidate_ids,
+                created_candidates=created_candidates,
             )
             candidates_created += created
             candidates_updated += updated
@@ -6499,6 +6508,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                 MediaType.SERIES,
                 commit=False,
                 preserve_candidate_ids=preserve_candidate_ids,
+                created_candidates=created_candidates,
             )
             candidates_created += created
             candidates_updated += updated
@@ -6524,6 +6534,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                 season_rules,
                 commit=False,
                 preserve_candidate_ids=preserve_candidate_ids,
+                created_candidates=created_candidates,
             )
             candidates_created += s_cr
             candidates_updated += s_up
@@ -6549,6 +6560,7 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
                 episode_rules,
                 commit=False,
                 preserve_candidate_ids=preserve_candidate_ids,
+                created_candidates=created_candidates,
             )
             candidates_created += e_cr
             candidates_updated += e_up
@@ -6572,6 +6584,10 @@ async def _scan_with_db_impl(db: AsyncSession) -> tuple[int, int, int] | None:
             db, existing_candidate_ids, candidates_created
         )
         lifecycle_event_ids = await reconcile_candidate_schedule_events(db)
+        if created_candidate_ids is not None and created_candidates:
+            created_candidate_ids.extend(
+                candidate.id for candidate in created_candidates
+            )
         await db.commit()
         for lifecycle_event_id in lifecycle_event_ids:
             await enqueue_event_deliveries(lifecycle_event_id)
@@ -6639,6 +6655,7 @@ async def _process_media(
     *,
     commit: bool = True,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """
     Process movies or series against cleanup rules.
@@ -6647,7 +6664,11 @@ async def _process_media(
     """
     if media_type is MediaType.MOVIE:
         return await _process_movie_versions(
-            db, rules, commit=commit, preserve_candidate_ids=preserve_candidate_ids
+            db,
+            rules,
+            commit=commit,
+            preserve_candidate_ids=preserve_candidate_ids,
+            created_candidates=created_candidates,
         )
 
     availability = RulePreviewMatchMetadata()
@@ -6660,6 +6681,7 @@ async def _process_media(
         commit=commit,
         availability=availability,
         preserve_candidate_ids=preserve_candidate_ids,
+        created_candidates=created_candidates,
     )
 
 
@@ -6882,6 +6904,29 @@ async def _warn_on_reflagged_media(
         )
 
 
+def _add_scan_candidate(
+    db: AsyncSession,
+    record: MatchedCandidateRecord,
+    created_candidates: list[ReclaimCandidate] | None,
+) -> None:
+    candidate = ReclaimCandidate(
+        media_type=record.media_type,
+        movie_id=record.movie_id,
+        movie_version_id=record.movie_version_id,
+        series_id=record.series_id,
+        season_id=record.season_id,
+        episode_id=record.episode_id,
+        matched_rule_ids=record.matched_rule_ids,
+        matched_criteria=record.matched_criteria,
+        reason=record.reason,
+        reason_data=record.reason_data,
+        estimated_space_bytes=record.estimated_space_bytes,
+    )
+    db.add(candidate)
+    if created_candidates is not None:
+        created_candidates.append(candidate)
+
+
 async def _sync_series_candidates(
     db: AsyncSession,
     records: list[MatchedCandidateRecord],
@@ -6889,6 +6934,7 @@ async def _sync_series_candidates(
     commit: bool = True,
     availability: RulePreviewMatchMetadata | None = None,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Synchronize series candidates with the database."""
     result = await db.execute(
@@ -6930,17 +6976,7 @@ async def _sync_series_candidates(
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
         else:
-            db.add(
-                ReclaimCandidate(
-                    media_type=MediaType.SERIES,
-                    series_id=record.series_id,
-                    matched_rule_ids=record.matched_rule_ids,
-                    matched_criteria=record.matched_criteria,
-                    reason=record.reason,
-                    reason_data=record.reason_data,
-                    estimated_space_bytes=record.estimated_space_bytes,
-                )
-            )
+            _add_scan_candidate(db, record, created_candidates)
             candidates_created += 1
             if record.series_id is not None:
                 created_media_ids.add(record.series_id)
@@ -6976,6 +7012,7 @@ async def _process_movie_versions(
     *,
     commit: bool = True,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Evaluate movie rules at movie-version granularity."""
     availability = RulePreviewMatchMetadata()
@@ -6988,6 +7025,7 @@ async def _process_movie_versions(
         commit=commit,
         availability=availability,
         preserve_candidate_ids=preserve_candidate_ids,
+        created_candidates=created_candidates,
     )
 
 
@@ -7134,6 +7172,7 @@ async def _sync_movie_version_candidates(
     commit: bool = True,
     availability: RulePreviewMatchMetadata | None = None,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Synchronize movie version candidates with the database."""
     pending = (await db.scalars(select(CandidateResyncIdentity))).all()
@@ -7187,18 +7226,7 @@ async def _sync_movie_version_candidates(
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
         else:
-            db.add(
-                ReclaimCandidate(
-                    media_type=MediaType.MOVIE,
-                    movie_id=record.movie_id,
-                    movie_version_id=record.movie_version_id,
-                    matched_rule_ids=record.matched_rule_ids,
-                    matched_criteria=record.matched_criteria,
-                    reason=record.reason,
-                    reason_data=record.reason_data,
-                    estimated_space_bytes=record.estimated_space_bytes,
-                )
-            )
+            _add_scan_candidate(db, record, created_candidates)
             candidates_created += 1
             if record.movie_id is not None:
                 created_media_ids.add(record.movie_id)
@@ -7236,6 +7264,7 @@ async def _process_series_seasons(
     *,
     commit: bool = True,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Evaluate each series' seasons against rules and create/update season-level candidates.
 
@@ -7251,6 +7280,7 @@ async def _process_series_seasons(
         commit=commit,
         availability=availability,
         preserve_candidate_ids=preserve_candidate_ids,
+        created_candidates=created_candidates,
     )
 
 
@@ -7260,6 +7290,7 @@ async def _process_series_episodes(
     *,
     commit: bool = True,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Evaluate each series' episodes against rules and create/update episode-level candidates.
 
@@ -7275,6 +7306,7 @@ async def _process_series_episodes(
         commit=commit,
         availability=availability,
         preserve_candidate_ids=preserve_candidate_ids,
+        created_candidates=created_candidates,
     )
 
 
@@ -7444,6 +7476,7 @@ async def _sync_season_candidates(
     commit: bool = True,
     availability: RulePreviewMatchMetadata | None = None,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Synchronize season candidates with the database."""
     existing_result = await db.execute(
@@ -7487,18 +7520,7 @@ async def _sync_season_candidates(
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
         else:
-            db.add(
-                ReclaimCandidate(
-                    media_type=MediaType.SERIES,
-                    matched_rule_ids=record.matched_rule_ids,
-                    matched_criteria=record.matched_criteria,
-                    reason=record.reason,
-                    reason_data=record.reason_data,
-                    estimated_space_bytes=record.estimated_space_bytes,
-                    series_id=record.series_id,
-                    season_id=record.season_id,
-                )
-            )
+            _add_scan_candidate(db, record, created_candidates)
             candidates_created += 1
             if record.series_id is not None:
                 created_media_ids.add(record.series_id)
@@ -7724,6 +7746,7 @@ async def _sync_episode_candidates(
     commit: bool = True,
     availability: RulePreviewMatchMetadata | None = None,
     preserve_candidate_ids: Collection[int] = (),
+    created_candidates: list[ReclaimCandidate] | None = None,
 ) -> tuple[int, int, int]:
     """Synchronize episode candidates with the database."""
     existing_result = await db.execute(
@@ -7767,19 +7790,7 @@ async def _sync_episode_candidates(
             existing.updated_at = datetime.now(UTC)
             candidates_updated += 1
         else:
-            db.add(
-                ReclaimCandidate(
-                    media_type=MediaType.SERIES,
-                    matched_rule_ids=record.matched_rule_ids,
-                    matched_criteria=record.matched_criteria,
-                    reason=record.reason,
-                    reason_data=record.reason_data,
-                    estimated_space_bytes=record.estimated_space_bytes,
-                    series_id=record.series_id,
-                    season_id=record.season_id,
-                    episode_id=record.episode_id,
-                )
-            )
+            _add_scan_candidate(db, record, created_candidates)
             candidates_created += 1
             if record.series_id is not None:
                 created_media_ids.add(record.series_id)

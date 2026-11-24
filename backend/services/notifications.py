@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from collections.abc import Collection, Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 import apprise
 from apprise.plugins.custom_json import NotifyJSON
+from apprise.plugins.discord import NotifyDiscord
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -47,6 +48,7 @@ from backend.services.notification_destinations import (
     destination_approval_for_user,
     email_recipient_for,
     is_deliverable,
+    single_notification_plugin,
 )
 from backend.services.reclaim_stats import load_reclaim_totals
 from backend.services.smtp import SmtpConfig, build_mailto_url, load_smtp_config
@@ -782,18 +784,11 @@ def _compose_body(
 
 
 async def build_cleanup_notification_context(
-    *,
-    created_count: int,
-    created_since: datetime,
+    candidate_ids: Collection[int],
 ) -> dict[str, Any]:
-    """Build context payload for cleanup-candidate notifications."""
-    if created_count <= 0:
+    """Build a notification from the candidate rows inserted by the scan."""
+    if not candidate_ids:
         return {"created_count": 0, "total_reclaimable_bytes": 0, "candidates": []}
-
-    # SQLite CURRENT_TIMESTAMP is second precision while Python timestamps carry
-    # microseconds. We'll use a small grace window to avoid missing rows created
-    # in the same second as scan start.
-    window_start = (created_since - timedelta(seconds=2)).replace(microsecond=0)
 
     async with async_db() as session:
         rows = (
@@ -809,39 +804,12 @@ async def build_cleanup_notification_context(
                     ReclaimCandidate.estimated_space_bytes,
                     ReclaimCandidate.reason_data,
                 )
-                .where(ReclaimCandidate.created_at >= window_start)
-                .order_by(desc(ReclaimCandidate.estimated_space_bytes))
+                .where(ReclaimCandidate.id.in_(candidate_ids))
+                .order_by(
+                    desc(ReclaimCandidate.estimated_space_bytes), ReclaimCandidate.id
+                )
             )
         ).all()
-        if not rows:
-            # fallback: if time window misses due to precision drift, at least
-            # summarize the latest created candidates instead of reporting 0 B.
-            rows = (
-                await session.execute(
-                    select(
-                        ReclaimCandidate.id,
-                        ReclaimCandidate.media_type,
-                        ReclaimCandidate.movie_id,
-                        ReclaimCandidate.movie_version_id,
-                        ReclaimCandidate.series_id,
-                        ReclaimCandidate.season_id,
-                        ReclaimCandidate.episode_id,
-                        ReclaimCandidate.estimated_space_bytes,
-                        ReclaimCandidate.reason_data,
-                    )
-                    .order_by(
-                        desc(ReclaimCandidate.created_at), desc(ReclaimCandidate.id)
-                    )
-                    .limit(max(created_count, 1))
-                )
-            ).all()
-            if not rows:
-                return {
-                    "created_count": created_count,
-                    "total_reclaimable_bytes": 0,
-                    "candidates": [],
-                }
-
         movie_ids = {r.movie_id for r in rows if r.movie_id is not None}
         series_ids = {r.series_id for r in rows if r.series_id is not None}
         movie_version_ids = {
@@ -963,7 +931,7 @@ async def build_cleanup_notification_context(
             )
 
         return {
-            "created_count": created_count,
+            "created_count": len(candidates),
             "total_reclaimable_bytes": total_reclaimable_bytes,
             "candidates": candidates,
         }
@@ -995,9 +963,14 @@ def _telegram_bullets(body: str) -> str:
     return "\n".join(out)
 
 
-def _destination_key(url: str) -> str:
+def _destination_key(url: str) -> tuple[str, ...]:
     """Identity of a destination, used to send each event once per target."""
-    return url.strip().rstrip("/")
+    url = url.strip()
+    if url.lower().startswith(("discord://", "https://discord", "http://discord")):
+        plugin = single_notification_plugin(url)
+        if isinstance(plugin, NotifyDiscord):
+            return (*plugin.url_identifier, plugin.thread_id or "")
+    return (url.rstrip("/"),)
 
 
 @retry(
@@ -1167,7 +1140,7 @@ async def notify_user(
     message: str,
     body_format: apprise.NotifyFormat = _DEFAULT_BODY_FORMAT,
     context: dict[str, Any] | None = None,
-    delivered: set[str] | None = None,
+    delivered: set[tuple[str, ...]] | None = None,
 ) -> dict[str, int]:
     """Send a notification to a specific user based on their notification preferences.
 
@@ -1310,7 +1283,7 @@ async def notify_admins(
         LOG.warning("No active admin users found to send notification to")
         return results
 
-    delivered: set[str] = set()
+    delivered: set[tuple[str, ...]] = set()
     for user in admin_users:
         user_results = await notify_user(
             user_id=user.id,
@@ -1338,7 +1311,7 @@ async def notify_users(
     """Send a notification to multiple specific users."""
     results = {"sent": 0, "failed": 0}
 
-    delivered: set[str] = set()
+    delivered: set[tuple[str, ...]] = set()
     for user_id in user_ids:
         user_results = await notify_user(
             user_id=user_id,
@@ -1381,7 +1354,7 @@ async def notify_all_users(
         return results
 
     type_field = _notification_type_to_field(notification_type)
-    delivered: set[str] = set()
+    delivered: set[tuple[str, ...]] = set()
 
     for user in users:
         eligible_settings = [
