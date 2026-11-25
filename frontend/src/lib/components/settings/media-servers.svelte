@@ -171,7 +171,6 @@
                 library_name: string;
                 media_type: "movie" | "series";
                 selected: boolean;
-                service_config_id: number | null;
               }> | null;
             }>;
           }
@@ -196,9 +195,8 @@
               id: lib.id,
               libraryId: lib.library_id,
               libraryName: lib.library_name,
-              mediaType: lib.media_type === "movie" ? "movie" : "series",
+              mediaType: lib.media_type,
               selected: lib.selected,
-              serviceConfigId: lib.service_config_id ?? raw.id ?? null,
             }),
           );
           next.push({
@@ -221,63 +219,39 @@
     }
   };
 
-  const refreshLibraries = async (
-    server: MediaServerState,
-    options?: { silent?: boolean },
-  ) => {
+  // loadSettings replaces every server object, so the spinner flag lives on the
+  // old one; clearing it there is harmless and the new one starts false
+  const refreshLibraries = async (server: MediaServerState) => {
     server.refreshingLibraries = true;
     try {
-      await post_api("/api/settings/sync/libraries", {
-        service_type: server.serverKey,
-      });
+      const response = await post_api<{ libraries: unknown[] }>(
+        "/api/settings/sync/libraries",
+        { service_type: server.serverKey },
+      );
       await loadSettings(false);
-      if (!options?.silent) {
+      if (response.libraries.length === 0) {
+        toast.warning(
+          `No libraries found. If ${displayName(server)} was just saved, wait a few seconds for it to connect and try again.`,
+        );
+      } else {
         toast.success(`Libraries refreshed for ${displayName(server)}`);
       }
     } catch (err: any) {
-      if (!options?.silent) {
-        toast.error(`Failed to refresh libraries: ${err.message}`);
-      }
+      toast.error(`Failed to refresh libraries: ${err.message}`);
     } finally {
-      const current = servers.find(
-        (entry) => entry.config.id === server.config.id,
-      );
-      if (current) current.refreshingLibraries = false;
       server.refreshingLibraries = false;
     }
   };
 
-  const toggleLibrary = async (
+  // checkboxes save as they change; the list flips back if the save fails
+  const setLibrariesSelected = async (
     server: MediaServerState,
-    library: MediaServerLibrary,
+    libraries: MediaServerLibrary[],
     selected: boolean,
   ) => {
-    if (library.selected === selected) return;
-    const previous = library.selected;
-    library.selected = selected;
-    server.savingLibraries = true;
-    try {
-      await put_api("/api/settings/libraries", [{ id: library.id, selected }]);
-      syncBanner = "sync";
-    } catch (err: any) {
-      library.selected = previous;
-      toast.error(`Failed to update library selection: ${err.message}`);
-    } finally {
-      server.savingLibraries = false;
-    }
-  };
-
-  const setAllLibraries = async (
-    server: MediaServerState,
-    selected: boolean,
-  ) => {
-    const changed = server.libraries.filter((lib) => lib.selected !== selected);
+    const changed = libraries.filter((lib) => lib.selected !== selected);
     if (changed.length === 0) return;
-
-    const previousById = new Map(changed.map((lib) => [lib.id, lib.selected]));
-    for (const lib of changed) {
-      lib.selected = selected;
-    }
+    for (const lib of changed) lib.selected = selected;
     server.savingLibraries = true;
     try {
       await put_api(
@@ -286,10 +260,8 @@
       );
       syncBanner = "sync";
     } catch (err: any) {
-      for (const lib of changed) {
-        lib.selected = previousById.get(lib.id) ?? !selected;
-      }
-      toast.error(`Failed to update library selections: ${err.message}`);
+      for (const lib of changed) lib.selected = !selected;
+      toast.error(`Failed to update library selection: ${err.message}`);
     } finally {
       server.savingLibraries = false;
     }
@@ -310,14 +282,6 @@
   const handleSaved = async (response: SaveServiceResponse) => {
     syncBanner = response.sync_action === "resync" ? "resync" : "sync";
     await loadSettings();
-    if (response.data.is_main && response.sync_action === "sync") {
-      const savedMain = servers.find(
-        (entry) => entry.config.id === response.data.id,
-      );
-      if (savedMain && savedMain.libraries.length === 0) {
-        await refreshLibraries(savedMain, { silent: true });
-      }
-    }
   };
 
   const promoteToMain = async () => {
@@ -612,9 +576,9 @@
               onDelete={() => (deleteTarget = server)}
               onRefreshLibraries={() => refreshLibraries(server)}
               onToggleLibrary={(library, selected) =>
-                toggleLibrary(server, library, selected)}
+                setLibrariesSelected(server, [library], selected)}
               onSetAllLibraries={(selected) =>
-                setAllLibraries(server, selected)}
+                setLibrariesSelected(server, server.libraries, selected)}
             />
           {/each}
         </div>

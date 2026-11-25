@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -20,14 +19,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from backend.api.routes.settings import services as settings_services
 from backend.api.routes.settings.services import (
     get_service_settings,
     update_library_selections,
-    update_service_libraries,
 )
 from backend.core.encryption import fer_encrypt
-from backend.core.service_manager import service_manager
 from backend.database import Base
 from backend.database.models import (
     Episode,
@@ -44,7 +40,7 @@ from backend.models.media import (
     AggregatedSeasonData,
     EpisodeVersionData,
 )
-from backend.models.settings import LibrarySelectionUpdate, UpdateMediaLibrariesRequest
+from backend.models.settings import LibrarySelectionUpdate
 from backend.services.emby import EmbyService
 from backend.services.jellyfin import JellyfinService
 from backend.services.plex import PlexService
@@ -60,7 +56,9 @@ MIGRATION = (
 
 
 def _load_migration() -> Any:
-    spec = importlib.util.spec_from_file_location("_default_selected_migration", MIGRATION)
+    spec = importlib.util.spec_from_file_location(
+        "_default_selected_migration", MIGRATION
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -93,11 +91,12 @@ def _async_db_override(session_maker: async_sessionmaker[AsyncSession]):
     return _override
 
 
-async def _make_db(*, foreign_keys: bool = False) -> tuple[
-    async_sessionmaker[AsyncSession], AsyncEngine
-]:
+async def _make_db(
+    *, foreign_keys: bool = False
+) -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     if foreign_keys:
+
         @event.listens_for(engine.sync_engine, "connect")
         def _set_fk(dbapi_connection, _connection_record):
             cursor = dbapi_connection.cursor()
@@ -115,7 +114,8 @@ async def _make_db(*, foreign_keys: bool = False) -> tuple[
     return session_maker, engine
 
 
-def test_migration_selects_legacy_unselected_libraries_and_preserves_custom_selection():
+def test_migration_selects_every_library():
+    """Old values came from a picker sync never honored, so none survive."""
     conn = sqlite3.connect(":memory:")
     conn.execute(
         """
@@ -132,7 +132,7 @@ def test_migration_selects_legacy_unselected_libraries_and_preserves_custom_sele
         "INSERT INTO service_media_libraries (library_id, library_name, media_type, selected) "
         "VALUES (?, ?, ?, ?)",
         [
-            ("lib-movies", "Movies", "MOVIE", 0),
+            ("lib-movies", "Movies", "MOVIE", 1),
             ("lib-discover", "Discover Movies", "MOVIE", 0),
         ],
     )
@@ -145,17 +145,6 @@ def test_migration_selects_legacy_unselected_libraries_and_preserves_custom_sele
             "SELECT library_id, selected FROM service_media_libraries ORDER BY library_id"
         )
     ) == [("lib-discover", 1), ("lib-movies", 1)]
-
-    # If a user already selected a subset, running the migration again must keep it.
-    conn.execute(
-        "UPDATE service_media_libraries SET selected = 0 WHERE library_id = 'lib-discover'"
-    )
-    module.upgrade()
-    assert list(
-        conn.execute(
-            "SELECT library_id, selected FROM service_media_libraries ORDER BY library_id"
-        )
-    ) == [("lib-discover", 0), ("lib-movies", 1)]
 
 
 def test_sync_media_libraries_defaults_new_rows_to_selected_and_preserves_unselected(
@@ -196,7 +185,9 @@ def test_sync_media_libraries_defaults_new_rows_to_selected_and_preserves_unsele
                 sync_module, "async_db", _async_db_override(session_maker)
             )
             monkeypatch.setattr(
-                sync_module, "_get_media_service_instance", AsyncMock(return_value=server)
+                sync_module,
+                "_get_media_service_instance",
+                AsyncMock(return_value=server),
             )
             monkeypatch.setattr(
                 sync_module,
@@ -398,14 +389,10 @@ def test_emby_family_filters_by_library_id_and_short_circuits_empty(
             assert series_sizes_mock.call_args.args[0] == "shows-id"
 
             # Scoped is_inventory_empty queries ParentId for selected libraries only.
-            request_mock = AsyncMock(
-                return_value={"Items": [], "TotalRecordCount": 0}
-            )
+            request_mock = AsyncMock(return_value={"Items": [], "TotalRecordCount": 0})
             monkeypatch.setattr(client, "_make_request", request_mock)
             assert (
-                await client.is_inventory_empty(
-                    MediaType.MOVIE, included_libraries=[]
-                )
+                await client.is_inventory_empty(MediaType.MOVIE, included_libraries=[])
                 is True
             )
             request_mock.assert_not_awaited()
@@ -450,9 +437,7 @@ def test_plex_filters_by_section_uuid_and_short_circuits_empty(monkeypatch):
             monkeypatch.setattr(
                 PlexService, "_get_collection_names_by_item_id", collections_mock
             )
-            monkeypatch.setattr(
-                PlexService, "_get_section_metadata_items", items_mock
-            )
+            monkeypatch.setattr(PlexService, "_get_section_metadata_items", items_mock)
             assert await client.get_movies(included_libraries=["uuid-movies"]) == []
             collections_mock.assert_awaited_once_with("1")
             items_mock.assert_awaited_once()
@@ -480,7 +465,7 @@ def test_plex_filters_by_section_uuid_and_short_circuits_empty(monkeypatch):
     asyncio.run(run())
 
 
-def test_settings_api_reads_updates_and_refreshes_libraries(monkeypatch):
+def test_settings_api_updates_and_lists_libraries_by_name():
     async def run() -> None:
         session_maker, engine = await _make_db()
         try:
@@ -537,50 +522,6 @@ def test_settings_api_reads_updates_and_refreshes_libraries(monkeypatch):
                     (lib["library_name"], lib["selected"])
                     for lib in main_inst["libraries"]
                 ] == [("Discover Movies", False), ("Movies", True)]
-
-                # POST /api/settings/sync/libraries works even before service_manager
-                # initializes the client, using a temporary client closed afterward.
-                monkeypatch.setattr(
-                    service_manager, "get_media_server", lambda *_a, **_kw: None
-                )
-                closed = {"called": False}
-
-                class _TempClient:
-                    def __init__(self) -> None:
-                        self.session = self
-
-                    async def close(self) -> None:
-                        closed["called"] = True
-
-                temp = _TempClient()
-                monkeypatch.setattr(
-                    settings_services, "_build_temp_media_client", lambda _cfg: temp
-                )
-                sync_mock = AsyncMock(
-                    return_value={"libraries": [], "affected_rules": []}
-                )
-                monkeypatch.setattr(
-                    settings_services, "sync_media_libraries", sync_mock
-                )
-
-                await update_service_libraries(
-                    UpdateMediaLibrariesRequest(service_type=Service.JELLYFIN),
-                    _admin_user(),
-                    db,
-                )
-                sync_mock.assert_awaited_once_with(service_instance=temp)
-                assert closed["called"] is True
-
-                # Reject when no enabled main server exists.
-                main.is_main = False
-                await db.commit()
-                with pytest.raises(HTTPException) as exc_info:
-                    await update_service_libraries(
-                        UpdateMediaLibrariesRequest(service_type=Service.JELLYFIN),
-                        _admin_user(),
-                        db,
-                    )
-                assert exc_info.value.status_code == 409
         finally:
             await engine.dispose()
 

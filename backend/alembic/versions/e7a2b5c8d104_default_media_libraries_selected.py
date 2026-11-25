@@ -1,4 +1,10 @@
-"""Default existing media libraries to selected for Sync Media."""
+"""Select every media library so Sync Media keeps syncing all of them.
+
+`selected` used to default to False and Sync Media ignored it. Rows that are
+True were saved by the old library-scope picker, which never limited sync, so
+honoring them now would quietly drop libraries. Start everyone from "all
+libraries" and let the new picker narrow it down.
+"""
 
 from alembic import op
 
@@ -9,20 +15,10 @@ depends_on = None
 
 
 def upgrade():
-    # Previously `selected` defaulted to False and was ignored during Sync Media.
-    # Backfill existing rows to True when no library has been selected yet so
-    # upgrading preserves existing full-library sync behavior.
-    op.execute(
-        """
-        UPDATE service_media_libraries
-        SET selected = 1
-        WHERE NOT EXISTS (
-            SELECT 1 FROM service_media_libraries WHERE selected = 1
-        )
-        """
-    )
+    op.execute("UPDATE service_media_libraries SET selected = 1")
 
 
 def downgrade():
-    # Data-only backfill; existing selections cannot be reliably reverted.
+    # Data-only change. The old values meant nothing to sync, so there is
+    # nothing worth restoring.
     pass

@@ -2197,44 +2197,30 @@ class EmbyServiceBase:
         media_type: MediaType,
         included_libraries: list[str] | None = None,
     ) -> bool:
-        """Confirm emptiness without user visibility or external-ID filtering."""
-        include_item_types = "Movie" if media_type is MediaType.MOVIE else "Series"
-        if included_libraries is not None:
-            if not included_libraries:
-                return True
-            for library_id in included_libraries:
-                data = await self._make_request(
-                    "Items",
-                    params={
-                        "ParentId": library_id,
-                        "Recursive": "true",
-                        "IncludeItemTypes": include_item_types,
-                        "Limit": 1,
-                        "EnableTotalRecordCount": "true",
-                    },
-                )
-                if not (
-                    isinstance(data, dict)
-                    and data.get("Items") == []
-                    and as_int(data.get("TotalRecordCount")) == 0
-                ):
-                    return False
-            return True
+        """Confirm emptiness without user visibility or external-ID filtering.
 
-        data = await self._make_request(
-            "Items",
-            params={
-                "Recursive": "true",
-                "IncludeItemTypes": include_item_types,
-                "Limit": 1,
-                "EnableTotalRecordCount": "true",
-            },
+        With `included_libraries`, only those libraries have to be empty.
+        """
+        base_params = {
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie" if media_type is MediaType.MOVIE else "Series",
+            "Limit": 1,
+            "EnableTotalRecordCount": "true",
+        }
+        scopes: list[dict[str, str]] = (
+            [{}]
+            if included_libraries is None
+            else [{"ParentId": library_id} for library_id in included_libraries]
         )
-        return (
-            isinstance(data, dict)
-            and data.get("Items") == []
-            and as_int(data.get("TotalRecordCount")) == 0
-        )
+        for scope in scopes:
+            data = await self._make_request("Items", params={**base_params, **scope})
+            if not (
+                isinstance(data, dict)
+                and data.get("Items") == []
+                and as_int(data.get("TotalRecordCount")) == 0
+            ):
+                return False
+        return True
 
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None

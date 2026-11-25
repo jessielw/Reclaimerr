@@ -22,7 +22,6 @@ export type MediaServerLibrary = {
   libraryName: string;
   mediaType: "movie" | "series";
   selected: boolean;
-  serviceConfigId: number | null;
 };
 
 // One saved media server row. Drafts never live here - a server only joins the

@@ -219,16 +219,17 @@
       </div>
 
       <p class="text-xs text-muted-foreground">
-        Choose which libraries are included during <strong>Sync Media</strong>.
-        Unselected libraries are skipped completely.
+        Only checked libraries are read during <strong>Sync Media</strong>.
+        Media from an unchecked library leaves Reclaimerr on the next sync and
+        is never a cleanup candidate. Nothing is deleted from {label}.
       </p>
 
       {#if server.libraries.length === 0}
         <div
           class="rounded-md border border-dashed border-border/80 bg-background/40 px-3 py-3 text-xs text-muted-foreground"
         >
-          No libraries loaded yet. Click <strong>Refresh libraries</strong> to
-          fetch libraries from {label} before running Sync Media.
+          No libraries loaded yet. Click <strong>Refresh libraries</strong> to pick
+          libraries before the first Sync Media. Until then, every library is synced.
         </div>
       {:else}
         <div
@@ -275,8 +276,8 @@
           >
             <TriangleAlert class="size-3.5 mt-0.5 shrink-0" />
             <span>
-              No libraries are selected. Running <strong>Sync Media</strong>
-              will skip all movie and show libraries.
+              No libraries are checked. The next <strong>Sync Media</strong>
+              will remove all movies and shows from Reclaimerr.
             </span>
           </div>
         {/if}

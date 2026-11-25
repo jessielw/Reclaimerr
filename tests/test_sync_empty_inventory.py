@@ -234,7 +234,9 @@ def test_gather_does_not_confuse_filtered_empty_results_with_empty_inventory(
             )
             result = await gather(config)
             assert (result is not None) == confirmed
-            client.is_inventory_empty.assert_awaited_once_with(media_type)
+            client.is_inventory_empty.assert_awaited_once_with(
+                media_type, included_libraries=None
+            )
         finally:
             await engine.dispose()
 
