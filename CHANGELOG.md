@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Settings → Media Servers** lists the main server's libraries with a checkbox for each. **Sync Media** reads only checked libraries, so media in an unchecked one (for example a placeholder "Discover" library) leaves Reclaimerr on the next sync and is never a cleanup candidate. Every library starts checked, including after upgrading. **Refresh libraries** loads the list before the first sync.
+
 ### Fixed
 
 - **New Cleanup Candidates** notifications count and list only the candidates added by the current scan. Scans with zero additions send no alert.
 - Discord destinations that use the same webhook and thread receive one copy of each notification even when their formatting settings differ.
+- **Sync Media** no longer fails with `FOREIGN KEY constraint failed` on `episode_versions` when two series from the media server match the same show in Reclaimerr.
 
 ## [0.6.17] - 2026-11-22
 

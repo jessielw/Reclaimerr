@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { delete_api, get_api, post_api } from "$lib/api";
+  import { delete_api, get_api, post_api, put_api } from "$lib/api";
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
@@ -22,6 +22,7 @@
   import MediaServerDialog from "./media-servers/media-server-dialog.svelte";
   import type {
     MediaServerConfig,
+    MediaServerLibrary,
     MediaServerState,
     SaveServiceResponse,
     ServerKey,
@@ -147,9 +148,9 @@
   };
 
   // load media server settings on mount
-  const loadSettings = async () => {
+  const loadSettings = async (showLoader = true) => {
     try {
-      loading = true;
+      if (showLoader) loading = true;
       const rawServices = await get_api<
         Record<
           string,
@@ -164,6 +165,13 @@
               last_synced_at?: string | null;
               extra_settings?: Record<string, any>;
               history_source?: MediaServerConfig["historySource"];
+              libraries?: Array<{
+                id: number;
+                library_id: string;
+                library_name: string;
+                media_type: "movie" | "series";
+                selected: boolean;
+              }> | null;
             }>;
           }
         >
@@ -182,12 +190,24 @@
             extraSettings: raw.extra_settings ?? {},
             historySource: raw.history_source,
           };
+          const libraries: MediaServerLibrary[] = (raw.libraries ?? []).map(
+            (lib) => ({
+              id: lib.id,
+              libraryId: lib.library_id,
+              libraryName: lib.library_name,
+              mediaType: lib.media_type,
+              selected: lib.selected,
+            }),
+          );
           next.push({
             serverKey,
             config,
             apiKeyIsSet: !!raw.api_key,
             syncing: false,
             lastSyncedAt: raw.last_synced_at ?? null,
+            libraries,
+            refreshingLibraries: false,
+            savingLibraries: false,
           });
         }
       }
@@ -195,7 +215,55 @@
     } catch (err: any) {
       toast.warning(`Error loading media server settings: ${err.message}`);
     } finally {
-      loading = false;
+      if (showLoader) loading = false;
+    }
+  };
+
+  // loadSettings replaces every server object, so the spinner flag lives on the
+  // old one; clearing it there is harmless and the new one starts false
+  const refreshLibraries = async (server: MediaServerState) => {
+    server.refreshingLibraries = true;
+    try {
+      const response = await post_api<{ libraries: unknown[] }>(
+        "/api/settings/sync/libraries",
+        { service_type: server.serverKey },
+      );
+      await loadSettings(false);
+      if (response.libraries.length === 0) {
+        toast.warning(
+          `No libraries found. If ${displayName(server)} was just saved, wait a few seconds for it to connect and try again.`,
+        );
+      } else {
+        toast.success(`Libraries refreshed for ${displayName(server)}`);
+      }
+    } catch (err: any) {
+      toast.error(`Failed to refresh libraries: ${err.message}`);
+    } finally {
+      server.refreshingLibraries = false;
+    }
+  };
+
+  // checkboxes save as they change; the list flips back if the save fails
+  const setLibrariesSelected = async (
+    server: MediaServerState,
+    libraries: MediaServerLibrary[],
+    selected: boolean,
+  ) => {
+    const changed = libraries.filter((lib) => lib.selected !== selected);
+    if (changed.length === 0) return;
+    for (const lib of changed) lib.selected = selected;
+    server.savingLibraries = true;
+    try {
+      await put_api(
+        "/api/settings/libraries",
+        changed.map((lib) => ({ id: lib.id, selected })),
+      );
+      syncBanner = "sync";
+    } catch (err: any) {
+      for (const lib of changed) lib.selected = !selected;
+      toast.error(`Failed to update library selection: ${err.message}`);
+    } finally {
+      server.savingLibraries = false;
     }
   };
 
@@ -288,6 +356,7 @@
             { duration: 8000 },
           );
         }
+        await loadSettings(false);
         return;
       }
 
@@ -505,6 +574,11 @@
               onSetMain={() => (promoteTarget = server)}
               onSync={() => syncServer(server)}
               onDelete={() => (deleteTarget = server)}
+              onRefreshLibraries={() => refreshLibraries(server)}
+              onToggleLibrary={(library, selected) =>
+                setLibrariesSelected(server, [library], selected)}
+              onSetAllLibraries={(selected) =>
+                setLibrariesSelected(server, server.libraries, selected)}
             />
           {/each}
         </div>

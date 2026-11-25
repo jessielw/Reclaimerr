@@ -543,7 +543,7 @@ async def get_service_settings(
             ServiceMediaLibrary.media_type,
             ServiceMediaLibrary.selected,
             ServiceMediaLibrary.service_config_id,
-        ).order_by(ServiceMediaLibrary.media_type)
+        ).order_by(ServiceMediaLibrary.media_type, ServiceMediaLibrary.library_name)
     )
     libraries_by_config: dict[int | None, list[dict[str, Any]]] = {}
     for (
