@@ -257,7 +257,7 @@ def test_tag_reconciliation_failure_does_not_fail_the_scan(monkeypatch) -> None:
 
         monkeypatch.setattr(client, "get_all_movies", boom)
 
-        async def fake_scan(_db) -> tuple[int, int, int]:
+        async def fake_scan(_db, *, created_candidate_ids) -> tuple[int, int, int]:
             return 0, 0, 1
 
         monkeypatch.setattr(cleanup, "_scan_with_db", fake_scan)

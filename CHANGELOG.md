@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.18] - 2026-11-25
+
+### Added
+
+- **Settings → Media Servers** lists the main server's libraries with a checkbox for each. **Sync Media** reads only checked libraries, so media in an unchecked one (for example a placeholder "Discover" library) leaves Reclaimerr on the next sync and is never a cleanup candidate. That holds even for a library with most of your media; the large-removal safeguard only waits a sync for titles missing from checked libraries. Every library starts checked, including after upgrading. **Refresh libraries** loads the list before the first sync.
+- An admin notice names any enabled cleanup rule whose library filter needs a library that is unchecked, since that filter finds nothing there. Filters that exclude an unchecked library are not flagged.
+
+### Fixed
+
+- **New Cleanup Candidates** notifications count and list only the candidates added by the current scan. Scans with zero additions send no alert.
+- Discord destinations that use the same webhook and thread receive one copy of each notification even when their formatting settings differ.
+- **Sync Media** no longer fails with `FOREIGN KEY constraint failed` on `episode_versions` when two series from the media server match the same show in Reclaimerr.
+
 ## [0.6.17] - 2026-11-22
 
 ### Added

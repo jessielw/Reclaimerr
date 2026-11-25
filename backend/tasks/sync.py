@@ -158,6 +158,78 @@ async def _soft_delete_blocked(
     return True
 
 
+async def _row_ids_only_in_unchecked_libraries(
+    session: AsyncSession,
+    service_config_id: int,
+    media_type: MediaType,
+    rows: Sequence[_RowT],
+) -> set[int]:
+    """Rows whose every stored copy sits in a library the admin unchecked.
+
+    Sync Media stopped reading those libraries on purpose, so their rows going
+    missing is expected rather than a sign of a partial response. A row with a
+    copy anywhere else, or with no recorded library at all, is not included.
+    """
+    if not rows:
+        return set()
+    unchecked = set(
+        (
+            await session.scalars(
+                select(ServiceMediaLibrary.library_id).where(
+                    ServiceMediaLibrary.service_config_id == service_config_id,
+                    ServiceMediaLibrary.media_type == media_type,
+                    ServiceMediaLibrary.selected.is_(False),
+                )
+            )
+        ).all()
+    )
+    if not unchecked:
+        return set()
+    if media_type is MediaType.MOVIE:
+        owner_col, library_col = MovieVersion.movie_id, MovieVersion.library_id
+    else:
+        owner_col, library_col = SeriesServiceRef.series_id, SeriesServiceRef.library_id
+    libraries_by_row: dict[int, set[str]] = {}
+    for row_id, library_id in await session.execute(
+        select(owner_col, library_col).where(owner_col.in_([row.id for row in rows]))
+    ):
+        libraries_by_row.setdefault(row_id, set()).add(library_id)
+    return {
+        row_id
+        for row_id, library_ids in libraries_by_row.items()
+        if library_ids <= unchecked
+    }
+
+
+async def _rows_to_soft_delete_now(
+    session: AsyncSession,
+    service_config_id: int,
+    media_type: MediaType,
+    rows_to_delete: Sequence[_RowT],
+    live_count: int,
+) -> list[_RowT]:
+    """The part of a delete set that should be tombstoned this run.
+
+    Rows that only lived in unchecked libraries always go, so unchecking a big
+    library takes one sync rather than two. Everything else still passes the
+    partial-response guard, judged against the live rows that remain once the
+    unchecked ones are set aside.
+    """
+    unchecked_ids = await _row_ids_only_in_unchecked_libraries(
+        session, service_config_id, media_type, rows_to_delete
+    )
+    guarded = [row for row in rows_to_delete if row.id not in unchecked_ids]
+    if await _soft_delete_blocked(
+        session,
+        service_config_id,
+        media_type,
+        guarded,
+        live_count - len(unchecked_ids),
+    ):
+        return [row for row in rows_to_delete if row.id in unchecked_ids]
+    return list(rows_to_delete)
+
+
 def _series_copy_sort_key(series: AggregatedSeriesData) -> tuple[str, str]:
     """Stable ordering key for two copies of one series on the same server.
 
@@ -279,14 +351,14 @@ async def _reconcile_empty_inventory(config_id: int, media_type: MediaType) -> N
     async with async_db() as session:
         rows = list((await session.scalars(select(model))).all())
         missing = _select_rows_to_soft_delete(rows, set())
-        if await _soft_delete_blocked(
+        to_delete = await _rows_to_soft_delete_now(
             session, config_id, media_type, missing, len(missing)
-        ):
+        )
+        if len(to_delete) < len(missing):
             LOG.warning(
                 f"Empty {media_type.value} inventory requires confirmation on the next sync"
             )
-        else:
-            await _apply_soft_deletes(session, missing, media_type)
+        await _apply_soft_deletes(session, to_delete, media_type)
         if media_type is MediaType.MOVIE:
             await _restore_pending_movie_scopes(
                 session, {row.id for row in rows if row.removed_at}
@@ -1281,6 +1353,10 @@ async def _upsert_episodes(
             episode_data,
             replace=versions_mode == "replace",
         )
+        # Autoflush is off. Left pending, these versions get inserted at commit,
+        # after a later raw DELETE in this batch may have removed their episode
+        # (two incoming series matched to one row), and SQLite rejects them.
+        await session.flush()
 
     # remove episodes no longer present on the media server
     if remove_stale:
@@ -1593,6 +1669,37 @@ async def _upsert_movie_versions(
     db_movie.size = total_size
 
 
+async def _get_selected_library_ids(
+    session: AsyncSession,
+    service_config_id: int | None,
+    media_type: MediaType,
+) -> list[str] | None:
+    """Library ids Sync Media should read for one server and media type.
+
+    `None` means no libraries are recorded yet, so read everything (the
+    pre-selection behavior). An empty list means every recorded library of
+    this type was unchecked, so read nothing. Sync Media refreshes the library
+    rows first and new rows start selected, so a library added on the server
+    is never skipped just because it is new.
+    """
+    if service_config_id is None:
+        return None
+    rows = (
+        await session.execute(
+            select(
+                ServiceMediaLibrary.library_id,
+                ServiceMediaLibrary.selected,
+            ).where(
+                ServiceMediaLibrary.media_type == media_type,
+                ServiceMediaLibrary.service_config_id == service_config_id,
+            )
+        )
+    ).all()
+    if not rows:
+        return None
+    return [library_id for library_id, selected in rows if selected]
+
+
 async def gather_movies(
     config: ServiceConfig | None = None,
 ) -> dict[int, AggregatedMovieData] | None:
@@ -1617,13 +1724,22 @@ async def gather_movies(
                 )
                 return None
 
+        included_libraries = await _get_selected_library_ids(
+            session, target.id, MediaType.MOVIE
+        )
+        if included_libraries == []:
+            LOG.info("No movie libraries selected - skipping movie fetch")
+            return {}
+
         service_instance = await _get_media_service_instance(target)
         if not service_instance:
             return None
         LOG.debug(f"Fetching movies from {target.service_type} at {target.base_url}")
         aggregated_movies: list[
             AggregatedMovieData
-        ] = await service_instance.get_aggregated_movies(included_libraries=None)
+        ] = await service_instance.get_aggregated_movies(
+            included_libraries=included_libraries
+        )
         if aggregated_movies is None:
             return None
         LOG.debug(f"Fetched {len(aggregated_movies)} movies from {target.service_type}")
@@ -1696,7 +1812,7 @@ async def gather_movies(
         LOG.warning(f"Skipped {skipped_count} movies without TMDB IDs")
 
     if not unique_movies and not await service_instance.is_inventory_empty(
-        MediaType.MOVIE
+        MediaType.MOVIE, included_libraries=included_libraries
     ):
         LOG.warning(
             "Movie inventory returned no usable titles but emptiness could not be confirmed"
@@ -1837,12 +1953,19 @@ async def gather_series(
                 )
                 return None
 
+        included_libraries = await _get_selected_library_ids(
+            session, target.id, MediaType.SERIES
+        )
+        if included_libraries == []:
+            LOG.info("No series libraries selected - skipping series fetch")
+            return {}, {}
+
         service_instance = await _get_media_service_instance(target)
         if not service_instance:
             return None
         LOG.debug(f"Fetching series from {target.service_type} at {target.base_url}")
         aggregated_series = await service_instance.get_aggregated_series(
-            included_libraries=None
+            included_libraries=included_libraries
         )
         if aggregated_series is None:
             return None
@@ -1850,7 +1973,7 @@ async def gather_series(
 
     result = _dedupe_aggregated_series(aggregated_series)
     if not result[0] and not await service_instance.is_inventory_empty(
-        MediaType.SERIES
+        MediaType.SERIES, included_libraries=included_libraries
     ):
         LOG.warning(
             "Series inventory returned no usable titles but emptiness could not be confirmed"
@@ -2284,28 +2407,29 @@ async def sync_movies(
                 await session.commit()
 
             if allow_soft_delete:
-                movies_to_delete = _select_rows_to_soft_delete(
+                proposed_movies = _select_rows_to_soft_delete(
                     existing_movies_list, matched_row_ids
                 )
                 live_movie_count = sum(
                     1 for movie in existing_movies_list if not movie.removed_at
                 )
-                if await _soft_delete_blocked(
+                movies_to_delete = await _rows_to_soft_delete_now(
                     session,
                     effective_config.id,
                     MediaType.MOVIE,
-                    movies_to_delete,
+                    proposed_movies,
                     live_movie_count,
-                ):
+                )
+                held_back = len(proposed_movies) - len(movies_to_delete)
+                if held_back:
                     LOG.warning(
                         f"Skipping movie soft-delete this run: "
-                        f"{len(movies_to_delete)} of {live_movie_count} live movies "
+                        f"{held_back} of {live_movie_count} live movies "
                         f"would be removed, which may be a partial response from "
                         f"{effective_service.value} rather than real deletions. If "
                         f"the next sync proposes the same movies they will be "
                         f"removed then."
                     )
-                    movies_to_delete = []
 
                 if movies_to_delete:
                     LOG.info(
@@ -2966,27 +3090,28 @@ async def sync_series(
                 await session.commit()
 
             if allow_soft_delete:
-                series_to_delete = _select_rows_to_soft_delete(
+                proposed_series = _select_rows_to_soft_delete(
                     existing_series_list, matched_row_ids
                 )
                 live_series_count = sum(
                     1 for s in existing_series_list if not s.removed_at
                 )
-                if await _soft_delete_blocked(
+                series_to_delete = await _rows_to_soft_delete_now(
                     session,
                     effective_config.id,
                     MediaType.SERIES,
-                    series_to_delete,
+                    proposed_series,
                     live_series_count,
-                ):
+                )
+                held_back = len(proposed_series) - len(series_to_delete)
+                if held_back:
                     LOG.warning(
                         f"Skipping series soft-delete this run: "
-                        f"{len(series_to_delete)} of {live_series_count} live series "
+                        f"{held_back} of {live_series_count} live series "
                         f"would be removed, which may be a partial response from "
                         f"{source_label} rather than real deletions. If the next "
                         f"sync proposes the same series they will be removed then."
                     )
-                    series_to_delete = []
 
                 if series_to_delete:
                     LOG.info(

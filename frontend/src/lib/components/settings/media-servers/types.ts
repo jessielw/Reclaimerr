@@ -16,6 +16,14 @@ export type MediaServerConfig = {
   };
 };
 
+export type MediaServerLibrary = {
+  id: number;
+  libraryId: string;
+  libraryName: string;
+  mediaType: "movie" | "series";
+  selected: boolean;
+};
+
 // One saved media server row. Drafts never live here - a server only joins the
 // list once the API has accepted it and handed back an id, so every entry in
 // the list is addressable by `config.id`.
@@ -25,6 +33,9 @@ export type MediaServerState = {
   apiKeyIsSet: boolean;
   syncing: boolean;
   lastSyncedAt: string | null;
+  libraries: MediaServerLibrary[];
+  refreshingLibraries: boolean;
+  savingLibraries: boolean;
 };
 
 export type SaveServiceResponse = {

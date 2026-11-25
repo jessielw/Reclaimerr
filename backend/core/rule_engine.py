@@ -2029,6 +2029,21 @@ def collect_rule_library_ids(definition: RuleDefinition | None) -> list[str]:
     return library_ids
 
 
+def collect_rule_included_library_ids(definition: RuleDefinition | None) -> set[str]:
+    """Library ids a rule needs items from, i.e. those in `in`-style conditions.
+
+    Ids in `not_in`-style conditions are left out: excluding a library that no
+    longer syncs still behaves as written.
+    """
+    return {
+        value
+        for condition in collect_rule_conditions(definition, field="library.id")
+        if str(condition.get("operator", "")).lower()
+        in PATH_LIBRARY_INCLUSION_OPERATORS
+        for value in _normalize_condition_values(condition.get("value"))
+    }
+
+
 def derive_path_scope_library_ids(
     definition: RuleDefinition | None,
 ) -> list[str] | None:

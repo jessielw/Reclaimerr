@@ -6,7 +6,10 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.rule_engine import collect_rule_library_ids
+from backend.core.rule_engine import (
+    collect_rule_included_library_ids,
+    collect_rule_library_ids,
+)
 from backend.database.models import (
     AdminNotice,
     ReclaimRule,
@@ -19,6 +22,7 @@ NOTICE_KEY_SEERR_RULE_SKIP = "seerr_rules_skipped"
 NOTICE_KEY_SONARR_RULE_DATA = "sonarr_rule_data_unavailable"
 NOTICE_KEY_PLAYBACK_RULE_DATA = "playback_rule_data_unavailable"
 NOTICE_KEY_STALE_LIBRARY_IDS = "stale_library_ids"
+NOTICE_KEY_UNCHECKED_LIBRARY_RULES = "rules_scoped_to_unchecked_libraries"
 NOTICE_KEY_FORWARD_AUTH_FALLBACK = "forward_auth_local_fallback_enabled"
 NOTICE_KEY_LOGIN_RECOVERY = "login_local_recovery_enabled"
 
@@ -45,6 +49,17 @@ def _render_stale_library_notice_message(
         f"from the main server, so this usually means a different server was "
         f"promoted to main. Cleanup scans will produce no candidates until the "
         f"library filters are updated or cleared."
+    )
+
+
+def _render_unchecked_library_notice_message(rule_names: list[str]) -> str:
+    names = ", ".join(f'"{n}"' for n in rule_names[:3])
+    suffix = f" and {len(rule_names) - 3} more" if len(rule_names) > 3 else ""
+    return (
+        f"These rules filter on libraries that are unchecked in Settings → Media "
+        f"Servers: {names}{suffix}. Sync Media no longer reads those libraries, "
+        f"so the rules find nothing in them. Check the libraries again or update "
+        f"the rules' library filters."
     )
 
 
@@ -425,7 +440,10 @@ async def clear_playback_rule_data_notice(db: AsyncSession) -> None:
 async def reconcile_stale_library_notice(db: AsyncSession) -> list[str]:
     """Checks for any reclaim rules that reference library IDs that no longer exist,
     and creates or resolves a notice accordingly. Returns a list of rule names that have
-    stale library references."""
+    stale library references.
+
+    Also raises or resolves the notice for rules that need items from a library
+    unchecked in Settings, which Sync Media no longer reads."""
     # Scoped to the current main server: only main contributes libraries, so a
     # row left behind by a previously-main server must not keep a rule looking
     # valid. Rows predating the service_config_id column (NULL) are still
@@ -441,25 +459,50 @@ async def reconcile_stale_library_notice(db: AsyncSession) -> list[str]:
     main_server_name = (main_row[1] or None) if main_row else None
 
     known_lib_result = await db.execute(
-        select(ServiceMediaLibrary.library_id).where(
+        select(ServiceMediaLibrary.library_id, ServiceMediaLibrary.selected).where(
             or_(
                 ServiceMediaLibrary.service_config_id == main_config_id,
                 ServiceMediaLibrary.service_config_id.is_(None),
             )
         )
     )
-    known_library_ids: set[str] = {row[0] for row in known_lib_result.all()}
+    known_library_ids: set[str] = set()
+    unchecked_library_ids: set[str] = set()
+    for library_id, selected in known_lib_result.all():
+        known_library_ids.add(library_id)
+        if not selected:
+            unchecked_library_ids.add(library_id)
 
     rules_result = await db.execute(
         select(ReclaimRule).where(ReclaimRule.enabled == True)
     )
     stale_rule_names: list[str] = []
+    unchecked_rule_names: list[str] = []
     for rule in rules_result.scalars().all():
         rule_library_ids = collect_rule_library_ids(rule.definition)
         if rule_library_ids and any(
             lid not in known_library_ids for lid in rule_library_ids
         ):
             stale_rule_names.append(rule.name)
+        if collect_rule_included_library_ids(rule.definition) & unchecked_library_ids:
+            unchecked_rule_names.append(rule.name)
+
+    if unchecked_rule_names:
+        await upsert_singleton_notice(
+            db,
+            dedupe_key=NOTICE_KEY_UNCHECKED_LIBRARY_RULES,
+            kind=NOTICE_KEY_UNCHECKED_LIBRARY_RULES,
+            severity="warning",
+            title="Cleanup rules filter on unchecked libraries",
+            message=_render_unchecked_library_notice_message(unchecked_rule_names),
+            action_label="Go to Settings",
+            action_href="#/settings",
+            context_json={"rule_names": unchecked_rule_names},
+        )
+    else:
+        await resolve_singleton_notice(
+            db, dedupe_key=NOTICE_KEY_UNCHECKED_LIBRARY_RULES
+        )
 
     if stale_rule_names:
         await upsert_singleton_notice(
