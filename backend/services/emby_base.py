@@ -2192,15 +2192,40 @@ class EmbyServiceBase:
             ) in results.items()
         ]
 
-    async def is_inventory_empty(self, media_type: MediaType) -> bool:
+    async def is_inventory_empty(
+        self,
+        media_type: MediaType,
+        included_libraries: list[str] | None = None,
+    ) -> bool:
         """Confirm emptiness without user visibility or external-ID filtering."""
+        include_item_types = "Movie" if media_type is MediaType.MOVIE else "Series"
+        if included_libraries is not None:
+            if not included_libraries:
+                return True
+            for library_id in included_libraries:
+                data = await self._make_request(
+                    "Items",
+                    params={
+                        "ParentId": library_id,
+                        "Recursive": "true",
+                        "IncludeItemTypes": include_item_types,
+                        "Limit": 1,
+                        "EnableTotalRecordCount": "true",
+                    },
+                )
+                if not (
+                    isinstance(data, dict)
+                    and data.get("Items") == []
+                    and as_int(data.get("TotalRecordCount")) == 0
+                ):
+                    return False
+            return True
+
         data = await self._make_request(
             "Items",
             params={
                 "Recursive": "true",
-                "IncludeItemTypes": "Movie"
-                if media_type is MediaType.MOVIE
-                else "Series",
+                "IncludeItemTypes": include_item_types,
                 "Limit": 1,
                 "EnableTotalRecordCount": "true",
             },
@@ -2214,7 +2239,10 @@ class EmbyServiceBase:
     async def get_aggregated_movies(
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
-        """Get aggregated movie data across all users with optional library filters."""
+        """Get aggregated movie data across all users with optional library ID filters."""
+        if included_libraries is not None and not included_libraries:
+            return []
+
         movie_data: dict[str, _MovieAggregate] = {}
         collection_names_by_item_id = await self._get_collection_names_by_item_id(
             include_item_types="Movie"
@@ -2224,9 +2252,10 @@ class EmbyServiceBase:
         all_libraries = await self.get_movie_libraries()
 
         # filter to included libraries if specified
-        if included_libraries:
+        if included_libraries is not None:
+            included_set = set(included_libraries)
             libraries_to_query = [
-                lib for lib in all_libraries if lib["name"] in included_libraries
+                lib for lib in all_libraries if lib["id"] in included_set
             ]
         else:
             libraries_to_query = all_libraries
@@ -2394,6 +2423,9 @@ class EmbyServiceBase:
         episodes to get accurate watch dates. We optimize by getting all watched episodes
         per user in a single API call instead of querying each series individually.
         """
+        if included_libraries is not None and not included_libraries:
+            return []
+
         series_data: dict[str, _SeriesAggregate] = {}
         collection_names_by_item_id = await self._get_collection_names_by_item_id(
             include_item_types="Series"
@@ -2403,9 +2435,10 @@ class EmbyServiceBase:
         all_libraries = await self.get_series_libraries()
 
         # filter to included libraries if specified
-        if included_libraries:
+        if included_libraries is not None:
+            included_set = set(included_libraries)
             libraries_to_query = [
-                lib for lib in all_libraries if lib["name"] in included_libraries
+                lib for lib in all_libraries if lib["id"] in included_set
             ]
         else:
             libraries_to_query = all_libraries

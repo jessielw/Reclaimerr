@@ -1654,14 +1654,18 @@ class PlexService:
         """Get all movies from all movie libraries.
 
         Args:
-            included_libraries: List of library names to include (None for all)
+            included_libraries: List of library IDs (section UUIDs) to include (None for all)
         """
+        if included_libraries is not None and not included_libraries:
+            return []
+
         sections = await self.get_library_sections()
         movie_sections = [s for s in sections if s.get("type") == "movie"]
 
-        if included_libraries:
+        if included_libraries is not None:
+            included_set = set(included_libraries)
             movie_sections = [
-                s for s in movie_sections if s.get("title") in included_libraries
+                s for s in movie_sections if s.get("uuid") in included_set
             ]
 
         all_movies = []
@@ -1957,15 +1961,17 @@ class PlexService:
         """Get all TV series from all show libraries.
 
         Args:
-            included_libraries: List of library names to include (None for all)
+            included_libraries: List of library IDs (section UUIDs) to include (None for all)
         """
+        if included_libraries is not None and not included_libraries:
+            return []
+
         sections = await self.get_library_sections()
         show_sections = [s for s in sections if s.get("type") == "show"]
 
-        if included_libraries:
-            show_sections = [
-                s for s in show_sections if s.get("title") in included_libraries
-            ]
+        if included_libraries is not None:
+            included_set = set(included_libraries)
+            show_sections = [s for s in show_sections if s.get("uuid") in included_set]
 
         all_series = []
         for section in show_sections:
@@ -2446,11 +2452,10 @@ class PlexService:
             for section in await self.get_library_sections()
             if section.get("type") == section_type
         ]
-        if included_libraries:
+        if included_libraries is not None:
+            included_set = set(included_libraries)
             sections = [
-                section
-                for section in sections
-                if section.get("title") in included_libraries
+                section for section in sections if section.get("uuid") in included_set
             ]
 
         tmdb_by_rating_key: dict[str, int] = {}
@@ -2530,10 +2535,9 @@ class PlexService:
 
         sections = await self.get_library_sections()
         scoped_sections = sections
-        if included_libraries:
-            scoped_sections = [
-                s for s in sections if s.get("title") in included_libraries
-            ]
+        if included_libraries is not None:
+            included_set = set(included_libraries)
+            scoped_sections = [s for s in sections if s.get("uuid") in included_set]
         section_ids = [s["key"] for s in scoped_sections if s.get("key")]
         history_records = await self._get_all_history_records(
             library_section_ids=section_ids,
@@ -2605,8 +2609,17 @@ class PlexService:
         ]
         return snapshots, max_viewed_at
 
-    async def is_inventory_empty(self, media_type: MediaType) -> bool:
+    async def is_inventory_empty(
+        self,
+        media_type: MediaType,
+        included_libraries: list[str] | None = None,
+    ) -> bool:
         """Confirm raw library counts before reconciling an empty parsed catalog."""
+        if included_libraries is not None and not included_libraries:
+            return True
+        included_set = (
+            set(included_libraries) if included_libraries is not None else None
+        )
         data, _ = await self._make_request("library/sections")
         container = data.get("MediaContainer") if isinstance(data, dict) else None
         if not isinstance(container, dict):
@@ -2623,6 +2636,8 @@ class PlexService:
             if not isinstance(section, dict) or not section.get("type"):
                 return False
             if section["type"] != expected_type:
+                continue
+            if included_set is not None and section.get("uuid") not in included_set:
                 continue
             if not section.get("key"):
                 return False
@@ -2645,15 +2660,19 @@ class PlexService:
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedMovieData]:
         """Get aggregated movie data with optional section inclusion."""
+        if included_libraries is not None and not included_libraries:
+            return []
+
         movies = await self.get_movies(included_libraries=included_libraries)
 
         # collect the numeric section IDs that were actually used so history is
         # scoped to the same libraries (avoids pulling all server history)
         sections = await self.get_library_sections()
         movie_sections = [s for s in sections if s.get("type") == "movie"]
-        if included_libraries:
+        if included_libraries is not None:
+            included_set = set(included_libraries)
             movie_sections = [
-                s for s in movie_sections if s.get("title") in included_libraries
+                s for s in movie_sections if s.get("uuid") in included_set
             ]
         movie_section_ids = [s["key"] for s in movie_sections if s.get("key")]
 
@@ -2684,6 +2703,9 @@ class PlexService:
         self, included_libraries: list[str] | None = None
     ) -> list[AggregatedSeriesData]:
         """Get aggregated series data with optional section inclusion."""
+        if included_libraries is not None and not included_libraries:
+            return []
+
         series = await self.get_series(included_libraries=included_libraries)
 
         # collect all series and season rating keys to scope the history fetch
@@ -2702,10 +2724,9 @@ class PlexService:
         # collect the numeric section IDs for show libraries
         sections = await self.get_library_sections()
         show_sections = [s for s in sections if s.get("type") == "show"]
-        if included_libraries:
-            show_sections = [
-                s for s in show_sections if s.get("title") in included_libraries
-            ]
+        if included_libraries is not None:
+            included_set = set(included_libraries)
+            show_sections = [s for s in show_sections if s.get("uuid") in included_set]
         show_section_ids = [s["key"] for s in show_sections if s.get("key")]
 
         # fetch cross user episode history keyed by season/series ratingKey

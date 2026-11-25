@@ -344,7 +344,7 @@ class ServiceMediaLibrary(Base):
         index=True,
         default=None,
     )
-    selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    selected: Mapped[bool] = mapped_column(Boolean, default=True)
     added_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), init=False
     )

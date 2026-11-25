@@ -57,7 +57,10 @@ from backend.models.settings import (
     TracearrDiscoveryRequest,
     UpdateMediaLibrariesRequest,
 )
+from backend.services.emby import EmbyService
+from backend.services.jellyfin import JellyfinService
 from backend.services.playback_selection import resolve_history_sources
+from backend.services.plex import PlexService
 from backend.services.tracearr import TracearrClient
 from backend.tasks.external_ratings import (
     DEFAULT_MDBLIST_REQUEST_LIMIT,
@@ -543,7 +546,7 @@ async def get_service_settings(
             ServiceMediaLibrary.media_type,
             ServiceMediaLibrary.selected,
             ServiceMediaLibrary.service_config_id,
-        ).order_by(ServiceMediaLibrary.media_type)
+        ).order_by(ServiceMediaLibrary.media_type, ServiceMediaLibrary.library_name)
     )
     libraries_by_config: dict[int | None, list[dict[str, Any]]] = {}
     for (
@@ -1162,13 +1165,30 @@ async def test_service_settings(
     }
 
 
+def _build_temp_media_client(
+    config: ServiceConfig,
+) -> JellyfinService | EmbyService | PlexService:
+    """Create a short-lived media server client directly from a saved config."""
+    api_key = fer_decrypt(config.api_key) if config.api_key else ""
+    if config.service_type is Service.JELLYFIN:
+        return JellyfinService(api_key=api_key, base_url=config.base_url)
+    if config.service_type is Service.EMBY:
+        return EmbyService(
+            api_key=api_key, base_url=config.base_url, config_id=config.id
+        )
+    if config.service_type is Service.PLEX:
+        return PlexService(token=api_key, plex_url=config.base_url)
+    raise ValueError(f"Unsupported media server type: {config.service_type}")
+
+
 @router.post("/sync/libraries")
 async def update_service_libraries(
     service_type: UpdateMediaLibrariesRequest,
     _current_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Sync library selections for a given service."""
-    if not service_type.service_type or service_type.service_type not in (
+    """Sync library list from the main media server without running a full media sync."""
+    if service_type.service_type is not None and service_type.service_type not in (
         Service.JELLYFIN,
         Service.EMBY,
         Service.PLEX,
@@ -1178,8 +1198,44 @@ async def update_service_libraries(
             detail="Library selection is only supported for Jellyfin, Emby and Plex",
         )
 
-    # update libraries from the main server
-    return await sync_media_libraries()
+    main = (
+        await db.execute(
+            select(ServiceConfig).where(
+                ServiceConfig.service_type.in_(MEDIA_SERVERS),
+                ServiceConfig.is_main.is_(True),
+                ServiceConfig.enabled.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if main is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No enabled main media server is configured",
+        )
+
+    existing_client = service_manager.get_media_server(main.service_type, main.id)
+    if isinstance(existing_client, (JellyfinService, EmbyService, PlexService)):
+        try:
+            return await sync_media_libraries(service_instance=existing_client)
+        except Exception as exc:
+            LOG.warning(f"Failed to refresh libraries from {main.service_type}: {exc}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to fetch libraries from {main.name or main.service_type.title()}",
+            )
+
+    temp_client = _build_temp_media_client(main)
+    try:
+        return await sync_media_libraries(service_instance=temp_client)
+    except Exception as exc:
+        LOG.warning(f"Failed to refresh libraries from {main.service_type}: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch libraries from {main.name or main.service_type.title()}",
+        )
+    finally:
+        if temp_client.session:
+            await temp_client.session.close()
 
 
 @router.post("/media-servers/{service_config_id}/sync")

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { delete_api, get_api, post_api } from "$lib/api";
+  import { delete_api, get_api, post_api, put_api } from "$lib/api";
   import { Button } from "$lib/components/ui/button/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
   import JellyfinSVG from "$lib/components/svgs/jellyfin-svg.svelte";
@@ -22,6 +22,7 @@
   import MediaServerDialog from "./media-servers/media-server-dialog.svelte";
   import type {
     MediaServerConfig,
+    MediaServerLibrary,
     MediaServerState,
     SaveServiceResponse,
     ServerKey,
@@ -147,9 +148,9 @@
   };
 
   // load media server settings on mount
-  const loadSettings = async () => {
+  const loadSettings = async (showLoader = true) => {
     try {
-      loading = true;
+      if (showLoader) loading = true;
       const rawServices = await get_api<
         Record<
           string,
@@ -164,6 +165,14 @@
               last_synced_at?: string | null;
               extra_settings?: Record<string, any>;
               history_source?: MediaServerConfig["historySource"];
+              libraries?: Array<{
+                id: number;
+                library_id: string;
+                library_name: string;
+                media_type: "movie" | "series";
+                selected: boolean;
+                service_config_id: number | null;
+              }> | null;
             }>;
           }
         >
@@ -182,12 +191,25 @@
             extraSettings: raw.extra_settings ?? {},
             historySource: raw.history_source,
           };
+          const libraries: MediaServerLibrary[] = (raw.libraries ?? []).map(
+            (lib) => ({
+              id: lib.id,
+              libraryId: lib.library_id,
+              libraryName: lib.library_name,
+              mediaType: lib.media_type === "movie" ? "movie" : "series",
+              selected: lib.selected,
+              serviceConfigId: lib.service_config_id ?? raw.id ?? null,
+            }),
+          );
           next.push({
             serverKey,
             config,
             apiKeyIsSet: !!raw.api_key,
             syncing: false,
             lastSyncedAt: raw.last_synced_at ?? null,
+            libraries,
+            refreshingLibraries: false,
+            savingLibraries: false,
           });
         }
       }
@@ -195,7 +217,81 @@
     } catch (err: any) {
       toast.warning(`Error loading media server settings: ${err.message}`);
     } finally {
-      loading = false;
+      if (showLoader) loading = false;
+    }
+  };
+
+  const refreshLibraries = async (
+    server: MediaServerState,
+    options?: { silent?: boolean },
+  ) => {
+    server.refreshingLibraries = true;
+    try {
+      await post_api("/api/settings/sync/libraries", {
+        service_type: server.serverKey,
+      });
+      await loadSettings(false);
+      if (!options?.silent) {
+        toast.success(`Libraries refreshed for ${displayName(server)}`);
+      }
+    } catch (err: any) {
+      if (!options?.silent) {
+        toast.error(`Failed to refresh libraries: ${err.message}`);
+      }
+    } finally {
+      const current = servers.find(
+        (entry) => entry.config.id === server.config.id,
+      );
+      if (current) current.refreshingLibraries = false;
+      server.refreshingLibraries = false;
+    }
+  };
+
+  const toggleLibrary = async (
+    server: MediaServerState,
+    library: MediaServerLibrary,
+    selected: boolean,
+  ) => {
+    if (library.selected === selected) return;
+    const previous = library.selected;
+    library.selected = selected;
+    server.savingLibraries = true;
+    try {
+      await put_api("/api/settings/libraries", [{ id: library.id, selected }]);
+      syncBanner = "sync";
+    } catch (err: any) {
+      library.selected = previous;
+      toast.error(`Failed to update library selection: ${err.message}`);
+    } finally {
+      server.savingLibraries = false;
+    }
+  };
+
+  const setAllLibraries = async (
+    server: MediaServerState,
+    selected: boolean,
+  ) => {
+    const changed = server.libraries.filter((lib) => lib.selected !== selected);
+    if (changed.length === 0) return;
+
+    const previousById = new Map(changed.map((lib) => [lib.id, lib.selected]));
+    for (const lib of changed) {
+      lib.selected = selected;
+    }
+    server.savingLibraries = true;
+    try {
+      await put_api(
+        "/api/settings/libraries",
+        changed.map((lib) => ({ id: lib.id, selected })),
+      );
+      syncBanner = "sync";
+    } catch (err: any) {
+      for (const lib of changed) {
+        lib.selected = previousById.get(lib.id) ?? !selected;
+      }
+      toast.error(`Failed to update library selections: ${err.message}`);
+    } finally {
+      server.savingLibraries = false;
     }
   };
 
@@ -214,6 +310,14 @@
   const handleSaved = async (response: SaveServiceResponse) => {
     syncBanner = response.sync_action === "resync" ? "resync" : "sync";
     await loadSettings();
+    if (response.data.is_main && response.sync_action === "sync") {
+      const savedMain = servers.find(
+        (entry) => entry.config.id === response.data.id,
+      );
+      if (savedMain && savedMain.libraries.length === 0) {
+        await refreshLibraries(savedMain, { silent: true });
+      }
+    }
   };
 
   const promoteToMain = async () => {
@@ -288,6 +392,7 @@
             { duration: 8000 },
           );
         }
+        await loadSettings(false);
         return;
       }
 
@@ -505,6 +610,11 @@
               onSetMain={() => (promoteTarget = server)}
               onSync={() => syncServer(server)}
               onDelete={() => (deleteTarget = server)}
+              onRefreshLibraries={() => refreshLibraries(server)}
+              onToggleLibrary={(library, selected) =>
+                toggleLibrary(server, library, selected)}
+              onSetAllLibraries={(selected) =>
+                setAllLibraries(server, selected)}
             />
           {/each}
         </div>

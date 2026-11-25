@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, TypeGuard, TypeVar, cast
 
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1032,6 +1032,7 @@ async def _sync_seasons(
             )
             .values(season_id=None, episode_id=None)
         )
+        await session.flush()
         await session.execute(
             sql_delete(EpisodeVersion).where(
                 EpisodeVersion.episode_id.in_(
@@ -1281,6 +1282,7 @@ async def _upsert_episodes(
             episode_data,
             replace=versions_mode == "replace",
         )
+        await session.flush()
 
     # remove episodes no longer present on the media server
     if remove_stale:
@@ -1593,6 +1595,39 @@ async def _upsert_movie_versions(
     db_movie.size = total_size
 
 
+async def _get_selected_library_ids(
+    session: AsyncSession,
+    service_config_id: int | None,
+    media_type: MediaType,
+) -> list[str] | None:
+    """Return selected library IDs for a server and media type.
+
+    Returns ``None`` when no library rows exist yet for this server and media
+    type (e.g. first run before libraries are recorded), meaning all libraries
+    on the server should be scanned. Returns ``[]`` when libraries exist but
+    none are selected, meaning this media type should be skipped completely.
+    """
+    if service_config_id is None:
+        return None
+    rows = (
+        await session.execute(
+            select(
+                ServiceMediaLibrary.library_id,
+                ServiceMediaLibrary.selected,
+            ).where(
+                ServiceMediaLibrary.media_type == media_type,
+                or_(
+                    ServiceMediaLibrary.service_config_id == service_config_id,
+                    ServiceMediaLibrary.service_config_id.is_(None),
+                ),
+            )
+        )
+    ).all()
+    if not rows:
+        return None
+    return [library_id for library_id, selected in rows if selected]
+
+
 async def gather_movies(
     config: ServiceConfig | None = None,
 ) -> dict[int, AggregatedMovieData] | None:
@@ -1617,13 +1652,24 @@ async def gather_movies(
                 )
                 return None
 
+        included_libraries = await _get_selected_library_ids(
+            session, target.id, MediaType.MOVIE
+        )
+        if included_libraries is not None and not included_libraries:
+            LOG.info(
+                f"No movie libraries selected for {target.service_type} - skipping movie fetch"
+            )
+            return {}
+
         service_instance = await _get_media_service_instance(target)
         if not service_instance:
             return None
         LOG.debug(f"Fetching movies from {target.service_type} at {target.base_url}")
         aggregated_movies: list[
             AggregatedMovieData
-        ] = await service_instance.get_aggregated_movies(included_libraries=None)
+        ] = await service_instance.get_aggregated_movies(
+            included_libraries=included_libraries
+        )
         if aggregated_movies is None:
             return None
         LOG.debug(f"Fetched {len(aggregated_movies)} movies from {target.service_type}")
@@ -1695,13 +1741,19 @@ async def gather_movies(
     if skipped_count > 0:
         LOG.warning(f"Skipped {skipped_count} movies without TMDB IDs")
 
-    if not unique_movies and not await service_instance.is_inventory_empty(
-        MediaType.MOVIE
-    ):
-        LOG.warning(
-            "Movie inventory returned no usable titles but emptiness could not be confirmed"
+    if not unique_movies:
+        is_empty = (
+            await service_instance.is_inventory_empty(MediaType.MOVIE)
+            if included_libraries is None
+            else await service_instance.is_inventory_empty(
+                MediaType.MOVIE, included_libraries=included_libraries
+            )
         )
-        return None
+        if not is_empty:
+            LOG.warning(
+                "Movie inventory returned no usable titles but emptiness could not be confirmed"
+            )
+            return None
     return unique_movies
 
 
@@ -1837,25 +1889,40 @@ async def gather_series(
                 )
                 return None
 
+        included_libraries = await _get_selected_library_ids(
+            session, target.id, MediaType.SERIES
+        )
+        if included_libraries is not None and not included_libraries:
+            LOG.info(
+                f"No series libraries selected for {target.service_type} - skipping series fetch"
+            )
+            return {}, {}
+
         service_instance = await _get_media_service_instance(target)
         if not service_instance:
             return None
         LOG.debug(f"Fetching series from {target.service_type} at {target.base_url}")
         aggregated_series = await service_instance.get_aggregated_series(
-            included_libraries=None
+            included_libraries=included_libraries
         )
         if aggregated_series is None:
             return None
         LOG.debug(f"Fetched {len(aggregated_series)} series from {target.service_type}")
 
     result = _dedupe_aggregated_series(aggregated_series)
-    if not result[0] and not await service_instance.is_inventory_empty(
-        MediaType.SERIES
-    ):
-        LOG.warning(
-            "Series inventory returned no usable titles but emptiness could not be confirmed"
+    if not result[0]:
+        is_empty = (
+            await service_instance.is_inventory_empty(MediaType.SERIES)
+            if included_libraries is None
+            else await service_instance.is_inventory_empty(
+                MediaType.SERIES, included_libraries=included_libraries
+            )
         )
-        return None
+        if not is_empty:
+            LOG.warning(
+                "Series inventory returned no usable titles but emptiness could not be confirmed"
+            )
+            return None
     return result
 
 
@@ -3598,9 +3665,11 @@ async def _update_series_tmdb_metadata(
         )
 
 
-async def sync_media_libraries() -> dict[str, Any]:
+async def sync_media_libraries(
+    service_instance: JellyfinService | EmbyService | PlexService | None = None,
+) -> dict[str, Any]:
     """Update service libraries in the database from the main media server."""
-    if not service_manager.main_media_server:
+    if service_instance is None and not service_manager.main_media_server:
         LOG.warning("No main media server configured - skipping library sync")
         return {"libraries": [], "affected_rules": []}
 
@@ -3611,12 +3680,12 @@ async def sync_media_libraries() -> dict[str, Any]:
             LOG.error("No main media server configured - skipping library sync")
             return {"libraries": [], "affected_rules": []}
 
-        service_instance = await _get_media_service_instance(main)
-        if not service_instance:
+        resolved_service = service_instance or await _get_media_service_instance(main)
+        if not resolved_service:
             return {"libraries": [], "affected_rules": []}
 
-        movie_libs = await service_instance.get_movie_libraries()
-        series_libs = await service_instance.get_series_libraries()
+        movie_libs = await resolved_service.get_movie_libraries()
+        series_libs = await resolved_service.get_series_libraries()
 
         async with async_db() as session:
             result = await session.execute(select(ServiceMediaLibrary))
@@ -3660,6 +3729,7 @@ async def sync_media_libraries() -> dict[str, Any]:
                             library_name=lib["name"],
                             media_type=media_type,
                             service_config_id=main.id,
+                            selected=True,
                         )
                     )
 

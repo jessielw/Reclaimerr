@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Settings → Media Servers** now lets you choose which libraries on the main media server are included in **Sync Media** (and refresh the library list before running a full sync). Unselected libraries are skipped completely during media synchronization.
+
 ### Fixed
 
 - **New Cleanup Candidates** notifications count and list only the candidates added by the current scan. Scans with zero additions send no alert.
 - Discord destinations that use the same webhook and thread receive one copy of each notification even when their formatting settings differ.
+- Fixed a SQLite `FOREIGN KEY constraint failed` error on `episode_versions` during **Sync Media** when multiple incoming series entries resolve to the same series row within one batch.
 
 ## [0.6.17] - 2026-11-22
 
