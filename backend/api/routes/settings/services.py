@@ -57,6 +57,7 @@ from backend.models.settings import (
     TracearrDiscoveryRequest,
     UpdateMediaLibrariesRequest,
 )
+from backend.services.admin_notices import reconcile_stale_library_notice
 from backend.services.playback_selection import resolve_history_sources
 from backend.services.tracearr import TracearrClient
 from backend.tasks.external_ratings import (
@@ -1125,6 +1126,9 @@ async def _upsert_service_libraries(
         if library:
             library.selected = lib["selected"]
 
+    # autoflush is off, so flush before the notice reads the new selections
+    await db.flush()
+    await reconcile_stale_library_notice(db)
     await db.commit()
 
 

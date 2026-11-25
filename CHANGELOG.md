@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **Settings → Media Servers** lists the main server's libraries with a checkbox for each. **Sync Media** reads only checked libraries, so media in an unchecked one (for example a placeholder "Discover" library) leaves Reclaimerr on the next sync and is never a cleanup candidate. Every library starts checked, including after upgrading. **Refresh libraries** loads the list before the first sync.
+- **Settings → Media Servers** lists the main server's libraries with a checkbox for each. **Sync Media** reads only checked libraries, so media in an unchecked one (for example a placeholder "Discover" library) leaves Reclaimerr on the next sync and is never a cleanup candidate. That holds even for a library with most of your media; the large-removal safeguard only waits a sync for titles missing from checked libraries. Every library starts checked, including after upgrading. **Refresh libraries** loads the list before the first sync.
+- An admin notice names any enabled cleanup rule whose library filter needs a library that is unchecked, since that filter finds nothing there. Filters that exclude an unchecked library are not flagged.
 
 ### Fixed
 
