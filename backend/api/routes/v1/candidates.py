@@ -44,12 +44,19 @@ from backend.models.api_v1 import (
     CandidatePostponeRequest,
     CandidateStatusResponse,
 )
+from backend.models.api_v1.candidates import AutoDeleteState
 from backend.models.api_v1.common import total_pages
+from backend.services.candidate_blockers import load_candidate_blockers
 from backend.services.candidate_lifecycle import (
     candidate_status_payload,
     record_candidate_event,
 )
 from backend.services.lifecycle_webhooks import enqueue_event_deliveries
+from backend.services.scheduled_deletions import (
+    active_schedules,
+    blocking_schedule,
+    inventory_cache,
+)
 
 router = APIRouter(tags=["v1:candidates"])
 
@@ -118,10 +125,7 @@ async def list_candidates(
     series_id: int | None = Query(default=None, ge=1),
     season_number: int | None = Query(default=None, ge=0),
     episode_number: int | None = Query(default=None, ge=0),
-    auto_delete_state: str | None = Query(
-        default=None,
-        pattern="^(disabled|scheduled|eligible|postponed|canceled)$",
-    ),
+    auto_delete_state: AutoDeleteState | None = Query(default=None),
     rule_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> CandidateListResponse:
     query = (
@@ -146,9 +150,20 @@ async def list_candidates(
         query = query.where(candidate_matches_rule_clause(rule_id))
 
     candidates = (await db.execute(query)).scalars().unique().all()
+    holds = await load_candidate_blockers(db) if candidates else None
+    schedules = await active_schedules(db) if candidates else []
+    schedule_cache = await inventory_cache(db, candidates, schedules)
     payloads: list[dict[str, Any]] = []
     for candidate in candidates:
-        payload = await candidate_status_payload(db, candidate)
+        payload = await candidate_status_payload(
+            db,
+            candidate,
+            holds=holds,
+            has_manual_schedule=(
+                await blocking_schedule(db, candidate, schedules, schedule_cache)
+                is not None
+            ),
+        )
         if (
             auto_delete_state is None
             or payload["auto_delete_state"] == auto_delete_state

@@ -26,8 +26,10 @@ from backend.models.calendar import (
     CalendarItem,
     CalendarResponse,
     CandidateOperation,
-    CandidateScope,
+    HeldCalendarItem,
 )
+from backend.services.candidate_blockers import load_candidate_blockers
+from backend.services.candidate_lifecycle import candidate_scope
 from backend.services.reclaim_stats import (
     SCHEDULED_AUTO_DELETE_STATES,
     load_auto_delete_inputs,
@@ -44,16 +46,7 @@ router = APIRouter(prefix="/api", tags=["calendar"])
 # A year of days is more than any view needs, and it bounds the work a single
 # request can ask for.
 MAX_WINDOW_DAYS = 366
-
-
-def _scope_of(candidate: ReclaimCandidate) -> CandidateScope:
-    if candidate.media_type is MediaType.MOVIE:
-        return "version" if candidate.movie_version_id is not None else "movie"
-    if candidate.episode_id is not None:
-        return "episode"
-    if candidate.season_id is not None:
-        return "season"
-    return "series"
+MAX_HELD_ITEMS = 50
 
 
 def _title_for(row: Any, candidate: ReclaimCandidate) -> str | None:
@@ -162,6 +155,8 @@ async def get_calendar(
 
     now = datetime.now(UTC)
     buckets: dict[date, list[CalendarItem]] = {}
+    held_items: list[HeldCalendarItem] = []
+    holds = await load_candidate_blockers(db, now)
     manual_schedules = await active_schedules(db)
     manual_cache = await inventory_cache(
         db, [row.ReclaimCandidate for row in rows], manual_schedules
@@ -185,16 +180,26 @@ async def get_calendar(
         if not policy.is_enabled or policy.state not in SCHEDULED_AUTO_DELETE_STATES:
             continue
 
-        eligible_at = ensure_utc(policy.eligible_at)
-        day = (eligible_at + offset).date()
-        if day < start or day > end:
-            continue
-
         title = _title_for(row, candidate)
         is_movie = candidate.media_type is MediaType.MOVIE
         media_id = candidate.movie_id if is_movie else candidate.series_id
         if title is None or media_id is None:
             # the media row is gone; the candidate is cleaned up on the next scan
+            continue
+        year = row.movie_year if is_movie else row.series_year
+        hold = holds.candidate_hold(candidate)
+        blockers = [hold] if hold is not None else holds.overlapping(candidate)
+        if blockers:
+            held_items.append(
+                HeldCalendarItem(
+                    candidate_id=candidate.id, title=title, year=year, blockers=blockers
+                )
+            )
+            continue
+
+        eligible_at = ensure_utc(policy.eligible_at)
+        day = (eligible_at + offset).date()
+        if day < start or day > end:
             continue
 
         operation: CandidateOperation = (
@@ -211,9 +216,9 @@ async def get_calendar(
             CalendarItem(
                 candidate_id=candidate.id,
                 media_type=candidate.media_type.value,
-                scope=_scope_of(candidate),
+                scope=candidate_scope(candidate),
                 title=title,
-                year=row.movie_year if is_movie else row.series_year,
+                year=year,
                 media_id=media_id,
                 movie_version_id=candidate.movie_version_id,
                 series_id=candidate.series_id,
@@ -279,4 +284,8 @@ async def get_calendar(
         days=days,
         total_items=total_items,
         total_bytes=total_bytes,
+        held_count=len(held_items),
+        held_items=sorted(held_items, key=lambda item: (item.title, item.candidate_id))[
+            :MAX_HELD_ITEMS
+        ],
     )

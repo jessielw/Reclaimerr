@@ -11,7 +11,21 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import { formatFileSize } from "$lib/utils/formatters";
   import { formatDateTimeToLocaleString } from "$lib/utils/date";
-  import type { CalendarResponse, CalendarDay } from "$lib/types/shared";
+  import type {
+    CalendarDay,
+    CalendarResponse,
+    CandidateDeletionBlocker,
+  } from "$lib/types/shared";
+
+  const blockerLabels: Record<CandidateDeletionBlocker["code"], string> = {
+    active_protection: "Active protection",
+    pending_protection_request: "Pending protection request",
+    pending_delete_request: "Pending deletion request",
+    resync_pending: "Waiting for media sync",
+    rule_data_unavailable: "Required rule data is unavailable",
+    scheduled_deletion: "Scheduled deletion",
+    manual_schedule: "Manual deletion scheduled",
+  };
 
   type ViewMode = "month" | "week";
 
@@ -155,6 +169,19 @@
   function scopeLabel(scope: string): string {
     if (scope === "version") return "Version";
     return scope.charAt(0).toUpperCase() + scope.slice(1);
+  }
+
+  function blockerLabel(blocker: CandidateDeletionBlocker): string {
+    const label = blockerLabels[blocker.code];
+    if (blocker.season_number !== null) {
+      const season = `S${String(blocker.season_number).padStart(2, "0")}`;
+      const episode =
+        blocker.episode_number === null
+          ? ""
+          : `E${String(blocker.episode_number).padStart(2, "0")}`;
+      return `${label} on ${season}${episode}`;
+    }
+    return blocker.scope ? `${label} on the ${blocker.scope}` : label;
   }
 
   onMount(load);
@@ -312,8 +339,11 @@
       <div
         class="bg-card rounded-lg border border-border p-8 text-center text-muted-foreground"
       >
-        Nothing is scheduled in this range. Schedule a manual deletion from
-        Candidates, or enable automatic deletion on a cleanup rule.
+        Nothing is scheduled in this range.
+        {#if data.held_count === 0}
+          Schedule a manual deletion from Candidates, or enable automatic
+          deletion on a cleanup rule.
+        {/if}
       </div>
     {/if}
 
@@ -391,6 +421,35 @@
           </p>
         {/if}
       </div>
+    {/if}
+
+    {#if !loading && data && data.held_count > 0}
+      <section class="bg-card rounded-lg border border-border">
+        <div class="border-b border-border p-3">
+          <h2 class="font-semibold text-foreground">
+            Automatic deletions on hold ({data.held_count})
+          </h2>
+        </div>
+        <ul class="divide-y divide-border">
+          {#each data.held_items as item (item.candidate_id)}
+            <li class="px-3 py-2">
+              <p class="text-sm text-foreground">
+                {item.title}{item.year ? ` (${item.year})` : ""}
+              </p>
+              <p class="text-xs text-muted-foreground">
+                {[...new Set(item.blockers.map(blockerLabel))].join(" · ")}
+              </p>
+            </li>
+          {/each}
+        </ul>
+        {#if data.held_count > data.held_items.length}
+          <p
+            class="border-t border-border px-3 py-2 text-xs text-muted-foreground"
+          >
+            Showing the first {data.held_items.length} of {data.held_count}.
+          </p>
+        {/if}
+      </section>
     {/if}
   </div>
 </div>

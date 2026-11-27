@@ -6,14 +6,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
+from backend.models.cleanup import CandidateDeletionBlocker, CandidateScope
 
-AutoDeleteState = Literal["disabled", "scheduled", "eligible", "postponed", "canceled"]
+AutoDeleteState = Literal[
+    "disabled", "scheduled", "eligible", "postponed", "canceled", "blocked"
+]
 
 
 class CandidateStatusResponse(BaseModel):
     id: int
     media_type: MediaType
-    scope: Literal["movie", "version", "series", "season", "episode"]
+    scope: CandidateScope
     media_id: int
     movie_version_id: int | None = None
     series_id: int | None = None
@@ -47,6 +50,7 @@ class CandidateStatusResponse(BaseModel):
     last_delete_error: str | None = None
     playback_deferral: dict[str, Any] | None = None
     blockers: list[str] = Field(default_factory=list)
+    auto_delete_blockers: list[CandidateDeletionBlocker] = Field(default_factory=list)
 
 
 class CandidateListResponse(BaseModel):

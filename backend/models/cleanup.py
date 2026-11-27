@@ -2,11 +2,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from backend.enums import MediaType
+
+CandidateScope = Literal["movie", "version", "series", "season", "episode"]
+CandidateDeletionBlockerCode = Literal[
+    "active_protection",
+    "pending_protection_request",
+    "pending_delete_request",
+    "resync_pending",
+    "rule_data_unavailable",
+    "scheduled_deletion",
+    "manual_schedule",
+]
+
+
+class CandidateDeletionBlocker(BaseModel):
+    code: CandidateDeletionBlockerCode
+    scope: CandidateScope | None = None
+    target_id: int | None = None
+    season_number: int | None = None
+    episode_number: int | None = None
 
 
 class CleanupRuleBase(BaseModel):

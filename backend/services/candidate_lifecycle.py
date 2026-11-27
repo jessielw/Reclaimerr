@@ -5,20 +5,17 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, literal, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.auto_delete import resolve_auto_delete_policy
 from backend.core.utils.datetime_utils import ensure_utc
 from backend.database.models import (
-    DeleteRequest,
     Episode,
     GeneralSettings,
     LifecycleEvent,
     Movie,
     MovieVersion,
-    ProtectedMedia,
-    ProtectionRequest,
     ReclaimCandidate,
     ReclaimRule,
     Season,
@@ -26,12 +23,16 @@ from backend.database.models import (
     WebhookDelivery,
     WebhookEndpoint,
 )
-from backend.enums import MediaType, ProtectionRequestStatus
+from backend.enums import MediaType
+from backend.models.cleanup import CandidateDeletionBlocker, CandidateScope
+from backend.services.candidate_blockers import (
+    CandidateBlockers,
+    load_candidate_blockers,
+)
+from backend.services.scheduled_deletions import blocking_schedule
 
 
-def candidate_scope(
-    candidate: ReclaimCandidate,
-) -> Literal["movie", "version", "series", "season", "episode"]:
+def candidate_scope(candidate: ReclaimCandidate) -> CandidateScope:
     if candidate.media_type is MediaType.MOVIE:
         return "version" if candidate.movie_version_id is not None else "movie"
     if candidate.episode_id is not None:
@@ -58,103 +59,32 @@ async def _rule_context(
     return {rule.id: rule.action for rule in rules}, movie_delay, series_delay
 
 
+def _blocker_codes(blockers: list[CandidateDeletionBlocker]) -> list[str]:
+    codes = {blocker.code for blocker in blockers}
+    return [
+        "protected" if code == "active_protection" else code
+        for code in (
+            "active_protection",
+            "pending_protection_request",
+            "pending_delete_request",
+        )
+        if code in codes
+    ]
+
+
 async def candidate_deletion_blockers(
     db: AsyncSession, candidate: ReclaimCandidate
 ) -> list[str]:
-    now = datetime.now(UTC)
-    active_protection = or_(
-        ProtectedMedia.permanent.is_(True),
-        ProtectedMedia.expires_at.is_(None),
-        ProtectedMedia.expires_at > now,
-    )
-    if candidate.media_type is MediaType.MOVIE:
-        protection_scope = and_(
-            ProtectedMedia.movie_id == candidate.movie_id,
-            or_(
-                literal(candidate.movie_version_id is None),
-                ProtectedMedia.movie_version_id.is_(None),
-                ProtectedMedia.movie_version_id == candidate.movie_version_id,
-            ),
-        )
-        request_scope = and_(
-            ProtectionRequest.movie_id == candidate.movie_id,
-            or_(
-                literal(candidate.movie_version_id is None),
-                ProtectionRequest.movie_version_id.is_(None),
-                ProtectionRequest.movie_version_id == candidate.movie_version_id,
-            ),
-        )
-        delete_scope = and_(
-            DeleteRequest.movie_id == candidate.movie_id,
-            or_(
-                literal(candidate.movie_version_id is None),
-                DeleteRequest.movie_version_id.is_(None),
-                DeleteRequest.movie_version_id == candidate.movie_version_id,
-            ),
-        )
-    else:
-
-        def series_scope(model: Any) -> Any:
-            whole_series = and_(model.season_id.is_(None), model.episode_id.is_(None))
-            if candidate.episode_id is not None:
-                overlap = or_(
-                    whole_series,
-                    and_(
-                        model.season_id == candidate.season_id,
-                        model.episode_id.is_(None),
-                    ),
-                    model.episode_id == candidate.episode_id,
-                )
-            elif candidate.season_id is not None:
-                overlap = or_(whole_series, model.season_id == candidate.season_id)
-            else:
-                # Any protected/requested child prevents deleting the whole series.
-                overlap = model.series_id == candidate.series_id
-            return and_(model.series_id == candidate.series_id, overlap)
-
-        protection_scope = series_scope(ProtectedMedia)
-        request_scope = series_scope(ProtectionRequest)
-        delete_scope = series_scope(DeleteRequest)
-
-    blockers: list[str] = []
-    protected = (
-        await db.execute(
-            select(ProtectedMedia.id)
-            .where(active_protection, protection_scope)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if protected is not None:
-        blockers.append("protected")
-    pending_protection = (
-        await db.execute(
-            select(ProtectionRequest.id)
-            .where(
-                ProtectionRequest.status == ProtectionRequestStatus.PENDING,
-                request_scope,
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if pending_protection is not None:
-        blockers.append("pending_protection_request")
-    pending_delete = (
-        await db.execute(
-            select(DeleteRequest.id)
-            .where(
-                DeleteRequest.status == ProtectionRequestStatus.PENDING,
-                delete_scope,
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if pending_delete is not None:
-        blockers.append("pending_delete_request")
-    return blockers
+    holds = await load_candidate_blockers(db, candidate=candidate)
+    return _blocker_codes(holds.overlapping(candidate, for_auto_delete=False))
 
 
 async def candidate_status_payload(
-    db: AsyncSession, candidate: ReclaimCandidate
+    db: AsyncSession,
+    candidate: ReclaimCandidate,
+    *,
+    holds: CandidateBlockers | None = None,
+    has_manual_schedule: bool | None = None,
 ) -> dict[str, Any]:
     actions, movie_delay, series_delay = await _rule_context(db, candidate)
     policy = resolve_auto_delete_policy(
@@ -201,6 +131,19 @@ async def candidate_status_payload(
         for rule_id in candidate.matched_rule_ids
     ):
         operation = "move"
+    if holds is None:
+        holds = await load_candidate_blockers(db, candidate=candidate)
+    auto_delete_blockers: list[CandidateDeletionBlocker] = []
+    if policy.is_enabled:
+        hold = holds.candidate_hold(candidate)
+        if hold is not None:
+            auto_delete_blockers = [hold]
+        elif has_manual_schedule or (
+            has_manual_schedule is None and await blocking_schedule(db, candidate)
+        ):
+            auto_delete_blockers = [CandidateDeletionBlocker(code="manual_schedule")]
+        else:
+            auto_delete_blockers = holds.overlapping(candidate)
     return {
         "id": candidate.id,
         "media_type": candidate.media_type,
@@ -220,11 +163,11 @@ async def candidate_status_payload(
         "reason": candidate.reason,
         "delete_operation": operation,
         "created_at": ensure_utc(candidate.created_at),
-        "auto_delete_state": policy.state,
+        "auto_delete_state": "blocked" if auto_delete_blockers else policy.state,
         "auto_delete_delay_days": policy.delay_days,
         "auto_delete_eligible_at": policy.eligible_at,
         "auto_delete_is_active": policy.is_enabled,
-        "auto_delete_is_eligible": policy.is_eligible,
+        "auto_delete_is_eligible": policy.is_eligible and not auto_delete_blockers,
         "auto_delete_cancelled_at": candidate.auto_delete_cancelled_at,
         "auto_delete_postponed_until": candidate.auto_delete_postponed_until,
         "auto_delete_timer_started_at": candidate.auto_delete_timer_started_at,
@@ -234,7 +177,8 @@ async def candidate_status_payload(
         "last_delete_attempt_at": candidate.last_delete_attempt_at,
         "last_delete_error": candidate.last_delete_error,
         "playback_deferral": candidate.playback_deferral,
-        "blockers": await candidate_deletion_blockers(db, candidate),
+        "blockers": _blocker_codes(holds.overlapping(candidate, for_auto_delete=False)),
+        "auto_delete_blockers": auto_delete_blockers,
     }
 
 
