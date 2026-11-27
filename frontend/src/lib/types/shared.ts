@@ -1681,12 +1681,34 @@ export interface CalendarDay {
   items: CalendarItem[];
 }
 
+export interface CandidateDeletionBlocker {
+  code:
+    | "active_protection"
+    | "pending_protection_request"
+    | "pending_delete_request"
+    | "resync_pending"
+    | "rule_data_unavailable"
+    | "scheduled_deletion"
+    | "manual_schedule";
+  scope: CalendarItem["scope"] | null;
+  target_id: number | null;
+  season_number: number | null;
+  episode_number: number | null;
+}
+
 export interface CalendarResponse {
   start: string;
   end: string;
   days: CalendarDay[];
   total_items: number;
   total_bytes: number;
+  held_count: number;
+  held_items: {
+    candidate_id: number;
+    title: string;
+    year: number | null;
+    blockers: CandidateDeletionBlocker[];
+  }[];
 }
 
 export interface LogFileInfo {

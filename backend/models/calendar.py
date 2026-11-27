@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-CandidateScope = Literal["movie", "version", "series", "season", "episode"]
+from backend.models.cleanup import CandidateDeletionBlocker, CandidateScope
+
 CandidateOperation = Literal["delete", "move"]
 
 
@@ -43,9 +44,18 @@ class CalendarDay(BaseModel):
     items: list[CalendarItem]
 
 
+class HeldCalendarItem(BaseModel):
+    candidate_id: int
+    title: str
+    year: int | None
+    blockers: list[CandidateDeletionBlocker]
+
+
 class CalendarResponse(BaseModel):
     start: date
     end: date
     days: list[CalendarDay]
     total_items: int
     total_bytes: int
+    held_count: int = 0
+    held_items: list[HeldCalendarItem] = Field(default_factory=list)

@@ -79,6 +79,8 @@ After reviewing the response, submit the same selection with `preview=false` and
 
 List queries can filter by media type, matched cleanup rule ID (`rule_id`), TMDB ID, internal series ID, season or episode number, and auto-delete state. A rule filter matches candidates whose `matched_rule_ids` array contains that ID. Mutating requests may include an `Idempotency-Key` header so an automation retry receives the original response without repeating the action.
 
+Use `auto_delete_state=blocked` to list candidates whose automatic deletion is on hold. The `auto_delete_blockers` array provides reason codes and, for scoped protections and requests, identifies the target and includes any known season and episode numbers. While a hold is active, `auto_delete_is_eligible` is false and `auto_delete_eligible_at` retains the review timer's deadline.
+
 Candidate responses include `size_bytes`, the estimated size in bytes for the candidate's scope. A movie-version candidate reports only that version's size; movie, series, season, and episode candidates report their respective scope's size. The stored cleanup estimate takes precedence, with the scoped media size used when no estimate is available. Unknown sizes are `null`, and known zero sizes remain `0`. This field is also included in candidate action responses and newly recorded lifecycle event/webhook payloads; existing stored events are unchanged.
 
 Canceling suppresses automatic deletion only while the same candidate continuously qualifies. It does not prevent an administrator from manually deleting it. Permanent protection uses the separate `protect` action and blocks both automatic and manual candidate operations.

@@ -148,6 +148,7 @@ from backend.enums import (
     Task,
 )
 from backend.models.cleanup import (
+    CandidateDeletionBlocker,
     MatchedCandidateRecord,
     RulePreviewMatchMetadata,
     RulePreviewMatchResult,
@@ -169,6 +170,10 @@ from backend.services.admin_notices import (
 )
 from backend.services.arr_disk import load_arr_disk_space
 from backend.services.auto_delete_evidence import record_playback_observation
+from backend.services.candidate_blockers import (
+    UNAVAILABLE_RULE_IDS_KEY,
+    load_candidate_blockers,
+)
 from backend.services.candidate_lifecycle import reconcile_candidate_schedule_events
 from backend.services.episode_ordering import EpisodeOrderingSnapshot
 from backend.services.lifecycle_webhooks import (
@@ -286,7 +291,6 @@ CANDIDATE_SPIKE_POSTPONE_DAYS = 3
 # Persist uncertainty alongside the saved rule snapshot, without resetting the
 # candidate's clock or lifecycle controls. A verified scan replaces the snapshot
 # and clears this hold. Automatic deletion must not use the stale verdict.
-_CANDIDATE_UNAVAILABLE_RULE_IDS = "_unavailable_rule_ids"
 
 
 @dataclass(slots=True)
@@ -510,28 +514,27 @@ async def _load_auto_delete_context(
     return rule_actions_by_id, movie_delay_days, series_delay_days
 
 
+def _skip_auto_delete_candidate(
+    candidate: ReclaimCandidate, blockers: list[CandidateDeletionBlocker]
+) -> None:
+    reasons = sorted({blocker.code for blocker in blockers})
+    details = ", ".join(
+        f"{blocker.code} ({blocker.scope} id={blocker.target_id})"
+        if blocker.scope
+        else blocker.code
+        for blocker in blockers
+    )
+    LOG.info(f"Auto-delete skipped candidate {candidate.id} because of {details}")
+    capture_auto_delete(
+        candidate, "selection", "skipped", reasons[0], blocking_reasons=reasons
+    )
+
+
 async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, int]:
     async with async_db() as db:
         candidates = (await db.execute(select(ReclaimCandidate))).scalars().all()
         if not candidates:
             return [], 0, 0
-
-        resync_ids = set(await db.scalars(select(CandidateResyncIdentity.candidate_id)))
-        available_candidates = []
-        for candidate in candidates:
-            if candidate.delete_request_id is not None or candidate.id in resync_ids:
-                capture_auto_delete(
-                    candidate,
-                    "selection",
-                    "skipped",
-                    "pending_delete_request"
-                    if candidate.delete_request_id is not None
-                    else "resync_pending",
-                )
-            else:
-                available_candidates.append(candidate)
-        excluded_count = len(candidates) - len(available_candidates)
-        candidates = available_candidates
 
         (
             rule_actions_by_id,
@@ -542,158 +545,17 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
         )
 
         now = datetime.now(UTC)
-        blocked_movie_ids: set[int] = set()
-        blocked_movie_version_ids: set[int] = set()
-        block_reasons: dict[tuple[str, int], set[str]] = defaultdict(set)
-        block_types = (
-            "active_protection",
-            "pending_protection_request",
-            "pending_delete_request",
-        )
-
-        movie_overlap_queries = (
-            select(ProtectedMedia.movie_id, ProtectedMedia.movie_version_id).where(
-                ProtectedMedia.media_type == MediaType.MOVIE,
-                or_(
-                    ProtectedMedia.permanent.is_(True),
-                    ProtectedMedia.expires_at.is_(None),
-                    ProtectedMedia.expires_at > now,
-                ),
-            ),
-            select(
-                ProtectionRequest.movie_id, ProtectionRequest.movie_version_id
-            ).where(
-                ProtectionRequest.media_type == MediaType.MOVIE,
-                ProtectionRequest.status == ProtectionRequestStatus.PENDING,
-            ),
-            select(DeleteRequest.movie_id, DeleteRequest.movie_version_id).where(
-                DeleteRequest.media_type == MediaType.MOVIE,
-                DeleteRequest.status == ProtectionRequestStatus.PENDING,
-            ),
-        )
-        for reason, query in zip(block_types, movie_overlap_queries, strict=True):
-            for movie_id, movie_version_id in (await db.execute(query)).all():
-                if movie_id is not None:
-                    blocked_movie_ids.add(movie_id)
-                    block_reasons[("movie", movie_id)].add(reason)
-                if movie_version_id is not None:
-                    blocked_movie_version_ids.add(movie_version_id)
-                    block_reasons[("movie_version", movie_version_id)].add(reason)
-
-        if blocked_movie_version_ids:
-            version_rows = (
-                await db.execute(
-                    select(MovieVersion.id, MovieVersion.movie_id).where(
-                        MovieVersion.id.in_(blocked_movie_version_ids)
-                    )
-                )
-            ).all()
-            blocked_movie_ids.update(
-                movie_id for _, movie_id in version_rows if movie_id is not None
-            )
-            for version_id, movie_id in version_rows:
-                if movie_id is not None:
-                    block_reasons[("movie", movie_id)].update(
-                        block_reasons[("movie_version", version_id)]
-                    )
-
-        blocked_series_ids: set[int] = set()
-        blocked_season_ids: set[int] = set()
-        blocked_episode_ids: set[int] = set()
-
-        series_overlap_queries: tuple[Any, ...] = (
-            select(
-                ProtectedMedia.series_id,
-                ProtectedMedia.season_id,
-                ProtectedMedia.episode_id,
-            ).where(
-                ProtectedMedia.media_type == MediaType.SERIES,
-                or_(
-                    ProtectedMedia.permanent.is_(True),
-                    ProtectedMedia.expires_at.is_(None),
-                    ProtectedMedia.expires_at > now,
-                ),
-            ),
-            select(
-                ProtectionRequest.series_id,
-                ProtectionRequest.season_id,
-                ProtectionRequest.episode_id,
-            ).where(
-                ProtectionRequest.media_type == MediaType.SERIES,
-                ProtectionRequest.status == ProtectionRequestStatus.PENDING,
-            ),
-            select(
-                DeleteRequest.series_id,
-                DeleteRequest.season_id,
-                DeleteRequest.episode_id,
-            ).where(
-                DeleteRequest.media_type == MediaType.SERIES,
-                DeleteRequest.status == ProtectionRequestStatus.PENDING,
-            ),
-        )
-        for reason, query in zip(block_types, series_overlap_queries, strict=True):
-            for series_id, season_id, episode_id in (await db.execute(query)).all():
-                if series_id is not None:
-                    blocked_series_ids.add(series_id)
-                    block_reasons[("series", series_id)].add(reason)
-                if season_id is not None:
-                    blocked_season_ids.add(season_id)
-                    block_reasons[("season", season_id)].add(reason)
-                if episode_id is not None:
-                    blocked_episode_ids.add(episode_id)
-                    block_reasons[("episode", episode_id)].add(reason)
-
-        if blocked_episode_ids:
-            episode_rows = (
-                await db.execute(
-                    select(Episode.id, Episode.season_id).where(
-                        Episode.id.in_(blocked_episode_ids)
-                    )
-                )
-            ).all()
-            blocked_season_ids.update(
-                season_id for _, season_id in episode_rows if season_id is not None
-            )
-            for episode_id, season_id in episode_rows:
-                if season_id is not None:
-                    block_reasons[("season", season_id)].update(
-                        block_reasons[("episode", episode_id)]
-                    )
-
-        if blocked_season_ids:
-            season_rows = (
-                await db.execute(
-                    select(Season.id, Season.series_id).where(
-                        Season.id.in_(blocked_season_ids)
-                    )
-                )
-            ).all()
-            blocked_series_ids.update(
-                series_id for _, series_id in season_rows if series_id is not None
-            )
-            for season_id, series_id in season_rows:
-                if series_id is not None:
-                    block_reasons[("series", series_id)].update(
-                        block_reasons[("season", season_id)]
-                    )
-
+        holds = await load_candidate_blockers(db, now)
         eligible_ids: list[int] = []
-        blocked_count = excluded_count
+        blocked_count = 0
         waiting_count = 0
         manual_schedules = await active_schedules(db)
         manual_cache = await inventory_cache(db, candidates, manual_schedules)
         for candidate in candidates:
-            if (candidate.matched_criteria or {}).get(_CANDIDATE_UNAVAILABLE_RULE_IDS):
+            hold = holds.candidate_hold(candidate)
+            if hold is not None:
                 blocked_count += 1
-                capture_auto_delete(
-                    candidate, "selection", "skipped", "rule_data_unavailable"
-                )
-                continue
-            if (candidate.matched_criteria or {}).get("scheduled_deletion_id"):
-                blocked_count += 1
-                capture_auto_delete(
-                    candidate, "selection", "skipped", "scheduled_deletion"
-                )
+                _skip_auto_delete_candidate(candidate, [hold])
                 continue
             if await blocking_schedule(db, candidate, manual_schedules, manual_cache):
                 waiting_count += 1
@@ -701,55 +563,10 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
                     candidate, "selection", "waiting", "manual_schedule"
                 )
                 continue
-            blocked = False
-            if candidate.media_type is MediaType.MOVIE:
-                blocked = (
-                    candidate.movie_id is not None
-                    and candidate.movie_id in blocked_movie_ids
-                ) or (
-                    candidate.movie_version_id is not None
-                    and candidate.movie_version_id in blocked_movie_version_ids
-                )
-            else:
-                blocked = (
-                    (
-                        candidate.series_id is not None
-                        and candidate.series_id in blocked_series_ids
-                    )
-                    or (
-                        candidate.season_id is not None
-                        and candidate.season_id in blocked_season_ids
-                    )
-                    or (
-                        candidate.episode_id is not None
-                        and candidate.episode_id in blocked_episode_ids
-                    )
-                )
-
-            if blocked:
+            blockers = holds.overlapping(candidate)
+            if blockers:
                 blocked_count += 1
-                reasons = sorted(
-                    {
-                        reason
-                        for scope in (
-                            "movie",
-                            "movie_version",
-                            "series",
-                            "season",
-                            "episode",
-                        )
-                        for reason in block_reasons.get(
-                            (scope, getattr(candidate, scope + "_id")), ()
-                        )
-                    }
-                )
-                capture_auto_delete(
-                    candidate,
-                    "selection",
-                    "skipped",
-                    reasons[0],
-                    blocking_reasons=reasons,
-                )
+                _skip_auto_delete_candidate(candidate, blockers)
                 continue
 
             policy = resolve_auto_delete_policy(
@@ -766,14 +583,13 @@ async def _select_auto_delete_eligible_candidate_ids() -> tuple[list[int], int, 
             )
             if not policy.is_enabled:
                 blocked_count += 1
-                capture_auto_delete(
-                    candidate,
-                    "selection",
-                    "skipped",
-                    "canceled"
-                    if policy.state == "canceled"
-                    else "auto_delete_disabled",
+                reason = (
+                    "canceled" if policy.state == "canceled" else "auto_delete_disabled"
                 )
+                LOG.debug(
+                    f"Auto-delete skipped candidate {candidate.id} because of {reason}"
+                )
+                capture_auto_delete(candidate, "selection", "skipped", reason)
                 continue
             if policy.is_eligible:
                 eligible_ids.append(candidate.id)
@@ -834,7 +650,7 @@ def _hold_candidate_for_unavailable_rules(
 ) -> None:
     candidate.matched_criteria = {
         **(candidate.matched_criteria or {}),
-        _CANDIDATE_UNAVAILABLE_RULE_IDS: sorted(rule_ids),
+        UNAVAILABLE_RULE_IDS_KEY: sorted(rule_ids),
     }
 
 

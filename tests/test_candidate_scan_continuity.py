@@ -12,18 +12,25 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from backend.api.routes.calendar import get_calendar
+from backend.api.routes.v1.candidates import get_candidate, list_candidates
+from backend.core.api_tokens import API_TOKEN_CANDIDATES_READ_SCOPE, ApiPrincipal
 from backend.core.rule_engine import PlaybackHistoryResolver
 from backend.database import Base
 from backend.database.models import (
+    DeleteRequest,
     Episode,
     Movie,
     MovieVersion,
+    ProtectedMedia,
+    ProtectionRequest,
     ReclaimCandidate,
     ReclaimRule,
     Season,
     Series,
+    User,
 )
-from backend.enums import MediaType, Service
+from backend.enums import MediaType, Service, UserRole
 from backend.models.cleanup import MatchedCandidateRecord
 from backend.tasks import cleanup
 
@@ -42,6 +49,143 @@ async def _database(monkeypatch):
         yield sessions
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("source", "scope", "expected"),
+    [
+        ("active_protection", "season", {"series", "s08", "s08e01", "s08e02"}),
+        ("active_protection", "episode", {"series", "s08", "s08e01"}),
+        (
+            "active_protection",
+            "series",
+            {"series", "s07", "s08", "s07e01", "s08e01", "s08e02"},
+        ),
+        ("expired_protection", "season", set()),
+        ("pending_protection_request", "season", {"series", "s08", "s08e01", "s08e02"}),
+        ("pending_delete_request", "season", {"series", "s08", "s08e01", "s08e02"}),
+    ],
+)
+def test_auto_delete_holds_follow_the_media_scope(monkeypatch, source, scope, expected):
+    async def run():
+        async with _database(monkeypatch) as sessions, sessions() as db:
+            user = User(username="admin", password_hash="x", role=UserRole.ADMIN)
+            series = Series(title="Show", tmdb_id=556)
+            rule = _rule("season")
+            db.add_all([user, series, rule])
+            await db.flush()
+            s07 = Season(series_id=series.id, season_number=7)
+            s08 = Season(series_id=series.id, season_number=8)
+            db.add_all([s07, s08])
+            await db.flush()
+            s07e01 = Episode(season_id=s07.id, episode_number=1)
+            s08e01 = Episode(season_id=s08.id, episode_number=1)
+            s08e02 = Episode(season_id=s08.id, episode_number=2)
+            db.add_all([s07e01, s08e01, s08e02])
+            await db.flush()
+
+            now = datetime.now(UTC)
+            candidates = {}
+            for name, season, episode in (
+                ("series", None, None),
+                ("s07", s07, None),
+                ("s08", s08, None),
+                ("s07e01", s07, s07e01),
+                ("s08e01", s08, s08e01),
+                ("s08e02", s08, s08e02),
+            ):
+                candidate = ReclaimCandidate(
+                    media_type=MediaType.SERIES,
+                    matched_rule_ids=[rule.id],
+                    matched_criteria={},
+                    reason="matched",
+                    series_id=series.id,
+                    season_id=season.id if season else None,
+                    episode_id=episode.id if episode else None,
+                )
+                candidate.created_at = now - timedelta(days=16)
+                candidates[name] = candidate
+                db.add(candidate)
+
+            hold_target = {
+                "media_type": MediaType.SERIES,
+                "series_id": series.id if scope != "episode" else None,
+                "season_id": s08.id if scope == "season" else None,
+                "episode_id": s08e01.id if scope == "episode" else None,
+            }
+            if source == "pending_protection_request":
+                hold = ProtectionRequest(requested_by_user_id=user.id, **hold_target)
+            elif source == "pending_delete_request":
+                hold = DeleteRequest(requested_by_user_id=user.id, **hold_target)
+            else:
+                hold = ProtectedMedia(
+                    **hold_target,
+                    source="rule",
+                    source_rule_id=rule.id,
+                    permanent=source != "expired_protection",
+                    expires_at=now - timedelta(days=1)
+                    if source == "expired_protection"
+                    else None,
+                )
+            db.add(hold)
+            await db.commit()
+
+            messages = []
+            monkeypatch.setattr(cleanup.LOG, "info", messages.append)
+            blocked_ids = {candidates[name].id for name in expected}
+            eligible_ids = {
+                candidate.id for candidate in candidates.values()
+            } - blocked_ids
+            (
+                selected,
+                skipped,
+                waiting,
+            ) = await cleanup._select_auto_delete_eligible_candidate_ids()
+            assert set(selected) == eligible_ids
+            assert (skipped, waiting) == (len(blocked_ids), 0)
+            for candidate_id in blocked_ids:
+                assert any(
+                    f"skipped candidate {candidate_id} because of {source}" in message
+                    for message in messages
+                )
+
+            principal = ApiPrincipal(
+                1, "test", frozenset({API_TOKEN_CANDIDATES_READ_SCOPE})
+            )
+            api = await list_candidates(
+                principal,
+                db,
+                tmdb_id=None,
+                series_id=series.id,
+                season_number=None,
+                episode_number=None,
+                auto_delete_state="blocked",
+                rule_id=None,
+            )
+            assert {item.id for item in api.items} == blocked_ids
+            for item in api.items:
+                assert not item.auto_delete_is_eligible
+                (blocker,) = item.auto_delete_blockers
+                assert blocker.code == source
+                assert blocker.scope == scope
+                assert blocker.season_number == (8 if scope != "series" else None)
+                assert blocker.episode_number == (1 if scope == "episode" else None)
+
+            detail = await get_candidate(candidates["series"].id, principal, db)
+            assert detail.auto_delete_is_eligible == ("series" not in expected)
+            assert bool(detail.auto_delete_blockers) == ("series" in expected)
+
+            deadline = (now - timedelta(days=2)).date()
+            calendar = await get_calendar(
+                _user=user, start=deadline, end=deadline, db=db
+            )
+            assert {
+                item.candidate_id for day in calendar.days for item in day.items
+            } == eligible_ids
+            assert {item.candidate_id for item in calendar.held_items} == blocked_ids
+            assert calendar.held_count == len(blocked_ids)
+
+    asyncio.run(run())
 
 
 def _rule(scope, field="playback.play_count"):
